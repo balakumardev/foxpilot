@@ -6,8 +6,11 @@ import { performInputAction } from "./injected/action-script";
 import {
   buildEvalPageScript,
   buildUploadPageScript,
+  buildDialogPageScript,
+  buildEmulatePageScript,
   runInPageWorld,
 } from "./injected/page-world";
+import { setTabUserAgent } from "./emulate";
 import {
   cropElementFromCapture,
   mimeTypeForFormat,
@@ -44,6 +47,12 @@ const EVAL_TIMEOUT_MS = 10000;
 // slightly higher ceiling than eval. The broker's upload-file response timeout
 // (30s) is comfortably larger than this.
 const UPLOAD_TIMEOUT_MS = 15000;
+
+// handle-dialog and emulate inject a SYNCHRONOUS page-world script (it just
+// installs overrides/shims and writes the result attribute), so the result
+// appears on the first poll. A short ceiling is plenty; a CSP-blocked page times
+// out with a CSP hint (surfaced as ok:false) rather than throwing.
+const PAGE_SETUP_TIMEOUT_MS = 5000;
 
 /**
  * Returns whether a URL is allowed for in-tab navigation: https:// always, and
@@ -320,6 +329,20 @@ export class MessageHandler {
           fullPage: req.fullPage,
           uid: req.uid,
           format: req.format,
+        });
+        break;
+      case "handle-dialog":
+        await this.handleDialog(
+          req.correlationId,
+          req.tabId,
+          req.action,
+          req.promptText
+        );
+        break;
+      case "emulate":
+        await this.emulate(req.correlationId, req.tabId, {
+          geolocation: req.geolocation,
+          userAgent: req.userAgent,
         });
         break;
       case "get-console-messages":
@@ -670,6 +693,101 @@ export class MessageHandler {
       pageScript,
       resultAttr,
       UPLOAD_TIMEOUT_MS,
+      sleep
+    );
+
+    await this.client.sendResourceToServer({
+      resource: "action-result",
+      correlationId,
+      ok: result.ok,
+      error: result.error,
+    });
+  }
+
+  // Arms a tab so FUTURE native JS dialogs (alert/confirm/prompt) are
+  // auto-accepted or auto-dismissed. The override must run in the page's REAL
+  // world (where window.alert/confirm/prompt live), so we use the shared
+  // inject/poll page-world helper. The injected script is synchronous, so the
+  // result attribute appears on the first poll. CSP-strict pages time out with a
+  // CSP hint (surfaced as ok:false) rather than throwing. Caveat: this cannot
+  // intercept a dialog that is already open (it blocks the page's JS thread),
+  // and the override is reset on navigation — re-arm afterwards.
+  private async handleDialog(
+    correlationId: string,
+    tabId: number,
+    action: "accept" | "dismiss",
+    promptText?: string
+  ): Promise<void> {
+    const tab = await browser.tabs.get(tabId);
+    if (tab.url && (await isDomainInDenyList(tab.url))) {
+      throw new Error(`Domain in tab URL is in the deny list`);
+    }
+
+    await this.checkForUrlPermission(tab.url);
+
+    const resultAttr = `data-bcmcp-result-${Date.now()}-${++evalKeyCounter}`;
+    const pageScript = buildDialogPageScript(action, promptText, resultAttr);
+
+    const result = await runInPageWorld(
+      (code) => browser.tabs.executeScript(tabId, { code }),
+      pageScript,
+      resultAttr,
+      PAGE_SETUP_TIMEOUT_MS,
+      sleep
+    );
+
+    await this.client.sendResourceToServer({
+      resource: "action-result",
+      correlationId,
+      ok: result.ok,
+      error: result.error,
+    });
+  }
+
+  // Emulates device conditions for a tab: geolocation and/or userAgent. The
+  // navigator shims (navigator.geolocation, navigator.userAgent) run in the
+  // page's REAL world via the shared inject/poll helper. For userAgent we ALSO
+  // record a per-tab override (setTabUserAgent) so the background
+  // onBeforeSendHeaders listener rewrites the User-Agent request header — that
+  // makes the SERVER-visible UA change too, not just what the page reads.
+  // CSP-strict pages time out with a CSP hint (surfaced as ok:false). Only
+  // geolocation + userAgent are supported; CPU/network/colorScheme are not
+  // feasible from a WebExtension.
+  private async emulate(
+    correlationId: string,
+    tabId: number,
+    opts: {
+      geolocation?: { latitude: number; longitude: number; accuracy?: number };
+      userAgent?: string;
+    }
+  ): Promise<void> {
+    const tab = await browser.tabs.get(tabId);
+    if (tab.url && (await isDomainInDenyList(tab.url))) {
+      throw new Error(`Domain in tab URL is in the deny list`);
+    }
+
+    await this.checkForUrlPermission(tab.url);
+
+    // Record the UA override so the background header-rewrite listener applies
+    // it to outgoing requests (the page-world shim alone only changes what the
+    // page reads). Done after the deny-list/permission checks so a rejected
+    // request leaves no override behind.
+    if (opts.userAgent !== undefined) {
+      setTabUserAgent(tabId, opts.userAgent);
+    }
+
+    const resultAttr = `data-bcmcp-result-${Date.now()}-${++evalKeyCounter}`;
+    const pageScript = buildEmulatePageScript(
+      opts.geolocation,
+      opts.userAgent,
+      resultAttr
+    );
+
+    const result = await runInPageWorld(
+      (code) => browser.tabs.executeScript(tabId, { code }),
+      pageScript,
+      resultAttr,
+      PAGE_SETUP_TIMEOUT_MS,
       sleep
     );
 

@@ -5,6 +5,7 @@ import { MessageHandler } from "./message-handler";
 import { getConfig, generateSecret, getTransport } from "./extension-config";
 import { initConsoleCapture } from "./console-capture";
 import { initNetworkCapture } from "./network-capture";
+import { initEmulate } from "./emulate";
 
 function initClient(port: number, secret: string, transport: "websocket" | "longpoll") {
   const client: ExtensionTransport =
@@ -62,6 +63,11 @@ initExtension()
     // tabs/storage listeners and, if Automation Mode is on, the webRequest
     // listeners that feed the per-tab network ring buffer.
     initNetworkCapture();
+    // Start background UA emulation once (browser-wide). It registers its
+    // tabs/storage listeners and, if Automation Mode is on, the blocking
+    // onBeforeSendHeaders listener that rewrites the User-Agent header for tabs
+    // with an active override (set by the `emulate` tool).
+    initEmulate();
 
     const transport = await getTransport();
     for (const port of portList) {

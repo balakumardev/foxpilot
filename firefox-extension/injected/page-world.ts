@@ -217,6 +217,149 @@ export function buildUploadPageScript(
 }
 
 /**
+ * Builds the PAGE-world script for the `handle-dialog` tool.
+ *
+ * Arms the page so FUTURE native JS dialogs are auto-handled: it overrides
+ * `window.alert` (becomes a no-op), `window.confirm` (returns true on "accept",
+ * false on "dismiss"), and `window.prompt` (returns `promptText` (or "") on
+ * "accept", null on "dismiss"). It also best-effort clears
+ * `window.onbeforeunload` so an "are you sure you want to leave" prompt does not
+ * block navigation.
+ *
+ * CAVEATS (the page cannot work around these):
+ *   - This cannot intercept a dialog that is ALREADY open — a native dialog
+ *     blocks the page's JS thread, so no script can run until it is dismissed by
+ *     the user. It only affects dialogs raised AFTER this runs.
+ *   - The overrides live on the page's `window` and are therefore reset on
+ *     navigation (a fresh document gets fresh `window.alert` etc.). Re-arm after
+ *     navigating.
+ *
+ * Returns the source of a synchronous IIFE that installs the overrides and then
+ * writes `{ ok:true }` to `resultAttr` on `document.documentElement`. The whole
+ * body is wrapped in try/catch and writes `{ ok:false, error }` on throw.
+ *
+ * `action`, `promptText`, and `resultAttr` are embedded via `jsonForScript` so
+ * any characters (quotes, newlines, the `</script>` sequence) are injected
+ * safely.
+ */
+export function buildDialogPageScript(
+  action: "accept" | "dismiss",
+  promptText: string | undefined,
+  resultAttr: string
+): string {
+  const accept = action === "accept";
+  return (
+    "(function () {" +
+    "var __attr = " +
+    jsonForScript(resultAttr) +
+    ";" +
+    "try {" +
+    "var __promptText = " +
+    jsonForScript(promptText ?? "") +
+    ";" +
+    // alert: suppress entirely (no-op).
+    "window.alert = function () {};" +
+    // confirm: accept => true, dismiss => false.
+    (accept
+      ? "window.confirm = function () { return true; };"
+      : "window.confirm = function () { return false; };") +
+    // prompt: accept => the configured text (or ""), dismiss => null.
+    (accept
+      ? "window.prompt = function () { return __promptText || \"\"; };"
+      : "window.prompt = function () { return null; };") +
+    // Best-effort: clear any beforeunload handler so leaving the page is not
+    // blocked by a confirmation dialog.
+    "try { window.onbeforeunload = null; } catch (e) {}" +
+    "document.documentElement.setAttribute(__attr, JSON.stringify({ ok:true }));" +
+    "} catch (err) {" +
+    "document.documentElement.setAttribute(__attr, JSON.stringify({ ok:false, error: String(err && err.message || err) }));" +
+    "}" +
+    "})();"
+  );
+}
+
+/**
+ * Builds the PAGE-world script for the `emulate` tool.
+ *
+ * Installs navigator shims in the page's real world:
+ *   - geolocation (when `geolocation` is given): overrides
+ *     `navigator.geolocation.getCurrentPosition` and `watchPosition` so they
+ *     invoke the success callback with a synthetic `GeolocationPosition`
+ *     ({ coords:{ latitude, longitude, accuracy, altitude:null,
+ *     altitudeAccuracy:null, heading:null, speed:null }, timestamp }).
+ *     `watchPosition` also returns a fake numeric watch id.
+ *   - userAgent (when `userAgent` is given): redefines `navigator.userAgent`
+ *     via `Object.defineProperty` with a getter returning the override (kept
+ *     `configurable:true` so it can be re-emulated). NOTE this only changes the
+ *     value the PAGE reads; the User-Agent sent on network requests is handled
+ *     separately by a background webRequest header rewrite.
+ *
+ * Returns the source of a synchronous IIFE that installs whichever shims were
+ * requested and then writes `{ ok:true }` to `resultAttr`. The whole body is
+ * wrapped in try/catch and writes `{ ok:false, error }` on throw.
+ *
+ * Embedded values are injected via `jsonForScript` so any characters — including
+ * the `</script>` sequence — are safe.
+ */
+export function buildEmulatePageScript(
+  geolocation:
+    | { latitude: number; longitude: number; accuracy?: number }
+    | undefined,
+  userAgent: string | undefined,
+  resultAttr: string
+): string {
+  let geoBlock = "";
+  if (geolocation) {
+    geoBlock =
+      "if (navigator.geolocation) {" +
+      "var __lat = " +
+      jsonForScript(geolocation.latitude) +
+      ";" +
+      "var __lon = " +
+      jsonForScript(geolocation.longitude) +
+      ";" +
+      "var __acc = " +
+      jsonForScript(geolocation.accuracy ?? 100) +
+      ";" +
+      "var __makePos = function () {" +
+      "return { coords: { latitude: __lat, longitude: __lon, accuracy: __acc, altitude: null, altitudeAccuracy: null, heading: null, speed: null }, timestamp: Date.now() };" +
+      "};" +
+      "navigator.geolocation.getCurrentPosition = function (success) {" +
+      "if (typeof success === 'function') { success(__makePos()); }" +
+      "};" +
+      "navigator.geolocation.watchPosition = function (success) {" +
+      "if (typeof success === 'function') { success(__makePos()); }" +
+      "return 0;" +
+      "};" +
+      "}";
+  }
+
+  let uaBlock = "";
+  if (userAgent !== undefined) {
+    uaBlock =
+      "var __ua = " +
+      jsonForScript(userAgent) +
+      ";" +
+      "Object.defineProperty(navigator, \"userAgent\", { get: function () { return __ua; }, configurable: true });";
+  }
+
+  return (
+    "(function () {" +
+    "var __attr = " +
+    jsonForScript(resultAttr) +
+    ";" +
+    "try {" +
+    geoBlock +
+    uaBlock +
+    "document.documentElement.setAttribute(__attr, JSON.stringify({ ok:true }));" +
+    "} catch (err) {" +
+    "document.documentElement.setAttribute(__attr, JSON.stringify({ ok:false, error: String(err && err.message || err) }));" +
+    "}" +
+    "})();"
+  );
+}
+
+/**
  * Orchestrates inject → poll → parse. `exec` is the injected
  * `browser.tabs.executeScript`-style wrapper (`(code) => Promise<any[]>`), and
  * `sleep` is injected for testability.

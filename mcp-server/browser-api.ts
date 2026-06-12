@@ -490,6 +490,40 @@ export class BrowserAPI {
     }
   }
 
+  async handleDialog(
+    tabId: number,
+    action: "accept" | "dismiss",
+    promptText?: string
+  ): Promise<void> {
+    const message = await this.sendTool<ActionResultExtensionMessage>({
+      cmd: "handle-dialog",
+      tabId,
+      action,
+      promptText,
+    });
+    if (!message.ok) {
+      throw new Error(message.error ?? "handle-dialog failed");
+    }
+  }
+
+  async emulate(
+    tabId: number,
+    opts: {
+      geolocation?: { latitude: number; longitude: number; accuracy?: number };
+      userAgent?: string;
+    }
+  ): Promise<void> {
+    const message = await this.sendTool<ActionResultExtensionMessage>({
+      cmd: "emulate",
+      tabId,
+      geolocation: opts.geolocation,
+      userAgent: opts.userAgent,
+    });
+    if (!message.ok) {
+      throw new Error(message.error ?? "emulate failed");
+    }
+  }
+
   async evaluateScript(
     tabId: number,
     functionSource: string,

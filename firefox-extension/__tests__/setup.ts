@@ -58,6 +58,7 @@ const mockBrowser = {
   },
   webRequest: {
     onBeforeRequest: { addListener: jest.fn(), removeListener: jest.fn() },
+    onBeforeSendHeaders: { addListener: jest.fn(), removeListener: jest.fn() },
     onSendHeaders: { addListener: jest.fn(), removeListener: jest.fn() },
     onHeadersReceived: { addListener: jest.fn(), removeListener: jest.fn() },
     onCompleted: { addListener: jest.fn(), removeListener: jest.fn() },

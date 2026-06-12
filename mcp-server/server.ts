@@ -429,6 +429,59 @@ mcpServer.tool(
 );
 
 mcpServer.tool(
+  "handle-dialog",
+  "Arm a tab so that FUTURE native JavaScript dialogs (alert, confirm, prompt) are automatically handled without blocking. Set action to 'accept' (confirm returns true, prompt returns promptText or an empty string) or 'dismiss' (confirm returns false, prompt returns null); alert is suppressed either way. Call this BEFORE the action that triggers the dialog. Note: this cannot dismiss a dialog that is already open (a native dialog freezes the page's script until the user closes it), and the override is reset when the page navigates — re-arm after navigation.",
+  {
+    tabId: z.number(),
+    action: z.enum(["accept", "dismiss"]),
+    promptText: z.string().optional(),
+  },
+  async ({ tabId, action, promptText }) => {
+    await browserApi.handleDialog(tabId, action, promptText);
+    return {
+      content: [
+        {
+          type: "text",
+          text: `Armed tab ${tabId} to ${action} future dialogs`,
+        },
+      ],
+    };
+  }
+);
+
+mcpServer.tool(
+  "emulate",
+  "Emulate device conditions for a tab. Provide 'geolocation' ({ latitude, longitude, accuracy? }) to make the page's geolocation API report those coordinates, and/or 'userAgent' to override the user agent (this changes both what the page reads via navigator.userAgent AND the User-Agent header sent on the tab's outgoing requests). Overrides apply to navigations/requests made after this call and are reset when the page navigates (re-apply afterwards). Only geolocation and userAgent are supported — CPU throttling, network conditions, and color-scheme emulation are NOT feasible from a Firefox extension and are not available.",
+  {
+    tabId: z.number(),
+    geolocation: z
+      .object({
+        latitude: z.number(),
+        longitude: z.number(),
+        accuracy: z.number().optional(),
+      })
+      .optional(),
+    userAgent: z.string().optional(),
+  },
+  async ({ tabId, geolocation, userAgent }) => {
+    await browserApi.emulate(tabId, { geolocation, userAgent });
+    const parts: string[] = [];
+    if (geolocation) {
+      parts.push(
+        `geolocation=(${geolocation.latitude}, ${geolocation.longitude})`
+      );
+    }
+    if (userAgent !== undefined) {
+      parts.push(`userAgent="${userAgent}"`);
+    }
+    const what = parts.length ? parts.join(", ") : "nothing (no options given)";
+    return {
+      content: [{ type: "text", text: `Emulating on tab ${tabId}: ${what}` }],
+    };
+  }
+);
+
+mcpServer.tool(
   "evaluate-script",
   'Evaluate a JavaScript function in the page\'s real world and return its result. Pass "function" as a function EXPRESSION string, e.g. "() => document.title" or "(sel) => document.querySelector(sel)?.textContent". The function runs in the page context (it can see the page\'s window, frameworks, and DOM), is awaited if it returns a promise, and its result is JSON-serialized back to you. Pass "args" to forward arguments to the function. Note: pages with a strict Content-Security-Policy may block injected scripts; if so this times out with a CSP error.',
   { tabId: z.number(), function: z.string(), args: z.array(z.any()).optional() },

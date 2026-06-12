@@ -186,6 +186,34 @@ export interface GetConsoleMessagesServerMessage extends ServerMessageBase {
   limit?: number;
 }
 
+// Arm a tab so FUTURE native JS dialogs (alert/confirm/prompt) are
+// auto-handled. `action` "accept" makes confirm return true and prompt return
+// `promptText` (or ""); "dismiss" makes confirm return false and prompt return
+// null; alert is suppressed either way. Implemented in the page world by
+// overriding window.alert/confirm/prompt. Caveat: cannot intercept an
+// already-open native dialog (it blocks the page's JS thread), and the override
+// is reset on navigation.
+export interface HandleDialogServerMessage extends ServerMessageBase {
+  cmd: "handle-dialog";
+  tabId: number;
+  action: "accept" | "dismiss";
+  promptText?: string;
+}
+
+// Emulate device conditions for a tab. `geolocation` shims
+// navigator.geolocation in the page world to report the given coordinates;
+// `userAgent` shims navigator.userAgent in the page AND rewrites the User-Agent
+// request header on outgoing requests (via a background webRequest listener) so
+// the server-visible UA changes too. Only geolocation and userAgent are
+// supported — CPU throttling, network conditions, and colorScheme are not
+// feasible from a WebExtension and are intentionally omitted.
+export interface EmulateServerMessage extends ServerMessageBase {
+  cmd: "emulate";
+  tabId: number;
+  geolocation?: { latitude: number; longitude: number; accuracy?: number };
+  userAgent?: string;
+}
+
 // Read the network activity captured for a tab. While Automation Mode is on the
 // extension observes requests via the webRequest API into a per-tab ring
 // buffer; this is a pure buffer read. `filter` is a case-insensitive substring
@@ -227,6 +255,8 @@ export type ServerMessage =
   | EvaluateScriptServerMessage
   | UploadFileServerMessage
   | TakeScreenshotServerMessage
+  | HandleDialogServerMessage
+  | EmulateServerMessage
   | GetConsoleMessagesServerMessage
   | GetNetworkRequestsServerMessage;
 

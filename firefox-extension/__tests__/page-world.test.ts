@@ -3,6 +3,8 @@ import {
   buildPollerCode,
   buildEvalPageScript,
   buildUploadPageScript,
+  buildDialogPageScript,
+  buildEmulatePageScript,
   runInPageWorld,
 } from "../injected/page-world";
 
@@ -256,6 +258,198 @@ describe("buildUploadPageScript", () => {
     const parsed = JSON.parse(raw as string);
     expect(parsed.ok).toBe(false);
     expect(parsed.error).toContain("not found");
+
+    document.documentElement.removeAttribute(attr);
+    el.remove();
+  });
+});
+
+describe("buildDialogPageScript", () => {
+  const attr = "data-bcmcp-result-dialog-1";
+
+  it("overrides window.alert, window.confirm, and window.prompt", () => {
+    const code = buildDialogPageScript("accept", "hi", attr);
+    expect(code).toContain("window.alert");
+    expect(code).toContain("window.confirm");
+    expect(code).toContain("window.prompt");
+  });
+
+  it("makes confirm return true and prompt return the promptText when action is accept", () => {
+    const code = buildDialogPageScript("accept", "hi", attr);
+    // confirm resolves to true on accept.
+    expect(code).toContain("return true");
+    // prompt returns the embedded promptText on accept.
+    expect(code).toContain(JSON.stringify("hi"));
+  });
+
+  it("makes confirm return false and prompt return null when action is dismiss", () => {
+    const code = buildDialogPageScript("dismiss", undefined, attr);
+    expect(code).toContain("return false");
+    expect(code).toContain("null");
+  });
+
+  it("best-effort clears window.onbeforeunload", () => {
+    const code = buildDialogPageScript("accept", undefined, attr);
+    expect(code).toContain("onbeforeunload");
+  });
+
+  it("embeds the result attribute and has both ok:true and ok:false branches in try/catch", () => {
+    const code = buildDialogPageScript("accept", "x", attr);
+    expect(code).toContain(JSON.stringify(attr));
+    expect(code).toContain("ok:true");
+    expect(code).toContain("ok:false");
+    expect(code).toContain("try");
+    expect(code).toContain("catch");
+  });
+
+  it("escapes a promptText containing </script> and quotes safely", () => {
+    const nasty = `</script><img>"'`;
+    const code = buildDialogPageScript("accept", nasty, attr);
+    expect(code).not.toContain("</script>");
+    expect(code).toContain("<\\/script>");
+  });
+
+  it("arms the page and writes an ok:true envelope when executed (jsdom-safe)", () => {
+    // The override installation itself is harmless in jsdom (it just reassigns
+    // window.alert/confirm/prompt), so we can execute the emitted body and prove
+    // the {ok:true} envelope is written. The actual dialog suppression is
+    // browser-only.
+    document.documentElement.removeAttribute(attr);
+    const code = buildDialogPageScript("accept", "answer", attr);
+
+    const el = document.createElement("script");
+    el.textContent = code;
+    document.head.appendChild(el);
+
+    const raw = document.documentElement.getAttribute(attr);
+    expect(raw).not.toBeNull();
+    expect(JSON.parse(raw as string)).toEqual({ ok: true });
+    // The overrides took effect in this (jsdom) window: confirm now returns true,
+    // prompt returns the answer.
+    expect(window.confirm()).toBe(true);
+    expect(window.prompt()).toBe("answer");
+
+    document.documentElement.removeAttribute(attr);
+    el.remove();
+  });
+
+  it("dismiss makes confirm false and prompt null when executed (jsdom-safe)", () => {
+    document.documentElement.removeAttribute(attr);
+    const code = buildDialogPageScript("dismiss", undefined, attr);
+
+    const el = document.createElement("script");
+    el.textContent = code;
+    document.head.appendChild(el);
+
+    expect(JSON.parse(document.documentElement.getAttribute(attr) as string)).toEqual({
+      ok: true,
+    });
+    expect(window.confirm()).toBe(false);
+    expect(window.prompt()).toBeNull();
+
+    document.documentElement.removeAttribute(attr);
+    el.remove();
+  });
+});
+
+describe("buildEmulatePageScript", () => {
+  const attr = "data-bcmcp-result-emulate-1";
+
+  it("overrides navigator.geolocation.getCurrentPosition/watchPosition when geolocation is given", () => {
+    const code = buildEmulatePageScript(
+      { latitude: 1, longitude: 2 },
+      undefined,
+      attr
+    );
+    expect(code).toContain("navigator.geolocation");
+    expect(code).toContain("getCurrentPosition");
+    expect(code).toContain("watchPosition");
+  });
+
+  it("embeds the latitude, longitude, and accuracy in the synthetic position", () => {
+    const code = buildEmulatePageScript(
+      { latitude: 12.5, longitude: -77.25, accuracy: 42 },
+      undefined,
+      attr
+    );
+    expect(code).toContain("12.5");
+    expect(code).toContain("-77.25");
+    expect(code).toContain("42");
+    // The synthetic position shape.
+    expect(code).toContain("coords");
+    expect(code).toContain("timestamp");
+  });
+
+  it("defines navigator.userAgent via Object.defineProperty when userAgent is given", () => {
+    const code = buildEmulatePageScript(undefined, "UA/1.0", attr);
+    expect(code).toContain("Object.defineProperty(navigator");
+    expect(code).toContain('"userAgent"');
+    expect(code).toContain(JSON.stringify("UA/1.0"));
+    expect(code).toContain("configurable");
+  });
+
+  it("embeds both geolocation and userAgent together", () => {
+    const code = buildEmulatePageScript(
+      { latitude: 1, longitude: 2 },
+      "UA/1.0",
+      attr
+    );
+    expect(code).toContain("navigator.geolocation");
+    expect(code).toContain("Object.defineProperty(navigator");
+    expect(code).toContain(JSON.stringify("UA/1.0"));
+  });
+
+  it("embeds the result attribute and has both ok:true and ok:false branches in try/catch", () => {
+    const code = buildEmulatePageScript({ latitude: 1, longitude: 2 }, "UA/1.0", attr);
+    expect(code).toContain(JSON.stringify(attr));
+    expect(code).toContain("ok:true");
+    expect(code).toContain("ok:false");
+    expect(code).toContain("try");
+    expect(code).toContain("catch");
+  });
+
+  it("escapes a userAgent containing </script> and quotes safely", () => {
+    const nasty = `</script>Mozilla"'`;
+    const code = buildEmulatePageScript(undefined, nasty, attr);
+    expect(code).not.toContain("</script>");
+    expect(code).toContain("<\\/script>");
+  });
+
+  it("writes an ok:true envelope when executed with only a userAgent (jsdom-safe)", () => {
+    // Defining navigator.userAgent is harmless in jsdom; executing the body
+    // proves the {ok:true} envelope. (The geolocation override calls back
+    // asynchronously and is browser-meaningful, but installation is also
+    // harmless here.)
+    document.documentElement.removeAttribute(attr);
+    const code = buildEmulatePageScript(
+      { latitude: 1, longitude: 2 },
+      "Emu/9.9",
+      attr
+    );
+
+    const el = document.createElement("script");
+    el.textContent = code;
+    document.head.appendChild(el);
+
+    const raw = document.documentElement.getAttribute(attr);
+    expect(raw).not.toBeNull();
+    expect(JSON.parse(raw as string)).toEqual({ ok: true });
+
+    document.documentElement.removeAttribute(attr);
+    el.remove();
+  });
+
+  it("writes ok:true even when neither geolocation nor userAgent is given", () => {
+    document.documentElement.removeAttribute(attr);
+    const code = buildEmulatePageScript(undefined, undefined, attr);
+
+    const el = document.createElement("script");
+    el.textContent = code;
+    document.head.appendChild(el);
+
+    expect(JSON.parse(document.documentElement.getAttribute(attr) as string)).toEqual({
+      ok: true,
+    });
 
     document.documentElement.removeAttribute(attr);
     el.remove();

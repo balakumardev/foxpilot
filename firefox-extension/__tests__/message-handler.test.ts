@@ -8,6 +8,7 @@ import {
   onCompletedRecord,
   clearNetworkRequests,
 } from "../network-capture";
+import { getTabUserAgent, clearTabUserAgent } from "../emulate";
 
 // Mock the WebsocketClient
 jest.mock("../client", () => {
@@ -1999,6 +2000,261 @@ describe("MessageHandler", () => {
         messageHandler.handleDecodedMessage(request)
       ).rejects.toThrow("requires Automation Mode");
       expect(browser.windows.update).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("handle-dialog command", () => {
+    const automationConfig = {
+      secret: "test-secret",
+      ports: [8089],
+      domainDenyList: [] as string[],
+      auditLog: [],
+      automationMode: true,
+    };
+
+    beforeEach(() => {
+      (browser.storage.local.get as jest.Mock).mockResolvedValue({
+        config: automationConfig,
+      });
+      (browser.tabs.get as jest.Mock).mockResolvedValue({
+        id: 123,
+        url: "https://example.com",
+      });
+      (browser.permissions.contains as jest.Mock).mockResolvedValue(true);
+    });
+
+    it("injects the page-world dialog script, polls the result, and replies action-result ok:true", async () => {
+      // First executeScript call is the injector (returns [true]); the next is
+      // the poller, which returns the serialized in-page envelope. The actual
+      // dialog suppression (alert/confirm/prompt override) is browser-only, so
+      // the injected script is exercised through the mock here plus the builder's
+      // structural tests in page-world.test.ts.
+      (browser.tabs.executeScript as jest.Mock)
+        .mockResolvedValueOnce([true])
+        .mockResolvedValueOnce([JSON.stringify({ ok: true })]);
+
+      const request: ServerMessageRequest = {
+        cmd: "handle-dialog",
+        tabId: 123,
+        action: "accept",
+        promptText: "answer",
+        correlationId: "test-correlation-id",
+      };
+
+      await messageHandler.handleDecodedMessage(request);
+
+      // The injector executeScript carries the page-world dialog script, which
+      // overrides window.confirm/prompt/alert. They are nested two JSON layers
+      // deep (page script inside injector), so assert on recognizable content.
+      const injectorCode = (browser.tabs.executeScript as jest.Mock).mock
+        .calls[0][1].code;
+      expect(injectorCode).toContain("createElement('script')");
+      expect(injectorCode).toContain("window.confirm");
+      expect(injectorCode).toContain("answer");
+
+      expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+        resource: "action-result",
+        correlationId: "test-correlation-id",
+        ok: true,
+        error: undefined,
+      });
+    });
+
+    it("replies action-result ok:false when the page script reports an error", async () => {
+      (browser.tabs.executeScript as jest.Mock)
+        .mockResolvedValueOnce([true])
+        .mockResolvedValueOnce([
+          JSON.stringify({ ok: false, error: "boom" }),
+        ]);
+
+      const request: ServerMessageRequest = {
+        cmd: "handle-dialog",
+        tabId: 123,
+        action: "dismiss",
+        correlationId: "test-correlation-id",
+      };
+
+      await messageHandler.handleDecodedMessage(request);
+
+      expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+        resource: "action-result",
+        correlationId: "test-correlation-id",
+        ok: false,
+        error: "boom",
+      });
+    });
+
+    it("throws when the tab URL domain is in the deny list (no script injected)", async () => {
+      (browser.storage.local.get as jest.Mock).mockResolvedValue({
+        config: { ...automationConfig, domainDenyList: ["example.com"] },
+      });
+
+      const request: ServerMessageRequest = {
+        cmd: "handle-dialog",
+        tabId: 123,
+        action: "accept",
+        correlationId: "test-correlation-id",
+      };
+
+      await expect(
+        messageHandler.handleDecodedMessage(request)
+      ).rejects.toThrow("Domain in tab URL is in the deny list");
+      expect(browser.tabs.executeScript).not.toHaveBeenCalled();
+    });
+
+    it("is blocked when automation mode is disabled", async () => {
+      (browser.storage.local.get as jest.Mock).mockResolvedValue({
+        config: { secret: "test-secret", ports: [8089], automationMode: false },
+      });
+
+      const request: ServerMessageRequest = {
+        cmd: "handle-dialog",
+        tabId: 123,
+        action: "accept",
+        correlationId: "test-correlation-id",
+      };
+
+      await expect(
+        messageHandler.handleDecodedMessage(request)
+      ).rejects.toThrow("requires Automation Mode");
+      expect(browser.tabs.executeScript).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("emulate command", () => {
+    const automationConfig = {
+      secret: "test-secret",
+      ports: [8089],
+      domainDenyList: [] as string[],
+      auditLog: [],
+      automationMode: true,
+    };
+
+    beforeEach(() => {
+      (browser.storage.local.get as jest.Mock).mockResolvedValue({
+        config: automationConfig,
+      });
+      (browser.tabs.get as jest.Mock).mockResolvedValue({
+        id: 123,
+        url: "https://example.com",
+      });
+      (browser.permissions.contains as jest.Mock).mockResolvedValue(true);
+      clearTabUserAgent(123);
+    });
+
+    afterEach(() => {
+      clearTabUserAgent(123);
+    });
+
+    it("injects the page-world emulate script, polls the result, and replies action-result ok:true", async () => {
+      // The navigator overrides and webRequest UA rewrite are browser-only; the
+      // injected script is exercised through the mock here plus the builder's
+      // structural tests in page-world.test.ts.
+      (browser.tabs.executeScript as jest.Mock)
+        .mockResolvedValueOnce([true])
+        .mockResolvedValueOnce([JSON.stringify({ ok: true })]);
+
+      const request: ServerMessageRequest = {
+        cmd: "emulate",
+        tabId: 123,
+        geolocation: { latitude: 12.5, longitude: -77.25, accuracy: 30 },
+        userAgent: "Custom/9.9",
+        correlationId: "test-correlation-id",
+      };
+
+      await messageHandler.handleDecodedMessage(request);
+
+      const injectorCode = (browser.tabs.executeScript as jest.Mock).mock
+        .calls[0][1].code;
+      expect(injectorCode).toContain("createElement('script')");
+      expect(injectorCode).toContain("navigator.geolocation");
+      expect(injectorCode).toContain("Custom/9.9");
+
+      expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+        resource: "action-result",
+        correlationId: "test-correlation-id",
+        ok: true,
+        error: undefined,
+      });
+    });
+
+    it("registers the userAgent in the per-tab map so server-visible requests are rewritten", async () => {
+      (browser.tabs.executeScript as jest.Mock)
+        .mockResolvedValueOnce([true])
+        .mockResolvedValueOnce([JSON.stringify({ ok: true })]);
+
+      const request: ServerMessageRequest = {
+        cmd: "emulate",
+        tabId: 123,
+        userAgent: "Custom/9.9",
+        correlationId: "test-correlation-id",
+      };
+
+      await messageHandler.handleDecodedMessage(request);
+
+      // The handler stored the UA override for the tab, which the
+      // onBeforeSendHeaders rewriter consults at request time.
+      expect(getTabUserAgent(123)).toBe("Custom/9.9");
+    });
+
+    it("does not touch the UA map when no userAgent is given (geolocation only)", async () => {
+      (browser.tabs.executeScript as jest.Mock)
+        .mockResolvedValueOnce([true])
+        .mockResolvedValueOnce([JSON.stringify({ ok: true })]);
+
+      const request: ServerMessageRequest = {
+        cmd: "emulate",
+        tabId: 123,
+        geolocation: { latitude: 1, longitude: 2 },
+        correlationId: "test-correlation-id",
+      };
+
+      await messageHandler.handleDecodedMessage(request);
+
+      expect(getTabUserAgent(123)).toBeUndefined();
+      expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+        resource: "action-result",
+        correlationId: "test-correlation-id",
+        ok: true,
+        error: undefined,
+      });
+    });
+
+    it("throws when the tab URL domain is in the deny list (no script injected, no UA set)", async () => {
+      (browser.storage.local.get as jest.Mock).mockResolvedValue({
+        config: { ...automationConfig, domainDenyList: ["example.com"] },
+      });
+
+      const request: ServerMessageRequest = {
+        cmd: "emulate",
+        tabId: 123,
+        userAgent: "Custom/9.9",
+        correlationId: "test-correlation-id",
+      };
+
+      await expect(
+        messageHandler.handleDecodedMessage(request)
+      ).rejects.toThrow("Domain in tab URL is in the deny list");
+      expect(browser.tabs.executeScript).not.toHaveBeenCalled();
+      expect(getTabUserAgent(123)).toBeUndefined();
+    });
+
+    it("is blocked when automation mode is disabled", async () => {
+      (browser.storage.local.get as jest.Mock).mockResolvedValue({
+        config: { secret: "test-secret", ports: [8089], automationMode: false },
+      });
+
+      const request: ServerMessageRequest = {
+        cmd: "emulate",
+        tabId: 123,
+        userAgent: "Custom/9.9",
+        correlationId: "test-correlation-id",
+      };
+
+      await expect(
+        messageHandler.handleDecodedMessage(request)
+      ).rejects.toThrow("requires Automation Mode");
+      expect(browser.tabs.executeScript).not.toHaveBeenCalled();
     });
   });
 });

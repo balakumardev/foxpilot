@@ -136,6 +136,16 @@ export const AVAILABLE_TOOLS: ToolInfo[] = [
     description: "Allows the MCP server to capture a screenshot of a page (viewport, full page, or a single element)"
   },
   {
+    id: "handle-dialog",
+    name: "Handle Dialog",
+    description: "Allows the MCP server to auto-accept or auto-dismiss future JavaScript dialogs (alert/confirm/prompt) on a page"
+  },
+  {
+    id: "emulate",
+    name: "Emulate Device Conditions",
+    description: "Allows the MCP server to emulate geolocation and the user agent for a page"
+  },
+  {
     id: "get-console-messages",
     name: "Get Console Messages",
     description: "Allows the MCP server to read a page's captured console output and uncaught errors"
@@ -174,6 +184,8 @@ export const COMMAND_TO_TOOL_ID: Record<ServerMessageRequest["cmd"], string> = {
   "evaluate-script": "evaluate-script",
   "upload-file": "upload-file",
   "take-screenshot": "take-screenshot",
+  "handle-dialog": "handle-dialog",
+  "emulate": "emulate",
   "get-console-messages": "get-console-messages",
   "get-network-requests": "get-network-requests",
 };
