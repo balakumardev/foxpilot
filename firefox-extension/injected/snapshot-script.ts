@@ -150,7 +150,17 @@ export function buildSnapshot(
     let node: Element | null = el.parentElement;
     while (node) {
       if (node.tagName.toLowerCase() === "label") {
-        return node.textContent || "";
+        // The label's accessible name is its OWN text, excluding any embedded
+        // form controls (the wrapped input/select/etc. and its value). Clone the
+        // label, strip descendant controls, then read the remaining text.
+        const clone = node.cloneNode(true) as Element;
+        const controls = clone.querySelectorAll(
+          "input, select, textarea, button"
+        );
+        for (let i = 0; i < controls.length; i++) {
+          controls[i].remove();
+        }
+        return clone.textContent || "";
       }
       node = node.parentElement;
     }
@@ -292,7 +302,7 @@ export function buildSnapshot(
     "[tabindex]",
     "[onclick]",
     "summary",
-    "[contenteditable]",
+    '[contenteditable]:not([contenteditable="false"])',
   ];
   const verboseSelectors = ["h1", "h2", "h3", "h4", "h5", "h6", "[aria-label]"];
   const selector = (verbose
@@ -331,7 +341,14 @@ export function buildSnapshot(
   // --- 7. join and truncate ---
   const full = lines.join("\n");
   if (full.length > maxLength) {
-    return { tree: full.slice(0, maxLength), isTruncated: true };
+    // Truncate to the last COMPLETE line so every emitted line (including the
+    // last) is whole — downstream tools parse `[uid=eN]` and must never see a
+    // dangling token like `[uid=e`. Cut at the last newline at or before
+    // maxLength; if there is none, emit nothing.
+    const sliced = full.slice(0, maxLength);
+    const lastNewline = sliced.lastIndexOf("\n");
+    const tree = lastNewline >= 0 ? sliced.slice(0, lastNewline) : "";
+    return { tree: tree, isTruncated: true };
   }
   return { tree: full, isTruncated: false };
 }

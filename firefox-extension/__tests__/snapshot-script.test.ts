@@ -253,6 +253,70 @@ describe("buildSnapshot", () => {
     expect(isTruncated).toBe(false);
   });
 
+  it("truncates at a complete-line boundary so no uid token is cut mid-way", () => {
+    let html = "";
+    for (let i = 0; i < 30; i++) {
+      html += `<button>Btn ${i}</button>`;
+    }
+    document.body.innerHTML = html;
+    // A small maxLength forces truncation partway through a line. The cut must
+    // land on a newline boundary so the final emitted line is whole and every
+    // `[uid=eN]` token keeps its trailing digits.
+    const { tree, isTruncated } = build(false, 45);
+    expect(isTruncated).toBe(true);
+    // No dangling `[uid=e` without digits anywhere in the output.
+    expect(tree).not.toMatch(/\[uid=e\]|\[uid=e$|\[uid=e\D/);
+    // Output must end exactly at a complete line (no trailing partial line).
+    if (tree.length > 0) {
+      expect(tree.endsWith("\n")).toBe(false);
+      const lines = tree.split("\n");
+      // Every emitted line is a complete entry ending in a closing bracket
+      // (optionally followed by a state-flag group).
+      for (const line of lines) {
+        expect(line).toMatch(/\[uid=e\d+\](?: \([^)]*\))?$/);
+      }
+    }
+    expect(tree.length).toBeLessThanOrEqual(45);
+  });
+
+  it("emits an empty tree (truncated) when no complete line fits within maxLength", () => {
+    document.body.innerHTML = `<button>A very long button label that overflows</button>`;
+    // The single line is longer than maxLength and there is no earlier newline,
+    // so nothing can be emitted while keeping the last line complete.
+    const { tree, isTruncated } = build(false, 5);
+    expect(isTruncated).toBe(true);
+    expect(tree).toBe("");
+  });
+
+  it("does not absorb an embedded control's text into a wrapping label's name", () => {
+    document.body.innerHTML = `
+      <label>Country
+        <select>
+          <option>United States</option>
+          <option>Canada</option>
+        </select>
+      </label>
+    `;
+    const { tree } = build();
+    expect(tree).toContain('combobox "Country"');
+    expect(tree).not.toContain("United States");
+    expect(tree).not.toContain("Canada");
+  });
+
+  it("excludes contenteditable=\"false\" but includes contenteditable \"\" and \"true\"", () => {
+    document.body.innerHTML = `
+      <div contenteditable="false">NotEditable</div>
+      <div contenteditable="" aria-label="EmptyEditable"></div>
+      <div contenteditable="true" aria-label="TrueEditable"></div>
+    `;
+    const { tree } = build();
+    expect(tree).not.toContain("NotEditable");
+    // The non-editable div must not be selected at all (no noise `clickable ""`).
+    expect(tree).not.toMatch(/clickable ""/);
+    expect(tree).toContain("EmptyEditable");
+    expect(tree).toContain("TrueEditable");
+  });
+
   it("assigns sequential uids across multiple elements", () => {
     document.body.innerHTML = `
       <a href="/1">One</a>
