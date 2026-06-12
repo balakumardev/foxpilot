@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
+import * as fs from "fs";
 import { BrowserAPI } from "./browser-api";
 import dayjs from "dayjs";
 import relativeTime from "dayjs/plugin/relativeTime";
@@ -401,6 +402,48 @@ mcpServer.tool(
     return {
       content: [{ type: "text", text: JSON.stringify(value) }],
     };
+  }
+);
+
+mcpServer.tool(
+  "take-screenshot",
+  "Take a screenshot of a browser tab and return it as an image. By default captures the visible viewport. Set fullPage to true to capture the entire scrollable page (stitched together). Pass a 'uid' from a recent take-snapshot to capture just that element (cropped). Choose 'png' (default, lossless) or 'jpeg' (smaller) for the format. Provide an absolute filePath to also save the image to disk on the machine running the MCP server.",
+  {
+    tabId: z.number(),
+    fullPage: z.boolean().optional(),
+    uid: z.string().optional(),
+    format: z.enum(["png", "jpeg"]).optional(),
+    filePath: z.string().optional(),
+  },
+  async ({ tabId, fullPage, uid, format, filePath }) => {
+    const result = await browserApi.takeScreenshot(tabId, {
+      fullPage,
+      uid,
+      format,
+    });
+
+    const content: (
+      | { type: "text"; text: string }
+      | { type: "image"; data: string; mimeType: string }
+    )[] = [];
+
+    if (filePath) {
+      // Persist the image to disk on the server host, then tell the model where.
+      fs.writeFileSync(filePath, Buffer.from(result.base64, "base64"));
+      content.push({
+        type: "text",
+        text: `Screenshot saved to ${filePath}`,
+      });
+    }
+
+    // Always return the image itself as MCP image content.
+    content.push({
+      type: "image",
+      data: result.base64,
+      mimeType: result.mimeType,
+    });
+
+    return { content };
   }
 );
 

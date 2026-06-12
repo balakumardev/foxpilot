@@ -14,6 +14,7 @@ const mockBrowser = {
     goBack: jest.fn(),
     goForward: jest.fn(),
     reload: jest.fn(),
+    captureVisibleTab: jest.fn(),
   },
   tabGroups: {
     update: jest.fn(),

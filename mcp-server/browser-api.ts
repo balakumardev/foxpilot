@@ -34,6 +34,7 @@ import type {
   WaitForTextResultExtensionMessage,
   ActionResultExtensionMessage,
   EvalResultExtensionMessage,
+  ScreenshotExtensionMessage,
 } from "@browser-control-mcp/common";
 import { BrokerClientFrame, BrokerServerFrame } from "./broker-protocol";
 import { createSignature, verifySignature } from "./signing";
@@ -468,6 +469,19 @@ export class BrowserAPI {
       throw new Error(message.error ?? "Script evaluation failed");
     }
     return message.value;
+  }
+
+  async takeScreenshot(
+    tabId: number,
+    opts: { fullPage?: boolean; uid?: string; format?: "png" | "jpeg" }
+  ): Promise<ScreenshotExtensionMessage> {
+    return await this.sendTool<ScreenshotExtensionMessage>({
+      cmd: "take-screenshot",
+      tabId,
+      fullPage: opts.fullPage,
+      uid: opts.uid,
+      format: opts.format,
+    });
   }
 }
 

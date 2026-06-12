@@ -4,6 +4,14 @@ import { isCommandAllowed, isDomainInDenyList, COMMAND_TO_TOOL_ID, addAuditLogEn
 import { buildSnapshot } from "./injected/snapshot-script";
 import { performInputAction } from "./injected/action-script";
 import { buildEvalPageScript, runInPageWorld } from "./injected/page-world";
+import {
+  cropElementFromCapture,
+  mimeTypeForFormat,
+  planFullPageSteps,
+  stitchFullPage,
+  stripDataUrlPrefix,
+  type ImageFormat,
+} from "./injected/screenshot-script";
 
 // The argument shape accepted by the injected `performInputAction` function.
 type InputActionArgs = Parameters<typeof performInputAction>[1];
@@ -45,6 +53,90 @@ function isNavigableUrl(url: string): boolean {
     );
   }
   return false;
+}
+
+/**
+ * Injected (via executeScript) to measure an element identified by a snapshot
+ * uid for the element-crop screenshot mode. Scrolls the element into view, then
+ * returns its viewport-relative bounding rect plus the device pixel ratio (so
+ * the compositor can convert CSS px to the device px of the captured bitmap).
+ * Returns null if the uid no longer resolves.
+ *
+ * MUST be self-contained: it is stringified and runs in the page's JS world with
+ * no access to this module.
+ */
+function readElementRect(
+  doc: Document,
+  uid: string
+): {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  dpr: number;
+} | null {
+  const el = doc.querySelector('[data-bcmcp-uid="' + uid + '"]');
+  if (!el) {
+    return null;
+  }
+  try {
+    (el as { scrollIntoView?: (opts?: unknown) => void }).scrollIntoView?.({
+      block: "center",
+      inline: "center",
+    });
+  } catch (e) {
+    /* ignore — capture whatever is visible */
+  }
+  const rect = (el as Element).getBoundingClientRect();
+  const win = doc.defaultView as (Window & typeof globalThis) | null;
+  const dpr = win && win.devicePixelRatio ? win.devicePixelRatio : 1;
+  return {
+    x: rect.left,
+    y: rect.top,
+    width: rect.width,
+    height: rect.height,
+    dpr,
+  };
+}
+
+/**
+ * Injected (via executeScript) to read the full document dimensions, current
+ * viewport size, device pixel ratio, and current scroll position for the
+ * full-page stitch mode.
+ *
+ * MUST be self-contained: it is stringified and runs in the page's JS world.
+ */
+function readPageDimensions(doc: Document): {
+  scrollWidth: number;
+  scrollHeight: number;
+  clientWidth: number;
+  clientHeight: number;
+  dpr: number;
+  originalScrollY: number;
+} {
+  const win = doc.defaultView as (Window & typeof globalThis) | null;
+  const body = doc.body;
+  const docEl = doc.documentElement;
+  const scrollWidth = Math.max(
+    body ? body.scrollWidth : 0,
+    docEl ? docEl.scrollWidth : 0
+  );
+  const scrollHeight = Math.max(
+    body ? body.scrollHeight : 0,
+    docEl ? docEl.scrollHeight : 0
+  );
+  const clientWidth = docEl ? docEl.clientWidth : win ? win.innerWidth : 0;
+  const clientHeight = docEl ? docEl.clientHeight : win ? win.innerHeight : 0;
+  const dpr = win && win.devicePixelRatio ? win.devicePixelRatio : 1;
+  const originalScrollY = win ? win.scrollY : 0;
+  return {
+    scrollWidth,
+    scrollHeight,
+    clientWidth,
+    clientHeight,
+    dpr,
+    originalScrollY,
+  };
 }
 
 export class MessageHandler {
@@ -181,6 +273,13 @@ export class MessageHandler {
           req.function,
           req.args
         );
+        break;
+      case "take-screenshot":
+        await this.takeScreenshot(req.correlationId, req.tabId, {
+          fullPage: req.fullPage,
+          uid: req.uid,
+          format: req.format,
+        });
         break;
       default:
         const _exhaustiveCheck: never = req;
@@ -480,6 +579,157 @@ export class MessageHandler {
       value: result.value,
       error: result.error,
     });
+  }
+
+  // Captures a screenshot of a tab in one of three modes:
+  //   - viewport (default): a single capture of the visible area.
+  //   - element (uid given): scrolls the element into view, reads its rect, then
+  //     crops the capture to just that element.
+  //   - fullPage (fullPage:true): scroll-and-stitch the entire scrollable page.
+  // `captureVisibleTab` can only grab the active tab of a window, so the tab is
+  // activated first. The cropping/stitching modes composite on a <canvas> in the
+  // background page (a real DOM document in Firefox), which jsdom cannot render —
+  // so only the viewport path is unit-tested.
+  private async takeScreenshot(
+    correlationId: string,
+    tabId: number,
+    opts: { fullPage?: boolean; uid?: string; format?: "png" | "jpeg" }
+  ): Promise<void> {
+    const tab = await browser.tabs.get(tabId);
+    if (tab.url && (await isDomainInDenyList(tab.url))) {
+      throw new Error(`Domain in tab URL is in the deny list`);
+    }
+
+    await this.checkForUrlPermission(tab.url);
+
+    const format: ImageFormat = opts.format === "jpeg" ? "jpeg" : "png";
+
+    // captureVisibleTab only captures the active tab of the window, so activate
+    // the target tab first.
+    await browser.tabs.update(tabId, { active: true });
+
+    let result: { mimeType: string; base64: string };
+    if (opts.uid) {
+      result = await this.captureElement(tabId, tab.windowId, opts.uid, format);
+    } else if (opts.fullPage) {
+      result = await this.captureFullPage(tabId, tab.windowId, format);
+    } else {
+      result = await this.captureViewport(tab.windowId, format);
+    }
+
+    await this.client.sendResourceToServer({
+      resource: "screenshot",
+      correlationId,
+      mimeType: result.mimeType,
+      base64: result.base64,
+    });
+  }
+
+  // Single capture of the visible viewport. windowId may be undefined, in which
+  // case captureVisibleTab targets the current window.
+  private async captureViewport(
+    windowId: number | undefined,
+    format: ImageFormat
+  ): Promise<{ mimeType: string; base64: string }> {
+    const dataUrl = await this.captureWindow(windowId, format);
+    const { base64 } = stripDataUrlPrefix(dataUrl);
+    return { mimeType: mimeTypeForFormat(format), base64 };
+  }
+
+  // Element-crop mode: scroll the element into view, measure its viewport rect
+  // and the device pixel ratio, then crop the capture to that rect.
+  private async captureElement(
+    tabId: number,
+    windowId: number | undefined,
+    uid: string,
+    format: ImageFormat
+  ): Promise<{ mimeType: string; base64: string }> {
+    const rectResults = await browser.tabs.executeScript(tabId, {
+      code: `(${readElementRect.toString()})(document, ${JSON.stringify(uid)})`,
+    });
+    const rect = rectResults[0] as {
+      x: number;
+      y: number;
+      width: number;
+      height: number;
+      dpr: number;
+    } | null;
+    if (!rect) {
+      throw new Error(
+        `Element uid '${uid}' not found — take a fresh snapshot (uids are reassigned each snapshot).`
+      );
+    }
+
+    // Give the browser a moment to settle after scrollIntoView before capturing.
+    await sleep(100);
+
+    const dataUrl = await this.captureWindow(windowId, format);
+    return await cropElementFromCapture(dataUrl, rect, format);
+  }
+
+  // Full-page mode: read the page dimensions, then scroll through the page one
+  // viewport at a time, capturing each frame, and stitch them onto a tall canvas.
+  // The original scroll position is restored when done.
+  private async captureFullPage(
+    tabId: number,
+    windowId: number | undefined,
+    format: ImageFormat
+  ): Promise<{ mimeType: string; base64: string }> {
+    const dimsResults = await browser.tabs.executeScript(tabId, {
+      code: `(${readPageDimensions.toString()})(document)`,
+    });
+    const dims = dimsResults[0] as {
+      scrollWidth: number;
+      scrollHeight: number;
+      clientWidth: number;
+      clientHeight: number;
+      dpr: number;
+      originalScrollY: number;
+    };
+
+    const offsets = planFullPageSteps(dims);
+    const captures: { offsetY: number; dataUrl: string }[] = [];
+    for (const y of offsets) {
+      await browser.tabs.executeScript(tabId, {
+        code: `window.scrollTo(0, ${y})`,
+      });
+      // Wait for the browser to repaint at the new scroll position. Firefox also
+      // throttles captureVisibleTab to ~once per second, so this delay doubles as
+      // rate-limit breathing room.
+      await sleep(100);
+      const dataUrl = await this.captureWindow(windowId, format);
+      captures.push({ offsetY: y, dataUrl });
+    }
+
+    // Restore the original scroll position.
+    await browser.tabs.executeScript(tabId, {
+      code: `window.scrollTo(0, ${dims.originalScrollY})`,
+    });
+
+    return await stitchFullPage(
+      captures,
+      {
+        scrollWidth: dims.scrollWidth,
+        scrollHeight: dims.scrollHeight,
+        dpr: dims.dpr,
+      },
+      format
+    );
+  }
+
+  // Thin wrapper over captureVisibleTab so the mode helpers don't repeat the
+  // format/quality options. quality is ignored for png by the browser.
+  private async captureWindow(
+    windowId: number | undefined,
+    format: ImageFormat
+  ): Promise<string> {
+    if (windowId != null) {
+      return await browser.tabs.captureVisibleTab(windowId, {
+        format,
+        quality: 90,
+      });
+    }
+    return await browser.tabs.captureVisibleTab({ format, quality: 90 });
   }
 
   private async navigateTab(

@@ -108,6 +108,15 @@ export interface EvalResultExtensionMessage extends ExtensionMessageBase {
   error?: string;
 }
 
+// Reply for the take-screenshot tool. `base64` is the raw (prefix-stripped)
+// image payload and `mimeType` is "image/png" or "image/jpeg". The MCP server
+// returns this to the model as image content and optionally writes it to disk.
+export interface ScreenshotExtensionMessage extends ExtensionMessageBase {
+  resource: "screenshot";
+  mimeType: string;
+  base64: string;
+}
+
 export type ExtensionMessage =
   | TabContentExtensionMessage
   | TabsExtensionMessage
@@ -123,7 +132,8 @@ export type ExtensionMessage =
   | ActiveTabExtensionMessage
   | WaitForTextResultExtensionMessage
   | ActionResultExtensionMessage
-  | EvalResultExtensionMessage;
+  | EvalResultExtensionMessage
+  | ScreenshotExtensionMessage;
 
 export interface ExtensionError {
   correlationId: string;

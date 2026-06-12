@@ -1302,6 +1302,134 @@ describe("MessageHandler", () => {
     });
   });
 
+  describe("take-screenshot command", () => {
+    const automationConfig = {
+      secret: "test-secret",
+      ports: [8089],
+      domainDenyList: [] as string[],
+      auditLog: [],
+      automationMode: true,
+    };
+
+    // Viewport mode is the only fully-testable path in jsdom: it never touches a
+    // canvas. captureVisibleTab returns a data URL, which the handler activates
+    // the tab for, strips the prefix from, and forwards as a screenshot message.
+    // (full-page stitch and element crop draw onto a <canvas>, which jsdom has no
+    // renderer for, so they are exercised only in a real browser.)
+    it("captures the viewport (png), activating the tab first, and replies screenshot", async () => {
+      (browser.storage.local.get as jest.Mock).mockResolvedValue({
+        config: automationConfig,
+      });
+      (browser.tabs.get as jest.Mock).mockResolvedValue({
+        id: 123,
+        url: "https://example.com",
+        windowId: 7,
+      });
+      (browser.tabs.update as jest.Mock).mockResolvedValue(undefined);
+      (browser.permissions.contains as jest.Mock).mockResolvedValue(true);
+      (browser.tabs.captureVisibleTab as jest.Mock).mockResolvedValue(
+        "data:image/png;base64,AAAA"
+      );
+
+      const request: ServerMessageRequest = {
+        cmd: "take-screenshot",
+        tabId: 123,
+        correlationId: "test-correlation-id",
+      };
+
+      await messageHandler.handleDecodedMessage(request);
+
+      // The active tab is the only one captureVisibleTab can grab, so the tab
+      // must be activated before the capture.
+      expect(browser.tabs.update).toHaveBeenCalledWith(123, { active: true });
+      expect(browser.tabs.captureVisibleTab).toHaveBeenCalledWith(7, {
+        format: "png",
+        quality: 90,
+      });
+      expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+        resource: "screenshot",
+        correlationId: "test-correlation-id",
+        mimeType: "image/png",
+        base64: "AAAA",
+      });
+    });
+
+    it("captures the viewport as jpeg when format is jpeg", async () => {
+      (browser.storage.local.get as jest.Mock).mockResolvedValue({
+        config: automationConfig,
+      });
+      (browser.tabs.get as jest.Mock).mockResolvedValue({
+        id: 123,
+        url: "https://example.com",
+        windowId: 7,
+      });
+      (browser.tabs.update as jest.Mock).mockResolvedValue(undefined);
+      (browser.permissions.contains as jest.Mock).mockResolvedValue(true);
+      (browser.tabs.captureVisibleTab as jest.Mock).mockResolvedValue(
+        "data:image/jpeg;base64,/9j/4AAQ"
+      );
+
+      const request: ServerMessageRequest = {
+        cmd: "take-screenshot",
+        tabId: 123,
+        format: "jpeg",
+        correlationId: "test-correlation-id",
+      };
+
+      await messageHandler.handleDecodedMessage(request);
+
+      expect(browser.tabs.captureVisibleTab).toHaveBeenCalledWith(7, {
+        format: "jpeg",
+        quality: 90,
+      });
+      expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+        resource: "screenshot",
+        correlationId: "test-correlation-id",
+        mimeType: "image/jpeg",
+        base64: "/9j/4AAQ",
+      });
+    });
+
+    it("throws when the tab URL domain is in the deny list (no capture)", async () => {
+      (browser.storage.local.get as jest.Mock).mockResolvedValue({
+        config: { ...automationConfig, domainDenyList: ["example.com"] },
+      });
+      (browser.tabs.get as jest.Mock).mockResolvedValue({
+        id: 123,
+        url: "https://example.com",
+        windowId: 7,
+      });
+
+      const request: ServerMessageRequest = {
+        cmd: "take-screenshot",
+        tabId: 123,
+        correlationId: "test-correlation-id",
+      };
+
+      await expect(
+        messageHandler.handleDecodedMessage(request)
+      ).rejects.toThrow("Domain in tab URL is in the deny list");
+      expect(browser.tabs.captureVisibleTab).not.toHaveBeenCalled();
+    });
+
+    it("is blocked when automation mode is disabled", async () => {
+      (browser.storage.local.get as jest.Mock).mockResolvedValue({
+        config: { secret: "test-secret", ports: [8089], automationMode: false },
+      });
+
+      const request: ServerMessageRequest = {
+        cmd: "take-screenshot",
+        tabId: 123,
+        correlationId: "test-correlation-id",
+      };
+
+      await expect(
+        messageHandler.handleDecodedMessage(request)
+      ).rejects.toThrow("requires Automation Mode");
+      expect(browser.tabs.captureVisibleTab).not.toHaveBeenCalled();
+    });
+  });
+
   describe("automation mode gate", () => {
     it("blocks an automation command when automation mode is disabled", async () => {
       (browser.storage.local.get as jest.Mock).mockResolvedValue({

@@ -114,6 +114,11 @@ export const AVAILABLE_TOOLS: ToolInfo[] = [
     id: "evaluate-script",
     name: "Evaluate Script",
     description: "Allows the MCP server to run JavaScript in a page and read its result"
+  },
+  {
+    id: "take-screenshot",
+    name: "Take Screenshot",
+    description: "Allows the MCP server to capture a screenshot of a page (viewport, full page, or a single element)"
   }
 ];
 
@@ -140,6 +145,7 @@ export const COMMAND_TO_TOOL_ID: Record<ServerMessageRequest["cmd"], string> = {
   "type-text": "type-text",
   "press-key": "press-key",
   "evaluate-script": "evaluate-script",
+  "take-screenshot": "take-screenshot",
 };
 
 // Commands that actively control a page (navigation, input, scripting, page

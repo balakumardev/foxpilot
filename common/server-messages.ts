@@ -128,6 +128,19 @@ export interface EvaluateScriptServerMessage extends ServerMessageBase {
   args?: unknown[];
 }
 
+// Capture a screenshot of a tab. `fullPage` stitches the whole scrollable page;
+// `uid` (a snapshot uid) crops to just that element; otherwise the visible
+// viewport is captured. `format` defaults to png. The server-side `filePath`
+// option is intentionally NOT part of this message — the extension only returns
+// the image bytes, and the MCP server writes the file itself.
+export interface TakeScreenshotServerMessage extends ServerMessageBase {
+  cmd: "take-screenshot";
+  tabId: number;
+  fullPage?: boolean;
+  uid?: string;
+  format?: "png" | "jpeg";
+}
+
 export type ServerMessage =
   | OpenTabServerMessage
   | CloseTabsServerMessage
@@ -149,6 +162,7 @@ export type ServerMessage =
   | FillFormServerMessage
   | TypeTextServerMessage
   | PressKeyServerMessage
-  | EvaluateScriptServerMessage;
+  | EvaluateScriptServerMessage
+  | TakeScreenshotServerMessage;
 
 export type ServerMessageRequest = ServerMessage & { correlationId: string };
