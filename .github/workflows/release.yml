@@ -1,42 +1,136 @@
-name: Build and Release MCP Server as DXT
+name: Release
+
+# Release on every push to main: bump the version, tag, cut a GitHub Release
+# with the DXT + extension zip attached, publish the MCP server to npm, and
+# republish the Firefox add-on to AMO. The bot's own bump commit is tagged
+# "[skip ci]" so it never re-triggers this workflow.
 
 on:
-  release:
-    types: [published]
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
 
 jobs:
-  build-and-upload:
+  release:
     runs-on: ubuntu-latest
-    
+    if: "!contains(github.event.head_commit.message, '[skip ci]')"
+    outputs:
+      version: ${{ steps.version.outputs.VERSION }}
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-    
-    - name: Setup Node.js
-      uses: actions/setup-node@v4
-      with:
-        node-version: 22
-        cache: 'npm'
-    
-    - name: Install root dependencies
-      run: npm install
-    
-    - name: Install MCP server dependencies
-      run: npm install --prefix mcp-server
-    
-    - name: Build MCP server package
-      run: cd mcp-server && npm run build && npm run pack-dxt
-    
-    - name: Rename package file with version
-      run: |
-        cd mcp-server
-        mv mcp-server.dxt mcp-server-${{ github.event.release.tag_name }}.dxt
-    
-    - name: Upload package to release
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      run: |
-        gh release upload ${{ github.event.release.tag_name }} \
-          ./mcp-server/mcp-server-${{ github.event.release.tag_name }}.dxt \
-          --clobber
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Detect optional publish secrets
+        id: secrets
+        run: |
+          echo "npm=${{ secrets.NPM_TOKEN != '' }}" >> "$GITHUB_OUTPUT"
+
+      - name: Bump + sync version, tag, push
+        id: version
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          npm version patch --no-git-tag-version
+          VERSION=$(node -p "require('./package.json').version")
+          npm version "$VERSION" --no-git-tag-version --allow-same-version --prefix mcp-server
+          npm version "$VERSION" --no-git-tag-version --allow-same-version --prefix firefox-extension
+          for m in mcp-server/manifest.json firefox-extension/manifest.json; do
+            tmp=$(mktemp); jq --arg v "$VERSION" '.version = $v' "$m" > "$tmp" && mv "$tmp" "$m"
+          done
+          echo "VERSION=$VERSION" >> "$GITHUB_OUTPUT"
+          git add -A
+          git commit -m "v$VERSION [skip ci]"
+          git tag "v$VERSION"
+          git push origin HEAD:main --tags
+
+      - name: Build all projects
+        run: npm run build
+
+      - name: Package DXT (stable name for releases/latest)
+        run: |
+          cd mcp-server
+          npm run pack-dxt
+          mv mcp-server.dxt foxpilot-mcp.dxt
+
+      - name: Package unsigned extension zip
+        run: |
+          mkdir -p build/ext
+          cp -r firefox-extension/manifest.json firefox-extension/options.html \
+                firefox-extension/dist firefox-extension/assets build/ext/
+          (cd build/ext && zip -r -X ../../foxpilot-extension.zip . >/dev/null)
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.VERSION }}
+          generate_release_notes: true
+          files: |
+            mcp-server/foxpilot-mcp.dxt
+            foxpilot-extension.zip
+
+      - name: Publish MCP server to npm
+        if: steps.secrets.outputs.npm == 'true'
+        working-directory: mcp-server
+        run: npm publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  publish-amo:
+    # Republish the Firefox add-on to addons.mozilla.org on every commit.
+    # Skipped unless the AMO API credentials are configured.
+    needs: release
+    runs-on: ubuntu-latest
+    if: "!contains(github.event.head_commit.message, '[skip ci]')"
+    steps:
+      - name: Check AMO credentials
+        id: amo
+        run: echo "ok=${{ secrets.AMO_JWT_ISSUER != '' && secrets.AMO_JWT_SECRET != '' }}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        if: steps.amo.outputs.ok == 'true'
+        with:
+          ref: main
+
+      - uses: actions/setup-node@v4
+        if: steps.amo.outputs.ok == 'true'
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        if: steps.amo.outputs.ok == 'true'
+        run: npm install
+
+      - name: Build extension
+        if: steps.amo.outputs.ok == 'true'
+        run: npm run build --prefix firefox-extension
+
+      - name: Stage clean add-on directory
+        if: steps.amo.outputs.ok == 'true'
+        run: |
+          mkdir -p build/ext-amo
+          cp -r firefox-extension/manifest.json firefox-extension/options.html \
+                firefox-extension/dist firefox-extension/assets build/ext-amo/
+
+      - name: Sign + submit to AMO (listed)
+        if: steps.amo.outputs.ok == 'true'
+        run: |
+          npx --yes web-ext@latest sign \
+            --source-dir build/ext-amo \
+            --channel listed \
+            --api-key "$AMO_JWT_ISSUER" \
+            --api-secret "$AMO_JWT_SECRET"
+        env:
+          AMO_JWT_ISSUER: ${{ secrets.AMO_JWT_ISSUER }}
+          AMO_JWT_SECRET: ${{ secrets.AMO_JWT_SECRET }}

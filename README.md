@@ -1,6 +1,8 @@
 # FoxPilot
 
-[![Firefox Add-on](./.github/addon_badge.svg)](https://addons.mozilla.org/en-US/firefox/addon/foxpilot/)
+[![Firefox Add-on](https://img.shields.io/amo/v/foxpilot?label=Firefox%20Add-on&logo=firefoxbrowser)](https://addons.mozilla.org/en-US/firefox/addon/foxpilot/)
+[![npm](https://img.shields.io/npm/v/foxpilot-mcp?logo=npm&label=foxpilot-mcp)](https://www.npmjs.com/package/foxpilot-mcp)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
 
 An MCP server paired with a Firefox browser extension that lets AI assistants drive your browser — tab/window management, browsing history, and webpage content by default, plus a full opt-in **Automation Mode** for page interaction, scripting, screenshots, and console/network inspection.
 
@@ -58,10 +60,9 @@ FoxPilot is built to run safely against your **personal** Firefox profile rather
 
 ### Option 1: Install the Firefox and Claude Desktop extensions
 
-The Firefox extension / add-on is [available on addons.mozilla.org](https://addons.mozilla.org/en-US/firefox/addon/foxpilot/). You can also download and open the latest pre-built version from this GitHub repository: [foxpilot-1.5.0.xpi](https://github.com/balakumardev/foxpilot/releases/download/v1.5.0/foxpilot-1.5.0.xpi). Complete the installation based on the instructions in the "Manage extension" page, which will open automatically after installation.
+The Firefox extension / add-on is [available on addons.mozilla.org](https://addons.mozilla.org/en-US/firefox/addon/foxpilot/). You can also download the latest pre-built extension from this repository's [releases](https://github.com/balakumardev/foxpilot/releases/latest) ([foxpilot-extension.zip](https://github.com/balakumardev/foxpilot/releases/latest/download/foxpilot-extension.zip)). Complete the installation based on the instructions in the "Manage extension" page, which will open automatically after installation.
 
-The add-on's "Manage extension" page will include a link to the Claude Desktop DXT file. You can also download it here: [mcp-server-v1.5.1.dxt](
-https://github.com/balakumardev/foxpilot/releases/download/v1.5.1/mcp-server-v1.5.1.dxt). After downloading the file, open it or drag it into Claude Desktop's settings window. Make sure to enable the DXT extension after installing it. This will only work with the latest versions of Claude Desktop. If you wish to install the MCP server locally, see the MCP configuration below.
+The add-on's "Manage extension" page will include a link to the Claude Desktop DXT file. You can also download it here: [foxpilot-mcp.dxt](https://github.com/balakumardev/foxpilot/releases/latest/download/foxpilot-mcp.dxt). After downloading the file, open it or drag it into Claude Desktop's settings window. Make sure to enable the DXT extension after installing it. This will only work with the latest versions of Claude Desktop. If you wish to install the MCP server locally, see the MCP configuration below.
 
 ### Option 2: Build from code
 
@@ -88,7 +89,23 @@ If you prefer not to run the extension on your personal Firefox browser, an alte
 
 #### MCP Server configuration
 
-After installing the browser extension, add the following configuration to your mcpServers configuration (e.g. `claude_desktop_config.json` for Claude Desktop):
+After installing the browser extension, add FoxPilot to your `mcpServers` configuration (e.g. `claude_desktop_config.json` for Claude Desktop). The easiest way is via `npx` — no local checkout or build required:
+```json
+{
+    "mcpServers": {
+        "foxpilot": {
+            "command": "npx",
+            "args": ["-y", "foxpilot-mcp"],
+            "env": {
+                "EXTENSION_SECRET": "<secret_on_firefox_extension_options_page>",
+                "EXTENSION_PORT": "8089"
+            }
+        }
+    }
+}
+```
+
+Or, if you built from source, point `node` at the built server instead (replace `/path/to/repo`):
 ```json
 {
     "mcpServers": {
@@ -99,13 +116,12 @@ After installing the browser extension, add the following configuration to your 
             ],
             "env": {
                 "EXTENSION_SECRET": "<secret_on_firefox_extension_options_page>",
-                "EXTENSION_PORT": "8089" 
+                "EXTENSION_PORT": "8089"
             }
         }
     }
 }
 ```
-Replace `/path/to/repo` with the correct path.
 
 Set the EXTENSION_SECRET to the value shown on the extension's preferences page in Firefox (you can access it at `about:addons`). You can also set the EXTENSION_PORT environment variable to specify the port that the MCP server will use to communicate with the extension (default is 8089).
 

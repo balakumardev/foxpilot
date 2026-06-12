@@ -1,19 +1,26 @@
 {
-  "name": "mcp-server",
-  "version": "1.5.1",
+  "name": "foxpilot-mcp",
+  "version": "1.0.0",
+  "description": "FoxPilot MCP Server — drive Firefox from an MCP client (tabs, history, content + opt-in page automation)",
   "main": "dist/server.js",
+  "bin": {
+    "foxpilot-mcp": "dist/server.js"
+  },
+  "files": [
+    "dist"
+  ],
   "engines": {
     "node": ">=22.0.0"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "rm -rf dist && esbuild server.ts --bundle --platform=node --format=cjs --outfile=dist/server.js --banner:js='#!/usr/bin/env node' && esbuild broker-main.ts --bundle --platform=node --format=cjs --outfile=dist/broker-main.js",
     "start": "node dist/server.js",
     "broker": "node dist/broker-main.js",
     "pack-dxt": "npx @anthropic-ai/dxt pack",
+    "prepublishOnly": "npm run build",
     "test": "jest"
   },
   "license": "MIT",
-  "description": "FoxPilot MCP Server",
   "author": "Bala Kumar <mail@balakumar.dev> (https://github.com/balakumardev)",
   "homepage": "https://github.com/balakumardev/foxpilot#readme",
   "repository": {
@@ -23,16 +30,25 @@
   "bugs": {
     "url": "https://github.com/balakumardev/foxpilot/issues"
   },
-  "dependencies": {
+  "publishConfig": {
+    "access": "public"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "firefox",
+    "browser-automation",
+    "claude",
+    "foxpilot"
+  ],
+  "devDependencies": {
     "@foxpilot/common": "../common",
     "@modelcontextprotocol/sdk": "^1.7.0",
     "dayjs": "^1.11.13",
-    "readline": "^1.3.0",
-    "ws": "^8.18.1"
-  },
-  "devDependencies": {
+    "ws": "^8.18.1",
     "@types/jest": "^29.5.14",
     "@types/ws": "^8.18.0",
+    "esbuild": "0.25.1",
     "jest": "^30.0.4",
     "ts-jest": "^29.4.0",
     "typescript": "^5.8.2"
