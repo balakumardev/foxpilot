@@ -530,6 +530,162 @@ describe("performInputAction", () => {
     });
   });
 
+  describe("drag", () => {
+    it("dispatches dragstart on the source and drop/dragover on the target", () => {
+      document.body.innerHTML = `
+        <div id="from">Drag me</div>
+        <div id="to">Drop here</div>
+      `;
+      const from = document.querySelector("#from") as HTMLElement;
+      const to = document.querySelector("#to") as HTMLElement;
+      stamp(from, "e1");
+      stamp(to, "e2");
+
+      const onDragStart = jest.fn();
+      const onDragOver = jest.fn();
+      const onDrop = jest.fn();
+      from.addEventListener("dragstart", onDragStart);
+      to.addEventListener("dragover", onDragOver);
+      to.addEventListener("drop", onDrop);
+
+      const res = performInputAction(document, {
+        action: "drag",
+        fromUid: "e1",
+        toUid: "e2",
+      });
+
+      expect(res.ok).toBe(true);
+      expect(onDragStart).toHaveBeenCalled();
+      expect(onDragOver).toHaveBeenCalled();
+      expect(onDrop).toHaveBeenCalled();
+    });
+
+    it("dispatches the full drag sequence in order (dragstart→dragenter→dragover→drop→dragend)", () => {
+      document.body.innerHTML = `
+        <div id="from">Drag me</div>
+        <div id="to">Drop here</div>
+      `;
+      const from = document.querySelector("#from") as HTMLElement;
+      const to = document.querySelector("#to") as HTMLElement;
+      stamp(from, "e1");
+      stamp(to, "e2");
+
+      const seen: string[] = [];
+      ["dragstart", "dragend"].forEach((t) =>
+        from.addEventListener(t, () => seen.push(t))
+      );
+      ["dragenter", "dragover", "drop"].forEach((t) =>
+        to.addEventListener(t, () => seen.push(t))
+      );
+
+      performInputAction(document, {
+        action: "drag",
+        fromUid: "e1",
+        toUid: "e2",
+      });
+
+      // dragstart fires on the source before the target events, drop precedes
+      // dragend.
+      expect(seen).toEqual(
+        expect.arrayContaining([
+          "dragstart",
+          "dragenter",
+          "dragover",
+          "drop",
+          "dragend",
+        ])
+      );
+      expect(seen.indexOf("dragstart")).toBeLessThan(seen.indexOf("dragover"));
+      expect(seen.indexOf("drop")).toBeLessThan(seen.indexOf("dragend"));
+    });
+
+    it("dispatches a pointer/mouse fallback (mousedown on source, mouseup on target)", () => {
+      // Pointer-based DnD libraries listen for pointer/mouse events rather than
+      // HTML5 drag events. The drag action dispatches both.
+      document.body.innerHTML = `
+        <div id="from">Drag me</div>
+        <div id="to">Drop here</div>
+      `;
+      const from = document.querySelector("#from") as HTMLElement;
+      const to = document.querySelector("#to") as HTMLElement;
+      stamp(from, "e1");
+      stamp(to, "e2");
+
+      const onMouseDown = jest.fn();
+      const onMouseUp = jest.fn();
+      from.addEventListener("mousedown", onMouseDown);
+      to.addEventListener("mouseup", onMouseUp);
+
+      const res = performInputAction(document, {
+        action: "drag",
+        fromUid: "e1",
+        toUid: "e2",
+      });
+
+      expect(res.ok).toBe(true);
+      expect(onMouseDown).toHaveBeenCalled();
+      expect(onMouseUp).toHaveBeenCalled();
+    });
+
+    it("works against uids stamped by buildSnapshot", () => {
+      document.body.innerHTML = `
+        <button id="a">Source</button>
+        <button id="b">Target</button>
+      `;
+      buildSnapshot(document, { verbose: false, maxLength: 25000 });
+      const from = document.querySelector("#a") as HTMLElement;
+      const to = document.querySelector("#b") as HTMLElement;
+      const fromUid = from.getAttribute(UID_ATTR)!;
+      const toUid = to.getAttribute(UID_ATTR)!;
+      expect(fromUid).toMatch(/^e\d+$/);
+      expect(toUid).toMatch(/^e\d+$/);
+
+      const onDrop = jest.fn();
+      to.addEventListener("drop", onDrop);
+
+      const res = performInputAction(document, {
+        action: "drag",
+        fromUid,
+        toUid,
+      });
+
+      expect(res.ok).toBe(true);
+      expect(onDrop).toHaveBeenCalled();
+    });
+
+    it("returns ok:false naming the source uid when it is missing", () => {
+      document.body.innerHTML = `<div id="to">Drop here</div>`;
+      const to = document.querySelector("#to") as HTMLElement;
+      stamp(to, "e2");
+
+      const res = performInputAction(document, {
+        action: "drag",
+        fromUid: "eMissing",
+        toUid: "e2",
+      });
+
+      expect(res.ok).toBe(false);
+      expect(res.error).toContain("eMissing");
+      expect(res.error).toContain("fresh snapshot");
+    });
+
+    it("returns ok:false naming the target uid when it is missing", () => {
+      document.body.innerHTML = `<div id="from">Drag me</div>`;
+      const from = document.querySelector("#from") as HTMLElement;
+      stamp(from, "e1");
+
+      const res = performInputAction(document, {
+        action: "drag",
+        fromUid: "e1",
+        toUid: "eGone",
+      });
+
+      expect(res.ok).toBe(false);
+      expect(res.error).toContain("eGone");
+      expect(res.error).toContain("fresh snapshot");
+    });
+  });
+
   it("never throws — unexpected errors become ok:false", () => {
     // Passing a bogus args shape should be caught by the outer try/catch.
     const res = performInputAction(

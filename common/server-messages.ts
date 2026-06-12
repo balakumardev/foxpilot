@@ -121,6 +121,25 @@ export interface PressKeyServerMessage extends ServerMessageBase {
   modifiers?: string[];
 }
 
+// Drag the element identified by `fromUid` onto the element identified by
+// `toUid` (both snapshot uids). Implemented in the page world via synthetic
+// HTML5 drag events plus a pointer/mouse fallback — see action-script.ts.
+export interface DragElementServerMessage extends ServerMessageBase {
+  cmd: "drag-element";
+  tabId: number;
+  fromUid: string;
+  toUid: string;
+}
+
+// Resize the BROWSER WINDOW that hosts the given tab (not the page viewport).
+// A plain window operation — no page injection.
+export interface ResizeWindowServerMessage extends ServerMessageBase {
+  cmd: "resize-window";
+  tabId: number;
+  width: number;
+  height: number;
+}
+
 export interface EvaluateScriptServerMessage extends ServerMessageBase {
   cmd: "evaluate-script";
   tabId: number;
@@ -203,6 +222,8 @@ export type ServerMessage =
   | FillFormServerMessage
   | TypeTextServerMessage
   | PressKeyServerMessage
+  | DragElementServerMessage
+  | ResizeWindowServerMessage
   | EvaluateScriptServerMessage
   | UploadFileServerMessage
   | TakeScreenshotServerMessage

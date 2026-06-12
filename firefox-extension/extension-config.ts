@@ -111,6 +111,16 @@ export const AVAILABLE_TOOLS: ToolInfo[] = [
     description: "Allows the MCP server to press keyboard keys on a page"
   },
   {
+    id: "drag-element",
+    name: "Drag Element",
+    description: "Allows the MCP server to drag one element onto another on a page by snapshot uid"
+  },
+  {
+    id: "resize-window",
+    name: "Resize Window",
+    description: "Allows the MCP server to resize the browser window hosting a tab"
+  },
+  {
     id: "evaluate-script",
     name: "Evaluate Script",
     description: "Allows the MCP server to run JavaScript in a page and read its result"
@@ -159,6 +169,8 @@ export const COMMAND_TO_TOOL_ID: Record<ServerMessageRequest["cmd"], string> = {
   "fill-form": "fill-form",
   "type-text": "type-text",
   "press-key": "press-key",
+  "drag-element": "drag-element",
+  "resize-window": "resize-window",
   "evaluate-script": "evaluate-script",
   "upload-file": "upload-file",
   "take-screenshot": "take-screenshot",

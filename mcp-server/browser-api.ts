@@ -458,6 +458,38 @@ export class BrowserAPI {
     }
   }
 
+  async dragElement(
+    tabId: number,
+    fromUid: string,
+    toUid: string
+  ): Promise<void> {
+    const message = await this.sendTool<ActionResultExtensionMessage>({
+      cmd: "drag-element",
+      tabId,
+      fromUid,
+      toUid,
+    });
+    if (!message.ok) {
+      throw new Error(message.error ?? "Action failed");
+    }
+  }
+
+  async resizeWindow(
+    tabId: number,
+    width: number,
+    height: number
+  ): Promise<void> {
+    const message = await this.sendTool<ActionResultExtensionMessage>({
+      cmd: "resize-window",
+      tabId,
+      width,
+      height,
+    });
+    if (!message.ok) {
+      throw new Error(message.error ?? "Action failed");
+    }
+  }
+
   async evaluateScript(
     tabId: number,
     functionSource: string,

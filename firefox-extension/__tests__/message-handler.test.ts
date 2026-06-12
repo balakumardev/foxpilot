@@ -1822,4 +1822,183 @@ describe("MessageHandler", () => {
       ).rejects.toThrow("requires Automation Mode");
     });
   });
+
+  describe("drag-element command", () => {
+    const automationConfig = {
+      secret: "test-secret",
+      ports: [8089],
+      domainDenyList: [] as string[],
+      auditLog: [],
+      automationMode: true,
+    };
+
+    beforeEach(() => {
+      (browser.storage.local.get as jest.Mock).mockResolvedValue({
+        config: automationConfig,
+      });
+      (browser.tabs.get as jest.Mock).mockResolvedValue({
+        id: 123,
+        url: "https://example.com",
+      });
+      (browser.permissions.contains as jest.Mock).mockResolvedValue(true);
+    });
+
+    it("injects the drag action carrying both uids and replies action-result ok:true", async () => {
+      (browser.tabs.executeScript as jest.Mock).mockResolvedValue([
+        { ok: true },
+      ]);
+
+      const request: ServerMessageRequest = {
+        cmd: "drag-element",
+        tabId: 123,
+        fromUid: "e1",
+        toUid: "e2",
+        correlationId: "test-correlation-id",
+      };
+
+      await messageHandler.handleDecodedMessage(request);
+
+      const call = (browser.tabs.executeScript as jest.Mock).mock.calls[0][1];
+      expect(call.code).toContain('"action":"drag"');
+      expect(call.code).toContain('"fromUid":"e1"');
+      expect(call.code).toContain('"toUid":"e2"');
+      expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+        resource: "action-result",
+        correlationId: "test-correlation-id",
+        ok: true,
+        error: undefined,
+      });
+    });
+
+    it("replies action-result ok:false with the error when a uid is not found", async () => {
+      (browser.tabs.executeScript as jest.Mock).mockResolvedValue([
+        {
+          ok: false,
+          error:
+            "Element uid 'e9' not found — take a fresh snapshot (uids are reassigned each snapshot).",
+        },
+      ]);
+
+      const request: ServerMessageRequest = {
+        cmd: "drag-element",
+        tabId: 123,
+        fromUid: "e9",
+        toUid: "e2",
+        correlationId: "test-correlation-id",
+      };
+
+      await messageHandler.handleDecodedMessage(request);
+
+      expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+        resource: "action-result",
+        correlationId: "test-correlation-id",
+        ok: false,
+        error:
+          "Element uid 'e9' not found — take a fresh snapshot (uids are reassigned each snapshot).",
+      });
+    });
+
+    it("throws if the tab URL domain is in the deny list (no script injected)", async () => {
+      (browser.storage.local.get as jest.Mock).mockResolvedValue({
+        config: { ...automationConfig, domainDenyList: ["example.com"] },
+      });
+
+      const request: ServerMessageRequest = {
+        cmd: "drag-element",
+        tabId: 123,
+        fromUid: "e1",
+        toUid: "e2",
+        correlationId: "test-correlation-id",
+      };
+
+      await expect(
+        messageHandler.handleDecodedMessage(request)
+      ).rejects.toThrow("Domain in tab URL is in the deny list");
+      expect(browser.tabs.executeScript).not.toHaveBeenCalled();
+    });
+
+    it("is blocked when automation mode is disabled", async () => {
+      (browser.storage.local.get as jest.Mock).mockResolvedValue({
+        config: { secret: "test-secret", ports: [8089], automationMode: false },
+      });
+
+      const request: ServerMessageRequest = {
+        cmd: "drag-element",
+        tabId: 123,
+        fromUid: "e1",
+        toUid: "e2",
+        correlationId: "test-correlation-id",
+      };
+
+      await expect(
+        messageHandler.handleDecodedMessage(request)
+      ).rejects.toThrow("requires Automation Mode");
+      expect(browser.tabs.executeScript).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("resize-window command", () => {
+    const automationConfig = {
+      secret: "test-secret",
+      ports: [8089],
+      domainDenyList: [] as string[],
+      auditLog: [],
+      automationMode: true,
+    };
+
+    beforeEach(() => {
+      (browser.storage.local.get as jest.Mock).mockResolvedValue({
+        config: automationConfig,
+      });
+    });
+
+    it("resizes the tab's window and replies action-result ok:true", async () => {
+      (browser.tabs.get as jest.Mock).mockResolvedValue({
+        id: 123,
+        url: "https://example.com",
+        windowId: 5,
+      });
+      (browser.windows.update as jest.Mock).mockResolvedValue(undefined);
+
+      const request: ServerMessageRequest = {
+        cmd: "resize-window",
+        tabId: 123,
+        width: 1024,
+        height: 768,
+        correlationId: "test-correlation-id",
+      };
+
+      await messageHandler.handleDecodedMessage(request);
+
+      expect(browser.tabs.get).toHaveBeenCalledWith(123);
+      expect(browser.windows.update).toHaveBeenCalledWith(5, {
+        width: 1024,
+        height: 768,
+      });
+      expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+        resource: "action-result",
+        correlationId: "test-correlation-id",
+        ok: true,
+      });
+    });
+
+    it("is blocked when automation mode is disabled", async () => {
+      (browser.storage.local.get as jest.Mock).mockResolvedValue({
+        config: { secret: "test-secret", ports: [8089], automationMode: false },
+      });
+
+      const request: ServerMessageRequest = {
+        cmd: "resize-window",
+        tabId: 123,
+        width: 800,
+        height: 600,
+        correlationId: "test-correlation-id",
+      };
+
+      await expect(
+        messageHandler.handleDecodedMessage(request)
+      ).rejects.toThrow("requires Automation Mode");
+      expect(browser.windows.update).not.toHaveBeenCalled();
+    });
+  });
 });

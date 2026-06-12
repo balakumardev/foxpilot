@@ -28,6 +28,7 @@ export function performInputAction(
     | { action: "fill-form"; fields: { uid: string; value: string }[] }
     | { action: "type"; text: string; submit?: boolean }
     | { action: "press-key"; key: string; modifiers?: string[] }
+    | { action: "drag"; fromUid: string; toUid: string }
 ): { ok: boolean; error?: string } {
   const UID_ATTR = "data-bcmcp-uid";
 
@@ -285,6 +286,95 @@ export function performInputAction(
       }
       target.dispatchEvent(keyEvt("keydown", args.key, mods));
       target.dispatchEvent(keyEvt("keyup", args.key, mods));
+      return { ok: true };
+    }
+
+    if (args.action === "drag") {
+      const from = resolve(args.fromUid);
+      if (!from) {
+        return notFound(args.fromUid);
+      }
+      const to = resolve(args.toUid);
+      if (!to) {
+        return notFound(args.toUid);
+      }
+
+      scrollTo(from);
+
+      // A single DataTransfer is shared across the whole drag sequence so the
+      // payload set on dragstart survives through to drop, the way a real drag
+      // works. It may be unavailable (older engines / jsdom) — fall back to null.
+      let dt: DataTransfer | null;
+      try {
+        dt = win ? new win.DataTransfer() : null;
+      } catch (e) {
+        dt = null;
+      }
+
+      // Dispatch one HTML5 drag event of `type` on `target`. Prefer a real
+      // DragEvent (which carries the dataTransfer natively); when DragEvent is
+      // unavailable, fall back to a MouseEvent and best-effort attach the shared
+      // dataTransfer so listeners reading event.dataTransfer still see it.
+      function dragEvt(type: string, target: EventTarget): void {
+        let ev: Event;
+        const DragEventCtor = win
+          ? (win as { DragEvent?: typeof DragEvent }).DragEvent
+          : undefined;
+        if (DragEventCtor) {
+          ev = new DragEventCtor(type, {
+            bubbles: true,
+            cancelable: true,
+            dataTransfer: dt,
+          } as DragEventInit);
+        } else {
+          ev = new MouseEvent(type, { bubbles: true, cancelable: true });
+          try {
+            Object.defineProperty(ev, "dataTransfer", { value: dt });
+          } catch (e) {
+            /* some engines disallow redefining — listeners just won't see it */
+          }
+        }
+        target.dispatchEvent(ev);
+      }
+
+      // Pointer/mouse fallback for sites whose drag-and-drop is implemented with
+      // pointer events rather than the HTML5 drag API. Prefer PointerEvent; fall
+      // back to MouseEvent when it is unavailable.
+      function pointerEvt(type: string, target: EventTarget): void {
+        let ev: Event;
+        const PointerEventCtor = win
+          ? (win as { PointerEvent?: typeof PointerEvent }).PointerEvent
+          : undefined;
+        if (PointerEventCtor) {
+          ev = new PointerEventCtor(type, { bubbles: true, cancelable: true });
+        } else {
+          ev = new MouseEvent(type, { bubbles: true, cancelable: true });
+        }
+        target.dispatchEvent(ev);
+      }
+
+      // Press on the source.
+      pointerEvt("pointerdown", from);
+      from.dispatchEvent(mouseEvt("mousedown"));
+      // HTML5 drag handshake: start on the source, move over the target, drop on
+      // the target, then end on the source.
+      dragEvt("dragstart", from);
+      dragEvt("dragenter", to);
+      // Move over the target (both pointer-based and HTML5 listeners).
+      pointerEvt("pointermove", to);
+      to.dispatchEvent(mouseEvt("mousemove"));
+      dragEvt("dragover", to);
+      dragEvt("drop", to);
+      dragEvt("dragend", from);
+      // Release on the target.
+      pointerEvt("pointerup", to);
+      to.dispatchEvent(mouseEvt("mouseup"));
+
+      // NOTE: HTML5 drag-and-drop driven by synthetic events is best-effort.
+      // Real drags are produced by the OS/compositor, so some sites (especially
+      // those relying on native dataTransfer side effects or trusted events)
+      // will not respond to this. The pointer/mouse fallback covers many
+      // JS-based DnD libraries, but not all.
       return { ok: true };
     }
 

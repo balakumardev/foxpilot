@@ -282,6 +282,21 @@ export class MessageHandler {
           modifiers: req.modifiers,
         });
         break;
+      case "drag-element":
+        await this.runInputAction(req.correlationId, req.tabId, {
+          action: "drag",
+          fromUid: req.fromUid,
+          toUid: req.toUid,
+        });
+        break;
+      case "resize-window":
+        await this.resizeWindow(
+          req.correlationId,
+          req.tabId,
+          req.width,
+          req.height
+        );
+        break;
       case "evaluate-script":
         await this.evaluateScript(
           req.correlationId,
@@ -882,6 +897,29 @@ export class MessageHandler {
       resource: "tab-selected",
       correlationId,
       tabId,
+    });
+  }
+
+  // Resizes the BROWSER WINDOW that hosts the given tab — NOT the page viewport.
+  // This is a plain window operation (no page injection), so it replies with the
+  // shared action-result resource. If the tab has no resolvable windowId we skip
+  // the resize but still report success (the tab simply isn't in a normal
+  // window).
+  private async resizeWindow(
+    correlationId: string,
+    tabId: number,
+    width: number,
+    height: number
+  ): Promise<void> {
+    const tab = await browser.tabs.get(tabId);
+    if (tab.windowId != null) {
+      await browser.windows.update(tab.windowId, { width, height });
+    }
+
+    await this.client.sendResourceToServer({
+      resource: "action-result",
+      correlationId,
+      ok: true,
     });
   }
 

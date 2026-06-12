@@ -395,6 +395,40 @@ mcpServer.tool(
 );
 
 mcpServer.tool(
+  "drag-element",
+  "Drag one element onto another on a page (HTML5 drag-and-drop or sortable lists). Pass 'fromUid' (the element to drag) and 'toUid' (the drop target), both uids from a recent take-snapshot (e.g. e12). Note: drag-and-drop is simulated with synthetic events and is best-effort — some sites that require native/trusted drag events may not respond. If a uid is stale, this returns an error asking you to take a fresh snapshot.",
+  { tabId: z.number(), fromUid: z.string(), toUid: z.string() },
+  async ({ tabId, fromUid, toUid }) => {
+    await browserApi.dragElement(tabId, fromUid, toUid);
+    return {
+      content: [
+        {
+          type: "text",
+          text: `Dragged element ${fromUid} onto ${toUid}`,
+        },
+      ],
+    };
+  }
+);
+
+mcpServer.tool(
+  "resize-window",
+  "Resize the browser window that hosts a tab. Pass the tabId and the desired width and height in pixels. Note: this resizes the whole browser window (chrome included), not just the page viewport.",
+  { tabId: z.number(), width: z.number(), height: z.number() },
+  async ({ tabId, width, height }) => {
+    await browserApi.resizeWindow(tabId, width, height);
+    return {
+      content: [
+        {
+          type: "text",
+          text: `Resized window of tab ${tabId} to ${width}x${height}`,
+        },
+      ],
+    };
+  }
+);
+
+mcpServer.tool(
   "evaluate-script",
   'Evaluate a JavaScript function in the page\'s real world and return its result. Pass "function" as a function EXPRESSION string, e.g. "() => document.title" or "(sel) => document.querySelector(sel)?.textContent". The function runs in the page context (it can see the page\'s window, frameworks, and DOM), is awaited if it returns a promise, and its result is JSON-serialized back to you. Pass "args" to forward arguments to the function. Note: pages with a strict Content-Security-Policy may block injected scripts; if so this times out with a CSP error.',
   { tabId: z.number(), function: z.string(), args: z.array(z.any()).optional() },
