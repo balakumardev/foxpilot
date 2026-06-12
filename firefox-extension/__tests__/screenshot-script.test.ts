@@ -53,6 +53,19 @@ describe("planFullPageSteps", () => {
       planFullPageSteps({ scrollHeight: 5000, clientHeight: 0 })
     ).toEqual([0]);
   });
+
+  it("returns [0] for a non-finite scrollHeight (Infinity) without looping forever", () => {
+    // A bogus Infinity scrollHeight must not produce an unbounded loop / RangeError.
+    expect(
+      planFullPageSteps({ scrollHeight: Infinity, clientHeight: 1000 })
+    ).toEqual([0]);
+  });
+
+  it("returns [0] for a NaN scrollHeight", () => {
+    expect(
+      planFullPageSteps({ scrollHeight: NaN, clientHeight: 1000 })
+    ).toEqual([0]);
+  });
 });
 
 describe("stripDataUrlPrefix", () => {

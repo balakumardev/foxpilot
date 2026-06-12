@@ -759,22 +759,25 @@ export class MessageHandler {
 
     const offsets = planFullPageSteps(dims);
     const captures: { offsetY: number; dataUrl: string }[] = [];
-    for (const y of offsets) {
+    try {
+      for (const y of offsets) {
+        await browser.tabs.executeScript(tabId, {
+          code: `window.scrollTo(0, ${y})`,
+        });
+        // Wait for the browser to repaint at the new scroll position. Firefox also
+        // throttles captureVisibleTab to ~once per second, so this delay doubles as
+        // rate-limit breathing room.
+        await sleep(100);
+        const dataUrl = await this.captureWindow(windowId, format);
+        captures.push({ offsetY: y, dataUrl });
+      }
+    } finally {
+      // Restore the original scroll position even if a capture/scroll mid-loop
+      // throws, so we never leave the page scrolled away from where the user was.
       await browser.tabs.executeScript(tabId, {
-        code: `window.scrollTo(0, ${y})`,
+        code: `window.scrollTo(0, ${dims.originalScrollY})`,
       });
-      // Wait for the browser to repaint at the new scroll position. Firefox also
-      // throttles captureVisibleTab to ~once per second, so this delay doubles as
-      // rate-limit breathing room.
-      await sleep(100);
-      const dataUrl = await this.captureWindow(windowId, format);
-      captures.push({ offsetY: y, dataUrl });
     }
-
-    // Restore the original scroll position.
-    await browser.tabs.executeScript(tabId, {
-      code: `window.scrollTo(0, ${dims.originalScrollY})`,
-    });
 
     return await stitchFullPage(
       captures,

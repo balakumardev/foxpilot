@@ -133,6 +133,36 @@ describe("buildEvalPageScript", () => {
     document.documentElement.removeAttribute(attr);
     el.remove();
   });
+
+  it("maps a top-level undefined return to value:null (not the string 'undefined')", async () => {
+    // JSON.stringify(undefined) === undefined, so JSON.parse(undefined) throws.
+    // The builder must special-case undefined BEFORE the JSON round-trip,
+    // otherwise the catch turns it into the string "undefined".
+    document.documentElement.removeAttribute(attr);
+    const fn = "() => undefined";
+    const code = buildEvalPageScript(fn, [], attr);
+
+    const el = document.createElement("script");
+    el.textContent = code;
+    document.head.appendChild(el);
+    await Promise.resolve();
+    await new Promise((r) => setTimeout(r, 0));
+
+    const raw = document.documentElement.getAttribute(attr);
+    expect(raw).not.toBeNull();
+    expect(JSON.parse(raw as string)).toEqual({ ok: true, value: null });
+    document.documentElement.removeAttribute(attr);
+    el.remove();
+  });
+
+  it("escapes a function source containing </script> and a quote safely", () => {
+    const nasty = `() => { var s = "</script>"; return s; }`;
+    const code = buildEvalPageScript(nasty, [], attr);
+    // The `</` sequence is escaped to `<\/`, so a literal closing tag can never
+    // appear verbatim (a JS parser reads `<\/` as `</`).
+    expect(code).not.toContain("</script>");
+    expect(code).toContain("<\\/script>");
+  });
 });
 
 describe("buildUploadPageScript", () => {

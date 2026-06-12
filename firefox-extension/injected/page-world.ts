@@ -124,10 +124,12 @@ export function buildEvalPageScript(
     "if (__result && typeof __result.then === 'function') {" +
     "__result = await __result;" +
     "}" +
+    // Handle undefined BEFORE the JSON round-trip: JSON.stringify(undefined) is
+    // undefined, so JSON.parse(undefined) would throw and fall into the catch,
+    // turning a top-level `undefined` return into the string "undefined".
     "var __out;" +
-    "try { __out = JSON.parse(JSON.stringify(__result)); }" +
-    "catch (e) { __out = String(__result); }" +
-    "if (__out === undefined) { __out = null; }" +
+    "if (__result === undefined) { __out = null; }" +
+    "else { try { __out = JSON.parse(JSON.stringify(__result)); } catch (e) { __out = String(__result); } }" +
     "document.documentElement.setAttribute(__attr, JSON.stringify({ ok:true, value: __out }));" +
     "} catch (err) {" +
     "document.documentElement.setAttribute(__attr, JSON.stringify({ ok:false, error: String(err && err.message || err) }));" +

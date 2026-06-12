@@ -54,6 +54,14 @@ export function planFullPageSteps(dims: {
   scrollHeight: number;
   clientHeight: number;
 }): number[] {
+  // Guard a bogus scrollHeight (Infinity/NaN) BEFORE flooring: floor(Infinity)
+  // is Infinity and floor(NaN) is NaN, either of which makes the loop below run
+  // forever / RangeError on push. A non-finite or non-positive page height means
+  // "nothing meaningful to tile" — capture a single frame at the top.
+  if (!Number.isFinite(dims.scrollHeight) || dims.scrollHeight <= 0) {
+    return [0];
+  }
+
   const scrollHeight = Math.max(0, Math.floor(dims.scrollHeight));
   const clientHeight = Math.floor(dims.clientHeight);
 
