@@ -353,9 +353,14 @@ export class BrokerServer {
     this.httpHandlers.push(handler);
   }
 
-  /** Register the long-poll request sink (called when no WS extension is connected). */
+  /** Register (or clear) the long-poll request sink used when no WS extension is connected. */
   setLongPollSink(sink: ((req: ServerMessageRequest) => boolean) | null): void {
     this.longPollSink = sink;
+    if (sink) {
+      this.clearIdleTimer();
+    } else {
+      this.maybeScheduleIdle();
+    }
   }
 
   /** Feed an extension message received over the long-poll transport into the core. */
@@ -363,13 +368,10 @@ export class BrokerServer {
     this.onExtensionMessage(raw);
   }
 
-  /** Mark the long-poll transport active/inactive for idle accounting. */
-  noteLongPollActivity(active: boolean): void {
-    if (active) {
-      this.clearIdleTimer();
-    } else {
-      this.maybeScheduleIdle();
-    }
+  /** Fail in-flight requests when the long-poll extension is detected gone. */
+  onLongPollExtensionGone(): void {
+    this.core.onExtensionDisconnect();
+    this.maybeScheduleIdle();
   }
 
   // ---- idle shutdown ----

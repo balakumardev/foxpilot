@@ -7,6 +7,7 @@
  */
 
 import { BrokerServer } from "./broker";
+import { BrokerLongPoll } from "./broker-longpoll";
 
 const WS_DEFAULT_PORT = 8089;
 
@@ -41,6 +42,9 @@ async function main() {
       process.exit(0);
     },
   });
+
+  // Enable the HTTP long-poll fallback transport for the extension leg.
+  new BrokerLongPoll(server, secret);
 
   try {
     await server.listen();
