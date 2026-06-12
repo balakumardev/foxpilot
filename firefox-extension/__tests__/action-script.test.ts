@@ -37,6 +37,16 @@ describe("performInputAction", () => {
       expect(onClick).toHaveBeenCalled();
     });
 
+    it("focuses the clicked element so a following type-text targets it", () => {
+      document.body.innerHTML = `<input type="text" />`;
+      const input = document.querySelector("input")!;
+      stamp(input, "e1");
+
+      performInputAction(document, { action: "click", uid: "e1" });
+
+      expect(document.activeElement).toBe(input);
+    });
+
     it("fires the click listener EXACTLY once (no double-activation)", () => {
       // Regression: the click path previously dispatched a synthetic `click`
       // MouseEvent AND called el.click(), activating the element twice. A

@@ -75,6 +75,14 @@ export function performInputAction(
       el.dispatchEvent(mouseEvt("pointerdown"));
       el.dispatchEvent(mouseEvt("mousedown"));
       el.dispatchEvent(mouseEvt("mouseup"));
+      // Real clicks move focus to the clicked element so a following type-text
+      // targets it. Synthetic el.click() does NOT move focus, so do it
+      // explicitly (no-op for non-focusable elements).
+      try {
+        (el as { focus?: () => void }).focus?.();
+      } catch (e) {
+        /* not focusable — ignore */
+      }
       // Exactly ONE activation: el.click() fires the element's `click` event
       // AND performs the default action (follows links, toggles checkboxes,
       // submits forms). We deliberately do NOT also dispatch a synthetic
