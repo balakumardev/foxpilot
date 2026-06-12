@@ -124,6 +124,11 @@ export const AVAILABLE_TOOLS: ToolInfo[] = [
     id: "take-screenshot",
     name: "Take Screenshot",
     description: "Allows the MCP server to capture a screenshot of a page (viewport, full page, or a single element)"
+  },
+  {
+    id: "get-console-messages",
+    name: "Get Console Messages",
+    description: "Allows the MCP server to read a page's captured console output and uncaught errors"
   }
 ];
 
@@ -152,6 +157,7 @@ export const COMMAND_TO_TOOL_ID: Record<ServerMessageRequest["cmd"], string> = {
   "evaluate-script": "evaluate-script",
   "upload-file": "upload-file",
   "take-screenshot": "take-screenshot",
+  "get-console-messages": "get-console-messages",
 };
 
 // Commands that actively control a page (navigation, input, scripting, page

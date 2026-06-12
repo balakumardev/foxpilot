@@ -117,6 +117,23 @@ export interface ScreenshotExtensionMessage extends ExtensionMessageBase {
   base64: string;
 }
 
+// A single captured console entry. `level` is the console method ("log",
+// "info", "warn", "error", "debug") or "error" for uncaught errors/rejections.
+// `text` is the args stringified and joined (truncated). `timestamp` is the
+// epoch ms at which the entry was buffered in the background.
+export interface ConsoleEntry {
+  level: string;
+  text: string;
+  timestamp: number;
+}
+
+// Reply for the get-console-messages tool: the buffered console entries for the
+// requested tab (already limited to the most-recent N when a limit was given).
+export interface ConsoleMessagesExtensionMessage extends ExtensionMessageBase {
+  resource: "console-messages";
+  entries: ConsoleEntry[];
+}
+
 export type ExtensionMessage =
   | TabContentExtensionMessage
   | TabsExtensionMessage
@@ -133,7 +150,8 @@ export type ExtensionMessage =
   | WaitForTextResultExtensionMessage
   | ActionResultExtensionMessage
   | EvalResultExtensionMessage
-  | ScreenshotExtensionMessage;
+  | ScreenshotExtensionMessage
+  | ConsoleMessagesExtensionMessage;
 
 export interface ExtensionError {
   correlationId: string;

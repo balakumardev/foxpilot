@@ -477,6 +477,31 @@ mcpServer.tool(
 );
 
 mcpServer.tool(
+  "get-console-messages",
+  "Get the console output (console.log/info/warn/error/debug) and uncaught errors captured for a browser tab. Requires Automation Mode, and only captures pages loaded AFTER Automation Mode was enabled (reload the page if you see nothing). Pass an optional 'limit' to return only the most recent N entries.",
+  { tabId: z.number(), limit: z.number().optional() },
+  async ({ tabId, limit }) => {
+    const entries = await browserApi.getConsoleMessages(tabId, limit);
+    if (entries.length === 0) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: "No console messages captured (Automation Mode must be on before the page loads).",
+          },
+        ],
+      };
+    }
+    return {
+      content: entries.map((entry) => ({
+        type: "text",
+        text: `[${entry.level}] ${entry.text}`,
+      })),
+    };
+  }
+);
+
+mcpServer.tool(
   "group-browser-tabs",
   "Organize opened browser tabs in a new tab group",
   {

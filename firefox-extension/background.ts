@@ -3,6 +3,7 @@ import { LongPollClient } from "./longpoll-client";
 import { ExtensionTransport } from "./transport";
 import { MessageHandler } from "./message-handler";
 import { getConfig, generateSecret, getTransport } from "./extension-config";
+import { initConsoleCapture } from "./console-capture";
 
 function initClient(port: number, secret: string, transport: "websocket" | "longpoll") {
   const client: ExtensionTransport =
@@ -52,6 +53,11 @@ initExtension()
       console.error("No ports configured in extension config");
       return;
     }
+    // Start background console capture once (browser-wide, not per-port). It
+    // registers its runtime/tabs/storage listeners and, if Automation Mode is
+    // on, the document_start page-console capture script.
+    initConsoleCapture();
+
     const transport = await getTransport();
     for (const port of portList) {
       initClient(port, secret, transport);

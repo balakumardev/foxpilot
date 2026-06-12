@@ -156,6 +156,17 @@ export interface TakeScreenshotServerMessage extends ServerMessageBase {
   format?: "png" | "jpeg";
 }
 
+// Read the console output captured for a tab. Page console output and uncaught
+// errors are invisible to a WebExtension, so the extension captures them via an
+// injected page-world wrapper (registered only while Automation Mode is on) and
+// keeps a per-tab ring buffer. This is a pure buffer read — no page scripting.
+// `limit` caps the number of most-recent entries returned (default: all).
+export interface GetConsoleMessagesServerMessage extends ServerMessageBase {
+  cmd: "get-console-messages";
+  tabId: number;
+  limit?: number;
+}
+
 export type ServerMessage =
   | OpenTabServerMessage
   | CloseTabsServerMessage
@@ -179,6 +190,7 @@ export type ServerMessage =
   | PressKeyServerMessage
   | EvaluateScriptServerMessage
   | UploadFileServerMessage
-  | TakeScreenshotServerMessage;
+  | TakeScreenshotServerMessage
+  | GetConsoleMessagesServerMessage;
 
 export type ServerMessageRequest = ServerMessage & { correlationId: string };

@@ -16,6 +16,7 @@ import {
   stripDataUrlPrefix,
   type ImageFormat,
 } from "./injected/screenshot-script";
+import { getConsoleEntries } from "./console-capture";
 
 // The argument shape accepted by the injected `performInputAction` function.
 type InputActionArgs = Parameters<typeof performInputAction>[1];
@@ -301,6 +302,9 @@ export class MessageHandler {
           uid: req.uid,
           format: req.format,
         });
+        break;
+      case "get-console-messages":
+        await this.getConsoleMessages(req.correlationId, req.tabId, req.limit);
         break;
       default:
         const _exhaustiveCheck: never = req;
@@ -880,6 +884,24 @@ export class MessageHandler {
       resource: "active-tab",
       correlationId,
       tab: tabs[0] ?? null,
+    });
+  }
+
+  // Reads the per-tab console ring buffer populated by the document_start
+  // capture script (registered while Automation Mode is on). This is a pure
+  // in-memory read — no page scripting, no permission prompt. If nothing was
+  // captured (e.g. the page loaded before Automation Mode was enabled), the
+  // buffer is empty and an empty list is returned.
+  private async getConsoleMessages(
+    correlationId: string,
+    tabId: number,
+    limit?: number
+  ): Promise<void> {
+    const entries = getConsoleEntries(tabId, limit);
+    await this.client.sendResourceToServer({
+      resource: "console-messages",
+      correlationId,
+      entries,
     });
   }
 

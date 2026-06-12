@@ -35,6 +35,8 @@ import type {
   ActionResultExtensionMessage,
   EvalResultExtensionMessage,
   ScreenshotExtensionMessage,
+  ConsoleEntry,
+  ConsoleMessagesExtensionMessage,
 } from "@browser-control-mcp/common";
 import { BrokerClientFrame, BrokerServerFrame } from "./broker-protocol";
 import { createSignature, verifySignature } from "./signing";
@@ -500,6 +502,18 @@ export class BrowserAPI {
       uid: opts.uid,
       format: opts.format,
     });
+  }
+
+  async getConsoleMessages(
+    tabId: number,
+    limit?: number
+  ): Promise<ConsoleEntry[]> {
+    const message = await this.sendTool<ConsoleMessagesExtensionMessage>({
+      cmd: "get-console-messages",
+      tabId,
+      limit,
+    });
+    return message.entries;
   }
 }
 

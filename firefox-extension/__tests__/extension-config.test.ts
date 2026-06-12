@@ -82,6 +82,7 @@ describe("automation command predicates", () => {
     expect(requiresAutomationMode("take-snapshot")).toBe(true);
     expect(requiresAutomationMode("click-element")).toBe(true);
     expect(requiresAutomationMode("evaluate-script")).toBe(true);
+    expect(requiresAutomationMode("get-console-messages")).toBe(true);
   });
 
   it("does not flag existing or benign read commands", () => {

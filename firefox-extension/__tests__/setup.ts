@@ -15,6 +15,10 @@ const mockBrowser = {
     goForward: jest.fn(),
     reload: jest.fn(),
     captureVisibleTab: jest.fn(),
+    onRemoved: {
+      addListener: jest.fn(),
+      removeListener: jest.fn(),
+    },
   },
   tabGroups: {
     update: jest.fn(),
@@ -34,12 +38,23 @@ const mockBrowser = {
         get: jest.fn(),
         set: jest.fn(),
     },
+    onChanged: {
+      addListener: jest.fn(),
+      removeListener: jest.fn(),
+    },
   },
   permissions: {
     contains: jest.fn(),
   },
   runtime: {
     getURL: jest.fn(),
+    onMessage: {
+      addListener: jest.fn(),
+      removeListener: jest.fn(),
+    },
+  },
+  contentScripts: {
+    register: jest.fn(),
   },
 };
 

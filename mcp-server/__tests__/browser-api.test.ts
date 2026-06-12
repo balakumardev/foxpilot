@@ -69,6 +69,17 @@ describe("BrowserAPI over the broker", () => {
               tabs: [{ id: 1, url: "https://a.com", title: "A" }],
             },
           };
+        case "get-console-messages":
+          return {
+            payload: {
+              resource: "console-messages",
+              correlationId: req.correlationId,
+              entries: [
+                { level: "log", text: "hello", timestamp: 1 },
+                { level: "error", text: "boom", timestamp: 2 },
+              ],
+            },
+          };
         case "find-highlight":
           return { error: "boom" };
         default:
@@ -99,6 +110,14 @@ describe("BrowserAPI over the broker", () => {
   it("getTabList returns the extension's tab list", async () => {
     const tabs = await api.getTabList();
     expect(tabs).toEqual([{ id: 1, url: "https://a.com", title: "A" }]);
+  });
+
+  it("getConsoleMessages returns the extension's buffered entries", async () => {
+    const entries = await api.getConsoleMessages(9);
+    expect(entries).toEqual([
+      { level: "log", text: "hello", timestamp: 1 },
+      { level: "error", text: "boom", timestamp: 2 },
+    ]);
   });
 
   it("propagates an extension error as a rejection", async () => {

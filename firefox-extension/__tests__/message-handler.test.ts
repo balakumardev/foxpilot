@@ -2,6 +2,7 @@ import { MessageHandler } from "../message-handler";
 import { WebsocketClient } from "../client";
 import type { ServerMessageRequest } from "@browser-control-mcp/common";
 import { ExtensionConfig } from "../extension-config";
+import { addConsoleEntry, clearConsoleEntries } from "../console-capture";
 
 // Mock the WebsocketClient
 jest.mock("../client", () => {
@@ -1594,6 +1595,105 @@ describe("MessageHandler", () => {
       expect(browser.tabs.create).toHaveBeenCalledWith({
         url: "https://example.com",
       });
+    });
+  });
+
+  describe("get-console-messages command", () => {
+    const automationConfig = {
+      secret: "test-secret",
+      ports: [8089],
+      domainDenyList: [] as string[],
+      auditLog: [],
+      automationMode: true,
+    };
+
+    beforeEach(() => {
+      (browser.storage.local.get as jest.Mock).mockResolvedValue({
+        config: automationConfig,
+      });
+      // Start each test from an empty buffer for the tabs we use.
+      clearConsoleEntries(700);
+      clearConsoleEntries(701);
+    });
+
+    it("replies with the tab's buffered console entries when automation mode is enabled", async () => {
+      addConsoleEntry(700, { level: "log", text: "hello", timestamp: 10 });
+      addConsoleEntry(700, { level: "error", text: "boom", timestamp: 20 });
+
+      const request: ServerMessageRequest = {
+        cmd: "get-console-messages",
+        tabId: 700,
+        correlationId: "test-correlation-id",
+      };
+
+      await messageHandler.handleDecodedMessage(request);
+
+      expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+        resource: "console-messages",
+        correlationId: "test-correlation-id",
+        entries: [
+          { level: "log", text: "hello", timestamp: 10 },
+          { level: "error", text: "boom", timestamp: 20 },
+        ],
+      });
+      // It is a pure buffer read — no page scripting.
+      expect(browser.tabs.executeScript).not.toHaveBeenCalled();
+    });
+
+    it("respects the limit, returning only the most-recent entries", async () => {
+      for (let i = 0; i < 5; i++) {
+        addConsoleEntry(701, { level: "log", text: `m${i}`, timestamp: i });
+      }
+
+      const request: ServerMessageRequest = {
+        cmd: "get-console-messages",
+        tabId: 701,
+        limit: 2,
+        correlationId: "test-correlation-id",
+      };
+
+      await messageHandler.handleDecodedMessage(request);
+
+      expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+        resource: "console-messages",
+        correlationId: "test-correlation-id",
+        entries: [
+          { level: "log", text: "m3", timestamp: 3 },
+          { level: "log", text: "m4", timestamp: 4 },
+        ],
+      });
+    });
+
+    it("replies with an empty list when nothing was captured for the tab", async () => {
+      const request: ServerMessageRequest = {
+        cmd: "get-console-messages",
+        tabId: 700,
+        correlationId: "test-correlation-id",
+      };
+
+      await messageHandler.handleDecodedMessage(request);
+
+      expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+        resource: "console-messages",
+        correlationId: "test-correlation-id",
+        entries: [],
+      });
+    });
+
+    it("is blocked when automation mode is disabled", async () => {
+      (browser.storage.local.get as jest.Mock).mockResolvedValue({
+        config: { secret: "test-secret", ports: [8089], automationMode: false },
+      });
+
+      const request: ServerMessageRequest = {
+        cmd: "get-console-messages",
+        tabId: 700,
+        correlationId: "test-correlation-id",
+      };
+
+      await expect(
+        messageHandler.handleDecodedMessage(request)
+      ).rejects.toThrow("requires Automation Mode");
     });
   });
 });
