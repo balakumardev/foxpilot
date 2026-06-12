@@ -28,6 +28,10 @@ import type {
   FindHighlightExtensionMessage,
   TabGroupCreatedExtensionMessage,
   SnapshotExtensionMessage,
+  NavigatedExtensionMessage,
+  TabSelectedExtensionMessage,
+  ActiveTabExtensionMessage,
+  WaitForTextResultExtensionMessage,
 } from "@browser-control-mcp/common";
 import { BrokerClientFrame, BrokerServerFrame } from "./broker-protocol";
 import { createSignature, verifySignature } from "./signing";
@@ -312,6 +316,58 @@ export class BrowserAPI {
       tabId,
       verbose,
     });
+  }
+
+  async navigateTab(
+    tabId: number,
+    url: string
+  ): Promise<NavigatedExtensionMessage> {
+    return await this.sendTool<NavigatedExtensionMessage>({
+      cmd: "navigate-tab",
+      tabId,
+      url,
+    });
+  }
+
+  async navigatePageHistory(
+    tabId: number,
+    direction: "back" | "forward" | "reload",
+    bypassCache?: boolean
+  ): Promise<NavigatedExtensionMessage> {
+    return await this.sendTool<NavigatedExtensionMessage>({
+      cmd: "navigate-page-history",
+      tabId,
+      direction,
+      bypassCache,
+    });
+  }
+
+  async selectTab(tabId: number): Promise<TabSelectedExtensionMessage> {
+    return await this.sendTool<TabSelectedExtensionMessage>({
+      cmd: "select-tab",
+      tabId,
+    });
+  }
+
+  async getActiveTab(): Promise<BrowserTab | null> {
+    const message = await this.sendTool<ActiveTabExtensionMessage>({
+      cmd: "get-active-tab",
+    });
+    return message.tab;
+  }
+
+  async waitForText(
+    tabId: number,
+    text: string,
+    timeoutMs?: number
+  ): Promise<boolean> {
+    const message = await this.sendTool<WaitForTextResultExtensionMessage>({
+      cmd: "wait-for-text",
+      tabId,
+      text,
+      timeoutMs,
+    });
+    return message.found;
   }
 }
 

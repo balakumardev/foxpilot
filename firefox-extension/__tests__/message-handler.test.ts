@@ -621,6 +621,392 @@ describe("MessageHandler", () => {
     });
   });
 
+  describe("navigate-tab command", () => {
+    const automationConfig = {
+      secret: "test-secret",
+      ports: [8089],
+      domainDenyList: [] as string[],
+      auditLog: [],
+      automationMode: true,
+    };
+
+    it("loads an https URL in the tab and replies navigated", async () => {
+      (browser.storage.local.get as jest.Mock).mockResolvedValue({
+        config: automationConfig,
+      });
+      (browser.tabs.get as jest.Mock).mockResolvedValue({
+        id: 123,
+        url: "https://old.com",
+      });
+      (browser.tabs.update as jest.Mock).mockResolvedValue(undefined);
+
+      const request: ServerMessageRequest = {
+        cmd: "navigate-tab",
+        tabId: 123,
+        url: "https://example.com",
+        correlationId: "test-correlation-id",
+      };
+
+      await messageHandler.handleDecodedMessage(request);
+
+      expect(browser.tabs.update).toHaveBeenCalledWith(123, {
+        url: "https://example.com",
+      });
+      expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+        resource: "navigated",
+        correlationId: "test-correlation-id",
+        tabId: 123,
+        url: "https://example.com",
+      });
+    });
+
+    it("allows http for localhost", async () => {
+      (browser.storage.local.get as jest.Mock).mockResolvedValue({
+        config: automationConfig,
+      });
+      (browser.tabs.update as jest.Mock).mockResolvedValue(undefined);
+
+      const request: ServerMessageRequest = {
+        cmd: "navigate-tab",
+        tabId: 123,
+        url: "http://localhost:3000/",
+        correlationId: "test-correlation-id",
+      };
+
+      await messageHandler.handleDecodedMessage(request);
+
+      expect(browser.tabs.update).toHaveBeenCalledWith(123, {
+        url: "http://localhost:3000/",
+      });
+    });
+
+    it("rejects a non-localhost http URL", async () => {
+      (browser.storage.local.get as jest.Mock).mockResolvedValue({
+        config: automationConfig,
+      });
+
+      const request: ServerMessageRequest = {
+        cmd: "navigate-tab",
+        tabId: 123,
+        url: "http://example.com",
+        correlationId: "test-correlation-id",
+      };
+
+      await expect(
+        messageHandler.handleDecodedMessage(request)
+      ).rejects.toThrow("Invalid URL (must be https, or http for localhost)");
+      expect(browser.tabs.update).not.toHaveBeenCalled();
+    });
+
+    it("throws when the URL domain is in the deny list", async () => {
+      (browser.storage.local.get as jest.Mock).mockResolvedValue({
+        config: { ...automationConfig, domainDenyList: ["example.com"] },
+      });
+
+      const request: ServerMessageRequest = {
+        cmd: "navigate-tab",
+        tabId: 123,
+        url: "https://example.com",
+        correlationId: "test-correlation-id",
+      };
+
+      await expect(
+        messageHandler.handleDecodedMessage(request)
+      ).rejects.toThrow("Domain in user defined deny list");
+      expect(browser.tabs.update).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("navigate-page-history command", () => {
+    const automationConfig = {
+      secret: "test-secret",
+      ports: [8089],
+      domainDenyList: [] as string[],
+      auditLog: [],
+      automationMode: true,
+    };
+
+    beforeEach(() => {
+      (browser.storage.local.get as jest.Mock).mockResolvedValue({
+        config: automationConfig,
+      });
+      (browser.tabs.get as jest.Mock).mockResolvedValue({
+        id: 123,
+        url: "https://example.com",
+      });
+    });
+
+    it("goes back and replies navigated", async () => {
+      (browser.tabs.goBack as jest.Mock).mockResolvedValue(undefined);
+
+      const request: ServerMessageRequest = {
+        cmd: "navigate-page-history",
+        tabId: 123,
+        direction: "back",
+        correlationId: "test-correlation-id",
+      };
+
+      await messageHandler.handleDecodedMessage(request);
+
+      expect(browser.tabs.goBack).toHaveBeenCalledWith(123);
+      expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+        resource: "navigated",
+        correlationId: "test-correlation-id",
+        tabId: 123,
+      });
+    });
+
+    it("goes forward and replies navigated", async () => {
+      (browser.tabs.goForward as jest.Mock).mockResolvedValue(undefined);
+
+      const request: ServerMessageRequest = {
+        cmd: "navigate-page-history",
+        tabId: 123,
+        direction: "forward",
+        correlationId: "test-correlation-id",
+      };
+
+      await messageHandler.handleDecodedMessage(request);
+
+      expect(browser.tabs.goForward).toHaveBeenCalledWith(123);
+      expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+        resource: "navigated",
+        correlationId: "test-correlation-id",
+        tabId: 123,
+      });
+    });
+
+    it("reloads with bypassCache and replies navigated", async () => {
+      (browser.tabs.reload as jest.Mock).mockResolvedValue(undefined);
+
+      const request: ServerMessageRequest = {
+        cmd: "navigate-page-history",
+        tabId: 123,
+        direction: "reload",
+        bypassCache: true,
+        correlationId: "test-correlation-id",
+      };
+
+      await messageHandler.handleDecodedMessage(request);
+
+      expect(browser.tabs.reload).toHaveBeenCalledWith(123, {
+        bypassCache: true,
+      });
+      expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+        resource: "navigated",
+        correlationId: "test-correlation-id",
+        tabId: 123,
+      });
+    });
+
+    it("reloads without bypassCache defaulting to false", async () => {
+      (browser.tabs.reload as jest.Mock).mockResolvedValue(undefined);
+
+      const request: ServerMessageRequest = {
+        cmd: "navigate-page-history",
+        tabId: 123,
+        direction: "reload",
+        correlationId: "test-correlation-id",
+      };
+
+      await messageHandler.handleDecodedMessage(request);
+
+      expect(browser.tabs.reload).toHaveBeenCalledWith(123, {
+        bypassCache: false,
+      });
+    });
+  });
+
+  describe("select-tab command", () => {
+    const automationConfig = {
+      secret: "test-secret",
+      ports: [8089],
+      domainDenyList: [] as string[],
+      auditLog: [],
+      automationMode: true,
+    };
+
+    it("activates the tab and focuses its window, then replies tab-selected", async () => {
+      (browser.storage.local.get as jest.Mock).mockResolvedValue({
+        config: automationConfig,
+      });
+      (browser.tabs.get as jest.Mock).mockResolvedValue({
+        id: 123,
+        url: "https://example.com",
+        windowId: 5,
+      });
+      (browser.tabs.update as jest.Mock).mockResolvedValue(undefined);
+      (browser.windows.update as jest.Mock).mockResolvedValue(undefined);
+
+      const request: ServerMessageRequest = {
+        cmd: "select-tab",
+        tabId: 123,
+        correlationId: "test-correlation-id",
+      };
+
+      await messageHandler.handleDecodedMessage(request);
+
+      expect(browser.tabs.update).toHaveBeenCalledWith(123, { active: true });
+      expect(browser.windows.update).toHaveBeenCalledWith(5, {
+        focused: true,
+      });
+      expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+        resource: "tab-selected",
+        correlationId: "test-correlation-id",
+        tabId: 123,
+      });
+    });
+  });
+
+  describe("get-active-tab command", () => {
+    it("returns the active tab without requiring automation mode", async () => {
+      // Note: no automationMode in config — get-active-tab is intentionally not gated.
+      (browser.storage.local.get as jest.Mock).mockResolvedValue({
+        config: {
+          secret: "test-secret",
+          ports: [8089],
+          domainDenyList: [],
+          auditLog: [],
+        },
+      });
+
+      const activeTab = {
+        id: 42,
+        url: "https://example.com",
+        title: "Example",
+      };
+      (browser.tabs.query as jest.Mock).mockResolvedValue([activeTab]);
+
+      const request: ServerMessageRequest = {
+        cmd: "get-active-tab",
+        correlationId: "test-correlation-id",
+      };
+
+      await messageHandler.handleDecodedMessage(request);
+
+      expect(browser.tabs.query).toHaveBeenCalledWith({
+        active: true,
+        currentWindow: true,
+      });
+      expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+        resource: "active-tab",
+        correlationId: "test-correlation-id",
+        tab: activeTab,
+      });
+    });
+
+    it("replies with null when there is no active tab", async () => {
+      (browser.storage.local.get as jest.Mock).mockResolvedValue({
+        config: {
+          secret: "test-secret",
+          ports: [8089],
+          domainDenyList: [],
+          auditLog: [],
+        },
+      });
+      (browser.tabs.query as jest.Mock).mockResolvedValue([]);
+
+      const request: ServerMessageRequest = {
+        cmd: "get-active-tab",
+        correlationId: "test-correlation-id",
+      };
+
+      await messageHandler.handleDecodedMessage(request);
+
+      expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+        resource: "active-tab",
+        correlationId: "test-correlation-id",
+        tab: null,
+      });
+    });
+  });
+
+  describe("wait-for-text command", () => {
+    const automationConfig = {
+      secret: "test-secret",
+      ports: [8089],
+      domainDenyList: [] as string[],
+      auditLog: [],
+      automationMode: true,
+    };
+
+    it("replies found:true when the text appears on the page", async () => {
+      (browser.storage.local.get as jest.Mock).mockResolvedValue({
+        config: automationConfig,
+      });
+      (browser.tabs.get as jest.Mock).mockResolvedValue({
+        id: 123,
+        url: "https://example.com",
+      });
+      (browser.tabs.executeScript as jest.Mock).mockResolvedValue([true]);
+
+      const request: ServerMessageRequest = {
+        cmd: "wait-for-text",
+        tabId: 123,
+        text: "Hello",
+        correlationId: "test-correlation-id",
+      };
+
+      await messageHandler.handleDecodedMessage(request);
+
+      expect(browser.tabs.executeScript).toHaveBeenCalled();
+      expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+        resource: "wait-for-text-result",
+        correlationId: "test-correlation-id",
+        found: true,
+      });
+    });
+
+    it("replies found:false when the text never appears before the timeout", async () => {
+      (browser.storage.local.get as jest.Mock).mockResolvedValue({
+        config: automationConfig,
+      });
+      (browser.tabs.get as jest.Mock).mockResolvedValue({
+        id: 123,
+        url: "https://example.com",
+      });
+      (browser.tabs.executeScript as jest.Mock).mockResolvedValue([false]);
+
+      const request: ServerMessageRequest = {
+        cmd: "wait-for-text",
+        tabId: 123,
+        text: "Never",
+        timeoutMs: 50,
+        correlationId: "test-correlation-id",
+      };
+
+      await messageHandler.handleDecodedMessage(request);
+
+      expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+        resource: "wait-for-text-result",
+        correlationId: "test-correlation-id",
+        found: false,
+      });
+    });
+
+    it("throws when the tab URL domain is in the deny list", async () => {
+      (browser.storage.local.get as jest.Mock).mockResolvedValue({
+        config: { ...automationConfig, domainDenyList: ["example.com"] },
+      });
+      (browser.tabs.get as jest.Mock).mockResolvedValue({
+        id: 123,
+        url: "https://example.com",
+      });
+
+      const request: ServerMessageRequest = {
+        cmd: "wait-for-text",
+        tabId: 123,
+        text: "Hello",
+        correlationId: "test-correlation-id",
+      };
+
+      await expect(
+        messageHandler.handleDecodedMessage(request)
+      ).rejects.toThrow("Domain in tab URL is in the deny list");
+      expect(browser.tabs.executeScript).not.toHaveBeenCalled();
+    });
+  });
+
   describe("automation mode gate", () => {
     it("blocks an automation command when automation mode is disabled", async () => {
       (browser.storage.local.get as jest.Mock).mockResolvedValue({

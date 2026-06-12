@@ -11,8 +11,14 @@ const mockBrowser = {
     move: jest.fn(),
     update: jest.fn(),
     group: jest.fn(),
+    goBack: jest.fn(),
+    goForward: jest.fn(),
+    reload: jest.fn(),
   },
   tabGroups: {
+    update: jest.fn(),
+  },
+  windows: {
     update: jest.fn(),
   },
   history: {

@@ -52,6 +52,35 @@ export interface TakeSnapshotServerMessage extends ServerMessageBase {
   verbose?: boolean;
 }
 
+export interface NavigateTabServerMessage extends ServerMessageBase {
+  cmd: "navigate-tab";
+  tabId: number;
+  url: string;
+}
+
+export interface NavigatePageHistoryServerMessage extends ServerMessageBase {
+  cmd: "navigate-page-history";
+  tabId: number;
+  direction: "back" | "forward" | "reload";
+  bypassCache?: boolean;
+}
+
+export interface SelectTabServerMessage extends ServerMessageBase {
+  cmd: "select-tab";
+  tabId: number;
+}
+
+export interface GetActiveTabServerMessage extends ServerMessageBase {
+  cmd: "get-active-tab";
+}
+
+export interface WaitForTextServerMessage extends ServerMessageBase {
+  cmd: "wait-for-text";
+  tabId: number;
+  text: string;
+  timeoutMs?: number;
+}
+
 export type ServerMessage =
   | OpenTabServerMessage
   | CloseTabsServerMessage
@@ -61,6 +90,11 @@ export type ServerMessage =
   | ReorderTabsServerMessage
   | FindHighlightServerMessage
   | GroupTabsServerMessage
-  | TakeSnapshotServerMessage;
+  | TakeSnapshotServerMessage
+  | NavigateTabServerMessage
+  | NavigatePageHistoryServerMessage
+  | SelectTabServerMessage
+  | GetActiveTabServerMessage
+  | WaitForTextServerMessage;
 
 export type ServerMessageRequest = ServerMessage & { correlationId: string };

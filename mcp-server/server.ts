@@ -206,6 +206,96 @@ mcpServer.tool(
 );
 
 mcpServer.tool(
+  "navigate-tab",
+  "Load a URL in an existing browser tab. The URL must be https, or http only for localhost.",
+  { tabId: z.number(), url: z.string() },
+  async ({ tabId, url }) => {
+    const result = await browserApi.navigateTab(tabId, url);
+    return {
+      content: [
+        {
+          type: "text",
+          text: `Navigated tab ${result.tabId} to ${result.url ?? url}`,
+        },
+      ],
+    };
+  }
+);
+
+mcpServer.tool(
+  "navigate-page-history",
+  "Navigate a browser tab's history: go back, go forward, or reload the page.",
+  {
+    tabId: z.number(),
+    direction: z.enum(["back", "forward", "reload"]),
+    bypassCache: z.boolean().optional(),
+  },
+  async ({ tabId, direction, bypassCache }) => {
+    await browserApi.navigatePageHistory(tabId, direction, bypassCache);
+    return {
+      content: [
+        {
+          type: "text",
+          text: `Navigated tab ${tabId} (${direction})`,
+        },
+      ],
+    };
+  }
+);
+
+mcpServer.tool(
+  "select-tab",
+  "Focus/activate a browser tab and bring its window to the foreground.",
+  { tabId: z.number() },
+  async ({ tabId }) => {
+    const result = await browserApi.selectTab(tabId);
+    return {
+      content: [{ type: "text", text: `Selected tab ${result.tabId}` }],
+    };
+  }
+);
+
+mcpServer.tool(
+  "get-active-tab",
+  "Get the currently active tab in the user's browser.",
+  {},
+  async () => {
+    const tab = await browserApi.getActiveTab();
+    if (!tab) {
+      return { content: [{ type: "text", text: "No active tab" }] };
+    }
+    return {
+      content: [
+        {
+          type: "text",
+          text: `Active tab id=${tab.id}, url=${tab.url}, title=${tab.title}`,
+        },
+      ],
+    };
+  }
+);
+
+mcpServer.tool(
+  "wait-for-text",
+  "Wait until the given text appears on a tab's page, polling until found or the timeout elapses (default 30000ms).",
+  { tabId: z.number(), text: z.string(), timeoutMs: z.number().optional() },
+  async ({ tabId, text, timeoutMs }) => {
+    const found = await browserApi.waitForText(tabId, text, timeoutMs);
+    if (found) {
+      return { content: [{ type: "text", text: "Text found" }] };
+    }
+    return {
+      content: [
+        {
+          type: "text",
+          text: `Text did not appear within ${timeoutMs ?? 30000}ms`,
+        },
+      ],
+    };
+  }
+);
+
+mcpServer.tool(
   "group-browser-tabs",
   "Organize opened browser tabs in a new tab group",
   {

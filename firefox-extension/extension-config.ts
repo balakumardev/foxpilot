@@ -54,6 +54,31 @@ export const AVAILABLE_TOOLS: ToolInfo[] = [
     id: "take-snapshot",
     name: "Take Page Snapshot",
     description: "Allows the MCP server to read an accessibility snapshot of a page's interactive elements"
+  },
+  {
+    id: "navigate-tab",
+    name: "Navigate Tab",
+    description: "Allows the MCP server to load a URL in an existing browser tab"
+  },
+  {
+    id: "navigate-page-history",
+    name: "Navigate Page History",
+    description: "Allows the MCP server to go back/forward or reload a browser tab"
+  },
+  {
+    id: "select-tab",
+    name: "Select Tab",
+    description: "Allows the MCP server to focus/activate a browser tab"
+  },
+  {
+    id: "get-active-tab",
+    name: "Get Active Tab",
+    description: "Allows the MCP server to read which tab is currently active"
+  },
+  {
+    id: "wait-for-text",
+    name: "Wait for Text",
+    description: "Allows the MCP server to wait until text appears on a page"
   }
 ];
 
@@ -68,6 +93,11 @@ export const COMMAND_TO_TOOL_ID: Record<ServerMessageRequest["cmd"], string> = {
   "find-highlight": "find-highlight-in-browser-tab",
   "group-tabs": "reorder-browser-tabs",
   "take-snapshot": "take-snapshot",
+  "navigate-tab": "navigate-tab",
+  "navigate-page-history": "navigate-page-history",
+  "select-tab": "select-tab",
+  "get-active-tab": "get-active-tab",
+  "wait-for-text": "wait-for-text",
 };
 
 // Commands that actively control a page (navigation, input, scripting, page

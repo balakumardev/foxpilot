@@ -67,6 +67,27 @@ export interface SnapshotExtensionMessage extends ExtensionMessageBase {
   isTruncated: boolean;
 }
 
+export interface NavigatedExtensionMessage extends ExtensionMessageBase {
+  resource: "navigated";
+  tabId: number;
+  url?: string;
+}
+
+export interface TabSelectedExtensionMessage extends ExtensionMessageBase {
+  resource: "tab-selected";
+  tabId: number;
+}
+
+export interface ActiveTabExtensionMessage extends ExtensionMessageBase {
+  resource: "active-tab";
+  tab: BrowserTab | null;
+}
+
+export interface WaitForTextResultExtensionMessage extends ExtensionMessageBase {
+  resource: "wait-for-text-result";
+  found: boolean;
+}
+
 export type ExtensionMessage =
   | TabContentExtensionMessage
   | TabsExtensionMessage
@@ -76,7 +97,11 @@ export type ExtensionMessage =
   | FindHighlightExtensionMessage
   | TabsClosedExtensionMessage
   | TabGroupCreatedExtensionMessage
-  | SnapshotExtensionMessage;
+  | SnapshotExtensionMessage
+  | NavigatedExtensionMessage
+  | TabSelectedExtensionMessage
+  | ActiveTabExtensionMessage
+  | WaitForTextResultExtensionMessage;
 
 export interface ExtensionError {
   correlationId: string;

@@ -3,6 +3,29 @@ import { ExtensionTransport } from "./transport";
 import { isCommandAllowed, isDomainInDenyList, COMMAND_TO_TOOL_ID, addAuditLogEntry, requiresAutomationMode, isAutomationModeEnabled } from "./extension-config";
 import { buildSnapshot } from "./injected/snapshot-script";
 
+const sleep = (ms: number): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Returns whether a URL is allowed for in-tab navigation: https:// always, and
+ * http:// only for localhost / 127.0.0.1 hosts (convenient for local dev).
+ */
+function isNavigableUrl(url: string): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return false;
+  }
+  if (parsed.protocol === "https:") {
+    return true;
+  }
+  if (parsed.protocol === "http:") {
+    return parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1";
+  }
+  return false;
+}
+
 export class MessageHandler {
   private client: ExtensionTransport;
 
@@ -64,6 +87,31 @@ export class MessageHandler {
         break;
       case "take-snapshot":
         await this.takeSnapshot(req.correlationId, req.tabId, req.verbose);
+        break;
+      case "navigate-tab":
+        await this.navigateTab(req.correlationId, req.tabId, req.url);
+        break;
+      case "navigate-page-history":
+        await this.navigatePageHistory(
+          req.correlationId,
+          req.tabId,
+          req.direction,
+          req.bypassCache
+        );
+        break;
+      case "select-tab":
+        await this.selectTab(req.correlationId, req.tabId);
+        break;
+      case "get-active-tab":
+        await this.getActiveTab(req.correlationId);
+        break;
+      case "wait-for-text":
+        await this.waitForText(
+          req.correlationId,
+          req.tabId,
+          req.text,
+          req.timeoutMs
+        );
         break;
       default:
         const _exhaustiveCheck: never = req;
@@ -290,6 +338,121 @@ export class MessageHandler {
       tabId,
       snapshot: tree,
       isTruncated,
+    });
+  }
+
+  private async navigateTab(
+    correlationId: string,
+    tabId: number,
+    url: string
+  ): Promise<void> {
+    if (!isNavigableUrl(url)) {
+      throw new Error("Invalid URL (must be https, or http for localhost)");
+    }
+
+    if (await isDomainInDenyList(url)) {
+      throw new Error("Domain in user defined deny list");
+    }
+
+    await browser.tabs.update(tabId, { url });
+
+    await this.client.sendResourceToServer({
+      resource: "navigated",
+      correlationId,
+      tabId,
+      url,
+    });
+  }
+
+  private async navigatePageHistory(
+    correlationId: string,
+    tabId: number,
+    direction: "back" | "forward" | "reload",
+    bypassCache?: boolean
+  ): Promise<void> {
+    switch (direction) {
+      case "back":
+        await browser.tabs.goBack(tabId);
+        break;
+      case "forward":
+        await browser.tabs.goForward(tabId);
+        break;
+      case "reload":
+        await browser.tabs.reload(tabId, { bypassCache: !!bypassCache });
+        break;
+    }
+
+    await this.client.sendResourceToServer({
+      resource: "navigated",
+      correlationId,
+      tabId,
+    });
+  }
+
+  private async selectTab(
+    correlationId: string,
+    tabId: number
+  ): Promise<void> {
+    const tab = await browser.tabs.get(tabId);
+    await browser.tabs.update(tabId, { active: true });
+    if (tab.windowId != null) {
+      await browser.windows.update(tab.windowId, { focused: true });
+    }
+
+    await this.client.sendResourceToServer({
+      resource: "tab-selected",
+      correlationId,
+      tabId,
+    });
+  }
+
+  private async getActiveTab(correlationId: string): Promise<void> {
+    const tabs = await browser.tabs.query({
+      active: true,
+      currentWindow: true,
+    });
+
+    await this.client.sendResourceToServer({
+      resource: "active-tab",
+      correlationId,
+      tab: tabs[0] ?? null,
+    });
+  }
+
+  private async waitForText(
+    correlationId: string,
+    tabId: number,
+    text: string,
+    timeoutMs?: number
+  ): Promise<void> {
+    const tab = await browser.tabs.get(tabId);
+    if (tab.url && (await isDomainInDenyList(tab.url))) {
+      throw new Error(`Domain in tab URL is in the deny list`);
+    }
+
+    const deadline = Date.now() + (timeoutMs ?? 30000);
+    let found = false;
+
+    while (true) {
+      const results = await browser.tabs.executeScript(tabId, {
+        code: `!!(document.body && document.body.innerText && document.body.innerText.includes(${JSON.stringify(
+          text
+        )}))`,
+      });
+      if (results && results[0]) {
+        found = true;
+        break;
+      }
+      if (Date.now() >= deadline) {
+        break;
+      }
+      await sleep(300);
+    }
+
+    await this.client.sendResourceToServer({
+      resource: "wait-for-text-result",
+      correlationId,
+      found,
     });
   }
 
