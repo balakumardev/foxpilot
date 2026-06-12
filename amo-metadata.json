@@ -1,0 +1,9 @@
+{
+  "categories": ["other"],
+  "summary": {
+    "en-US": "Drive Firefox from an MCP client: tabs, history, page content, plus opt-in Automation Mode (click, type, snapshot, screenshot, JS) for AI assistants. Local-only, privacy-first."
+  },
+  "version": {
+    "license": "MIT"
+  }
+}

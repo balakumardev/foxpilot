@@ -130,6 +130,8 @@ jobs:
           npx --yes web-ext@latest sign \
             --source-dir build/ext-amo \
             --channel listed \
+            --amo-metadata amo-metadata.json \
+            --approval-timeout 0 \
             --api-key "$AMO_JWT_ISSUER" \
             --api-secret "$AMO_JWT_SECRET"
         env:
