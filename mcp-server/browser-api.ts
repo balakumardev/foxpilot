@@ -116,7 +116,10 @@ export class BrowserAPI {
 
   private tryConnect(): Promise<boolean> {
     return new Promise((resolve) => {
-      const ws = new WebSocket(`ws://127.0.0.1:${this.port}/mcp`);
+      // Connect via "localhost" (not 127.0.0.1) so we match the host the broker
+      // binds and the extension connects to. Otherwise an IPv6-only (::1)
+      // localhost listener rejects an IPv4 (127.0.0.1) client (and vice versa).
+      const ws = new WebSocket(`ws://localhost:${this.port}/mcp`);
       let settled = false;
       ws.on("open", () => {
         settled = true;
