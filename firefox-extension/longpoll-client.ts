@@ -65,8 +65,18 @@ export class LongPollClient implements ExtensionTransport {
         }
         const data = await res.json();
         if (data && Array.isArray(data.requests) && this.messageCallback) {
-          for (const request of data.requests) {
-            this.messageCallback(request as ServerMessageRequest);
+          for (const entry of data.requests) {
+            const sig = await getMessageSignature(
+              JSON.stringify(entry.payload),
+              this.secret
+            );
+            if (sig.length === 0 || sig !== entry.signature) {
+              console.error(
+                "LongPollClient: invalid request signature from broker"
+              );
+              continue;
+            }
+            this.messageCallback(entry.payload as ServerMessageRequest);
           }
         }
       } catch (error) {

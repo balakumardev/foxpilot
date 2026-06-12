@@ -15,7 +15,7 @@
 import * as http from "http";
 import type { ServerMessageRequest } from "@browser-control-mcp/common";
 import { BrokerServer } from "./broker";
-import { verifySignature } from "./signing";
+import { createSignature, verifySignature } from "./signing";
 
 const POLL_TIMEOUT_MS = 25000;
 const MAX_BODY_BYTES = 5_000_000;
@@ -129,13 +129,27 @@ export class BrokerLongPoll {
     const sendBatch = () => {
       const batch = this.queue;
       this.queue = [];
+      const signed = batch.map((req) => ({
+        payload: req,
+        signature: createSignature(this.secret, JSON.stringify(req)),
+      }));
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ requests: batch }));
+      res.end(JSON.stringify({ requests: signed }));
     };
 
     if (this.queue.length > 0) {
       sendBatch();
       return;
+    }
+
+    // Only one extension polls at a time in normal use, but the broker is a
+    // network-facing authenticated endpoint, so release any already-parked
+    // poll (with an empty batch) before parking this one — never orphan it.
+    if (this.waiter) {
+      const prev = this.waiter;
+      this.waiter = null;
+      clearTimeout(prev.timer);
+      prev.send();
     }
 
     const timer = setTimeout(() => {

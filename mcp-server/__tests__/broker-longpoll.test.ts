@@ -2,7 +2,7 @@ import WebSocket from "ws";
 import * as http from "http";
 import { BrokerServer } from "../broker";
 import { BrokerLongPoll } from "../broker-longpoll";
-import { createSignature } from "../signing";
+import { createSignature, verifySignature } from "../signing";
 
 const SECRET = "longpoll-secret";
 
@@ -106,8 +106,20 @@ describe("BrokerLongPoll", () => {
     const poll = await pollPromise;
     const body = JSON.parse(poll.body);
     expect(body.requests).toHaveLength(1);
-    const correlationId = body.requests[0].correlationId;
-    expect(body.requests[0]).toMatchObject({ cmd: "open-tab", url: "https://x.com" });
+    const signedReq = body.requests[0];
+    // The poll response now wraps each request in a signed envelope.
+    expect(
+      verifySignature(
+        SECRET,
+        JSON.stringify(signedReq.payload),
+        signedReq.signature
+      )
+    ).toBe(true);
+    const correlationId = signedReq.payload.correlationId;
+    expect(signedReq.payload).toMatchObject({
+      cmd: "open-tab",
+      url: "https://x.com",
+    });
 
     // The extension posts its response back over HTTP.
     const responsePayload = {
