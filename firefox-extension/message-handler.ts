@@ -12,7 +12,9 @@ const sleep = (ms: number): Promise<void> =>
 
 /**
  * Returns whether a URL is allowed for in-tab navigation: https:// always, and
- * http:// only for localhost / 127.0.0.1 hosts (convenient for local dev).
+ * http:// only for loopback hosts — localhost, 127.0.0.1, and the IPv6
+ * loopback [::1] (convenient for local dev). The WHATWG URL parser reports the
+ * IPv6 loopback host as the bracketed literal "[::1]".
  */
 function isNavigableUrl(url: string): boolean {
   let parsed: URL;
@@ -25,7 +27,11 @@ function isNavigableUrl(url: string): boolean {
     return true;
   }
   if (parsed.protocol === "http:") {
-    return parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1";
+    return (
+      parsed.hostname === "localhost" ||
+      parsed.hostname === "127.0.0.1" ||
+      parsed.hostname === "[::1]"
+    );
   }
   return false;
 }

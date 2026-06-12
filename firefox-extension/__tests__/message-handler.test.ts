@@ -813,6 +813,26 @@ describe("MessageHandler", () => {
       });
     });
 
+    it("allows http for the IPv6 loopback [::1]", async () => {
+      (browser.storage.local.get as jest.Mock).mockResolvedValue({
+        config: automationConfig,
+      });
+      (browser.tabs.update as jest.Mock).mockResolvedValue(undefined);
+
+      const request: ServerMessageRequest = {
+        cmd: "navigate-tab",
+        tabId: 123,
+        url: "http://[::1]:3000/",
+        correlationId: "test-correlation-id",
+      };
+
+      await messageHandler.handleDecodedMessage(request);
+
+      expect(browser.tabs.update).toHaveBeenCalledWith(123, {
+        url: "http://[::1]:3000/",
+      });
+    });
+
     it("rejects a non-localhost http URL", async () => {
       (browser.storage.local.get as jest.Mock).mockResolvedValue({
         config: automationConfig,

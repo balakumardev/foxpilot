@@ -69,17 +69,22 @@ export function performInputAction(
     }
 
     function dispatchClickSequence(el: Element, doubleClick?: boolean): void {
+      // Realistic press sequence. None of these activate the element, so they
+      // are safe to dispatch alongside the single real activation below.
       el.dispatchEvent(mouseEvt("pointerdown"));
       el.dispatchEvent(mouseEvt("mousedown"));
       el.dispatchEvent(mouseEvt("mouseup"));
-      el.dispatchEvent(mouseEvt("click"));
-      // Default activation behaviour (follows links, toggles checkboxes, etc.).
+      // Exactly ONE activation: el.click() fires the element's `click` event
+      // AND performs the default action (follows links, toggles checkboxes,
+      // submits forms). We deliberately do NOT also dispatch a synthetic
+      // `click` MouseEvent — doing so would double-activate the element.
       try {
         (el as { click?: () => void }).click?.();
       } catch (e) {
         /* ignore activation errors */
       }
       if (doubleClick) {
+        // A real double-click fires `dblclick` after the click above.
         el.dispatchEvent(mouseEvt("dblclick"));
       }
     }
@@ -130,13 +135,15 @@ export function performInputAction(
       }
 
       if (isCheckable(el)) {
+        // Set the desired state directly — do NOT dispatch a synthetic click.
+        // A click would itself fire `change`, so combined with the explicit
+        // `change` below it would fire change twice (and toggle relative to the
+        // current state rather than landing on the requested value). Setting
+        // `checked` and firing input + change once each is deterministic
+        // regardless of the element's starting state.
         const target = truthyValue(value);
-        // Dispatching a synthetic click toggles `checked` (both in real
-        // browsers and jsdom), so fire it first, then force the final state to
-        // the requested value. This keeps the result deterministic regardless
-        // of the element's starting state.
-        el.dispatchEvent(mouseEvt("click"));
         (el as { checked?: boolean }).checked = target;
+        el.dispatchEvent(new Event("input", { bubbles: true }));
         el.dispatchEvent(new Event("change", { bubbles: true }));
         return;
       }

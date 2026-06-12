@@ -37,6 +37,36 @@ describe("performInputAction", () => {
       expect(onClick).toHaveBeenCalled();
     });
 
+    it("fires the click listener EXACTLY once (no double-activation)", () => {
+      // Regression: the click path previously dispatched a synthetic `click`
+      // MouseEvent AND called el.click(), activating the element twice. A
+      // single click-element call must trigger the handler exactly once.
+      document.body.innerHTML = `<button>Go</button>`;
+      const btn = document.querySelector("button")!;
+      stamp(btn, "e1");
+      const onClick = jest.fn();
+      btn.addEventListener("click", onClick);
+
+      const res = performInputAction(document, { action: "click", uid: "e1" });
+
+      expect(res.ok).toBe(true);
+      expect(onClick).toHaveBeenCalledTimes(1);
+    });
+
+    it("toggles a checkbox exactly once via click (ends in the toggled state)", () => {
+      // Regression: double-activation toggled a checkbox twice, leaving it
+      // unchanged. A single click must flip an unchecked box to checked.
+      document.body.innerHTML = `<input type="checkbox" />`;
+      const cb = document.querySelector("input")!;
+      stamp(cb, "e1");
+      expect(cb.checked).toBe(false);
+
+      const res = performInputAction(document, { action: "click", uid: "e1" });
+
+      expect(res.ok).toBe(true);
+      expect(cb.checked).toBe(true);
+    });
+
     it("dispatches a realistic pointer/mouse sequence", () => {
       document.body.innerHTML = `<button>Go</button>`;
       const btn = document.querySelector("button")!;
@@ -58,7 +88,9 @@ describe("performInputAction", () => {
       const btn = document.querySelector("button")!;
       stamp(btn, "e1");
       const onDbl = jest.fn();
+      const onClick = jest.fn();
       btn.addEventListener("dblclick", onDbl);
+      btn.addEventListener("click", onClick);
 
       const res = performInputAction(document, {
         action: "click",
@@ -67,7 +99,10 @@ describe("performInputAction", () => {
       });
 
       expect(res.ok).toBe(true);
-      expect(onDbl).toHaveBeenCalled();
+      expect(onDbl).toHaveBeenCalledTimes(1);
+      // doubleClick performs a single real click plus a dblclick — the click
+      // handler must still fire exactly once, not twice.
+      expect(onClick).toHaveBeenCalledTimes(1);
     });
 
     it("returns ok:false mentioning a fresh snapshot when the uid is missing", () => {
@@ -200,10 +235,41 @@ describe("performInputAction", () => {
       expect(onChange).toHaveBeenCalled();
     });
 
-    it("unchecks a checkbox for non-true values", () => {
+    it("fires change EXACTLY once when filling a checkbox (no synthetic click)", () => {
+      // Regression: the checkbox fill path dispatched a synthetic click (which
+      // itself fires change) and then an explicit change — two change events.
+      // It must set checked directly and fire input + change once each.
+      document.body.innerHTML = `<input type="checkbox" />`;
+      const cb = document.querySelector("input")!;
+      stamp(cb, "e1");
+      const onChange = jest.fn();
+      const onInput = jest.fn();
+      const onClick = jest.fn();
+      cb.addEventListener("change", onChange);
+      cb.addEventListener("input", onInput);
+      cb.addEventListener("click", onClick);
+
+      const res = performInputAction(document, {
+        action: "fill",
+        uid: "e1",
+        value: "true",
+      });
+
+      expect(res.ok).toBe(true);
+      expect(cb.checked).toBe(true);
+      expect(onChange).toHaveBeenCalledTimes(1);
+      expect(onInput).toHaveBeenCalledTimes(1);
+      // No synthetic click should be dispatched for a checkbox fill.
+      expect(onClick).not.toHaveBeenCalled();
+    });
+
+    it("unchecks a checkbox for non-true values (starting checked -> false)", () => {
       document.body.innerHTML = `<input type="checkbox" checked />`;
       const cb = document.querySelector("input")!;
       stamp(cb, "e1");
+      expect(cb.checked).toBe(true);
+      const onChange = jest.fn();
+      cb.addEventListener("change", onChange);
 
       const res = performInputAction(document, {
         action: "fill",
@@ -213,6 +279,47 @@ describe("performInputAction", () => {
 
       expect(res.ok).toBe(true);
       expect(cb.checked).toBe(false);
+      expect(onChange).toHaveBeenCalledTimes(1);
+    });
+
+    it("checks an unchecked checkbox (starting unchecked -> true) firing change once", () => {
+      document.body.innerHTML = `<input type="checkbox" />`;
+      const cb = document.querySelector("input")!;
+      stamp(cb, "e1");
+      expect(cb.checked).toBe(false);
+      const onChange = jest.fn();
+      cb.addEventListener("change", onChange);
+
+      const res = performInputAction(document, {
+        action: "fill",
+        uid: "e1",
+        value: "true",
+      });
+
+      expect(res.ok).toBe(true);
+      expect(cb.checked).toBe(true);
+      expect(onChange).toHaveBeenCalledTimes(1);
+    });
+
+    it("sets a radio checked and fires change exactly once", () => {
+      document.body.innerHTML = `<input type="radio" name="g" />`;
+      const radio = document.querySelector("input")!;
+      stamp(radio, "e1");
+      const onChange = jest.fn();
+      const onClick = jest.fn();
+      radio.addEventListener("change", onChange);
+      radio.addEventListener("click", onClick);
+
+      const res = performInputAction(document, {
+        action: "fill",
+        uid: "e1",
+        value: "true",
+      });
+
+      expect(res.ok).toBe(true);
+      expect(radio.checked).toBe(true);
+      expect(onChange).toHaveBeenCalledTimes(1);
+      expect(onClick).not.toHaveBeenCalled();
     });
 
     it("returns ok:false when the uid is missing", () => {
