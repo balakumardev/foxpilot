@@ -134,6 +134,44 @@ export interface ConsoleMessagesExtensionMessage extends ExtensionMessageBase {
   entries: ConsoleEntry[];
 }
 
+// A single name/value header pair, as exposed by the webRequest API.
+export interface NetworkHeader {
+  name: string;
+  value?: string;
+}
+
+// A single captured network request. Populated incrementally across the
+// webRequest lifecycle: created on onBeforeRequest, enriched on
+// onSendHeaders/onHeadersReceived, finalized on onCompleted/onErrorOccurred.
+// `durationMs` is completedTimeStamp - timeStamp. `responseSize` is taken from
+// the engine's reported size or the Content-Length header. `body` is a
+// best-effort UTF-8 response-body snippet, only present when body capture was
+// enabled (it is Firefox-specific and opt-in). Headers are optional because the
+// header-extra-info specs may be unavailable on a given request.
+export interface NetworkRecord {
+  requestId: string;
+  url: string;
+  method: string;
+  type: string;
+  statusCode?: number;
+  timeStamp: number;
+  completedTimeStamp?: number;
+  durationMs?: number;
+  fromCache?: boolean;
+  error?: string;
+  responseSize?: number;
+  requestHeaders?: NetworkHeader[];
+  responseHeaders?: NetworkHeader[];
+  body?: string;
+}
+
+// Reply for the get-network-requests tool: the captured network records for the
+// requested tab (already filtered/limited when filter/limit were given).
+export interface NetworkRequestsExtensionMessage extends ExtensionMessageBase {
+  resource: "network-requests";
+  requests: NetworkRecord[];
+}
+
 export type ExtensionMessage =
   | TabContentExtensionMessage
   | TabsExtensionMessage
@@ -151,7 +189,8 @@ export type ExtensionMessage =
   | ActionResultExtensionMessage
   | EvalResultExtensionMessage
   | ScreenshotExtensionMessage
-  | ConsoleMessagesExtensionMessage;
+  | ConsoleMessagesExtensionMessage
+  | NetworkRequestsExtensionMessage;
 
 export interface ExtensionError {
   correlationId: string;

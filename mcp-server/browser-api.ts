@@ -37,6 +37,8 @@ import type {
   ScreenshotExtensionMessage,
   ConsoleEntry,
   ConsoleMessagesExtensionMessage,
+  NetworkRecord,
+  NetworkRequestsExtensionMessage,
 } from "@browser-control-mcp/common";
 import { BrokerClientFrame, BrokerServerFrame } from "./broker-protocol";
 import { createSignature, verifySignature } from "./signing";
@@ -514,6 +516,20 @@ export class BrowserAPI {
       limit,
     });
     return message.entries;
+  }
+
+  async getNetworkRequests(
+    tabId: number,
+    opts?: { filter?: string; limit?: number; includeBody?: boolean }
+  ): Promise<NetworkRecord[]> {
+    const message = await this.sendTool<NetworkRequestsExtensionMessage>({
+      cmd: "get-network-requests",
+      tabId,
+      filter: opts?.filter,
+      limit: opts?.limit,
+      includeBody: opts?.includeBody,
+    });
+    return message.requests;
   }
 }
 

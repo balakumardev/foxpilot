@@ -3,6 +3,11 @@ import { WebsocketClient } from "../client";
 import type { ServerMessageRequest } from "@browser-control-mcp/common";
 import { ExtensionConfig } from "../extension-config";
 import { addConsoleEntry, clearConsoleEntries } from "../console-capture";
+import {
+  onBeforeRequestRecord,
+  onCompletedRecord,
+  clearNetworkRequests,
+} from "../network-capture";
 
 // Mock the WebsocketClient
 jest.mock("../client", () => {
@@ -1688,6 +1693,127 @@ describe("MessageHandler", () => {
       const request: ServerMessageRequest = {
         cmd: "get-console-messages",
         tabId: 700,
+        correlationId: "test-correlation-id",
+      };
+
+      await expect(
+        messageHandler.handleDecodedMessage(request)
+      ).rejects.toThrow("requires Automation Mode");
+    });
+  });
+
+  describe("get-network-requests command", () => {
+    const automationConfig = {
+      secret: "test-secret",
+      ports: [8089],
+      domainDenyList: [] as string[],
+      auditLog: [],
+      automationMode: true,
+    };
+
+    // Seed a finalized record into a tab's buffer via the pure updaters (the
+    // live webRequest flow is browser-only; this is the same path the listeners
+    // drive).
+    function seed(
+      tabId: number,
+      requestId: string,
+      url: string,
+      type: string,
+      status: number
+    ) {
+      onBeforeRequestRecord({ requestId, url, method: "GET", type, tabId, timeStamp: 1000 });
+      onCompletedRecord({
+        requestId,
+        url,
+        method: "GET",
+        type,
+        tabId,
+        statusCode: status,
+        timeStamp: 1100,
+      });
+    }
+
+    beforeEach(() => {
+      (browser.storage.local.get as jest.Mock).mockResolvedValue({
+        config: automationConfig,
+      });
+      clearNetworkRequests(800);
+      clearNetworkRequests(801);
+    });
+
+    it("replies with the tab's captured network records when automation mode is enabled", async () => {
+      seed(800, "n1", "https://example.com/api/users", "xmlhttprequest", 200);
+
+      const request: ServerMessageRequest = {
+        cmd: "get-network-requests",
+        tabId: 800,
+        correlationId: "test-correlation-id",
+      };
+
+      await messageHandler.handleDecodedMessage(request);
+
+      const call = (mockClient.sendResourceToServer as jest.Mock).mock.calls[0][0];
+      expect(call.resource).toBe("network-requests");
+      expect(call.correlationId).toBe("test-correlation-id");
+      expect(call.requests).toHaveLength(1);
+      expect(call.requests[0]).toMatchObject({
+        requestId: "n1",
+        url: "https://example.com/api/users",
+        method: "GET",
+        type: "xmlhttprequest",
+        statusCode: 200,
+        durationMs: 100,
+      });
+      // It is a pure buffer read — no page scripting.
+      expect(browser.tabs.executeScript).not.toHaveBeenCalled();
+    });
+
+    it("honors filter (resource type) and limit", async () => {
+      seed(801, "a1", "https://example.com/api/users", "xmlhttprequest", 200);
+      seed(801, "a2", "https://cdn.example.com/app.js", "script", 200);
+      seed(801, "a3", "https://example.com/api/orders", "xmlhttprequest", 500);
+
+      const request: ServerMessageRequest = {
+        cmd: "get-network-requests",
+        tabId: 801,
+        filter: "xmlhttprequest",
+        limit: 1,
+        correlationId: "test-correlation-id",
+      };
+
+      await messageHandler.handleDecodedMessage(request);
+
+      const call = (mockClient.sendResourceToServer as jest.Mock).mock.calls[0][0];
+      // Two match the type; the single most-recent is a3.
+      expect(call.requests.map((r: { requestId: string }) => r.requestId)).toEqual([
+        "a3",
+      ]);
+    });
+
+    it("replies with an empty list when nothing was captured for the tab", async () => {
+      const request: ServerMessageRequest = {
+        cmd: "get-network-requests",
+        tabId: 800,
+        correlationId: "test-correlation-id",
+      };
+
+      await messageHandler.handleDecodedMessage(request);
+
+      expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+        resource: "network-requests",
+        correlationId: "test-correlation-id",
+        requests: [],
+      });
+    });
+
+    it("is blocked when automation mode is disabled", async () => {
+      (browser.storage.local.get as jest.Mock).mockResolvedValue({
+        config: { secret: "test-secret", ports: [8089], automationMode: false },
+      });
+
+      const request: ServerMessageRequest = {
+        cmd: "get-network-requests",
+        tabId: 800,
         correlationId: "test-correlation-id",
       };
 

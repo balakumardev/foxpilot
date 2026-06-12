@@ -4,6 +4,7 @@ import { ExtensionTransport } from "./transport";
 import { MessageHandler } from "./message-handler";
 import { getConfig, generateSecret, getTransport } from "./extension-config";
 import { initConsoleCapture } from "./console-capture";
+import { initNetworkCapture } from "./network-capture";
 
 function initClient(port: number, secret: string, transport: "websocket" | "longpoll") {
   const client: ExtensionTransport =
@@ -57,6 +58,10 @@ initExtension()
     // registers its runtime/tabs/storage listeners and, if Automation Mode is
     // on, the document_start page-console capture script.
     initConsoleCapture();
+    // Start background network capture once (browser-wide). It registers its
+    // tabs/storage listeners and, if Automation Mode is on, the webRequest
+    // listeners that feed the per-tab network ring buffer.
+    initNetworkCapture();
 
     const transport = await getTransport();
     for (const port of portList) {

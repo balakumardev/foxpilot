@@ -502,6 +502,53 @@ mcpServer.tool(
 );
 
 mcpServer.tool(
+  "get-network-requests",
+  "Get the network requests captured for a browser tab (URL, method, status, resource type, timing, sizes). Requires Automation Mode, and only captures requests made AFTER Automation Mode was enabled (reload the page if you see nothing). Pass 'filter' to keep only requests whose URL contains it (case-insensitive) or whose resource type matches it exactly, 'limit' to return only the most recent N, and 'includeBody' to enable best-effort response-body snippets for FUTURE requests (Firefox-specific).",
+  {
+    tabId: z.number(),
+    filter: z.string().optional(),
+    limit: z.number().optional(),
+    includeBody: z.boolean().optional(),
+  },
+  async ({ tabId, filter, limit, includeBody }) => {
+    const requests = await browserApi.getNetworkRequests(tabId, {
+      filter,
+      limit,
+      includeBody,
+    });
+    if (requests.length === 0) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: "No network requests captured (Automation Mode must be on before the activity).",
+          },
+        ],
+      };
+    }
+    return {
+      content: requests.map((req) => {
+        const status = req.error
+          ? `ERR ${req.error}`
+          : req.statusCode !== undefined
+          ? String(req.statusCode)
+          : "?";
+        const duration =
+          req.durationMs !== undefined ? `, ${req.durationMs} ms` : "";
+        let text = `${req.method} ${req.url} -> ${status} (${req.type}${duration})`;
+        if (req.body) {
+          // Keep the snippet bounded in the text output.
+          const snippet =
+            req.body.length > 2000 ? `${req.body.slice(0, 2000)}…` : req.body;
+          text += `\n  body: ${snippet}`;
+        }
+        return { type: "text", text };
+      }),
+    };
+  }
+);
+
+mcpServer.tool(
   "group-browser-tabs",
   "Organize opened browser tabs in a new tab group",
   {

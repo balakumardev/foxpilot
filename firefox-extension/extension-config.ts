@@ -129,6 +129,11 @@ export const AVAILABLE_TOOLS: ToolInfo[] = [
     id: "get-console-messages",
     name: "Get Console Messages",
     description: "Allows the MCP server to read a page's captured console output and uncaught errors"
+  },
+  {
+    id: "get-network-requests",
+    name: "Get Network Requests",
+    description: "Allows the MCP server to read a page's captured network requests (URLs, methods, status, timing)"
   }
 ];
 
@@ -158,6 +163,7 @@ export const COMMAND_TO_TOOL_ID: Record<ServerMessageRequest["cmd"], string> = {
   "upload-file": "upload-file",
   "take-screenshot": "take-screenshot",
   "get-console-messages": "get-console-messages",
+  "get-network-requests": "get-network-requests",
 };
 
 // Commands that actively control a page (navigation, input, scripting, page

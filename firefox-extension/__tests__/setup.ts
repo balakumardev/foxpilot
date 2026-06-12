@@ -56,6 +56,14 @@ const mockBrowser = {
   contentScripts: {
     register: jest.fn(),
   },
+  webRequest: {
+    onBeforeRequest: { addListener: jest.fn(), removeListener: jest.fn() },
+    onSendHeaders: { addListener: jest.fn(), removeListener: jest.fn() },
+    onHeadersReceived: { addListener: jest.fn(), removeListener: jest.fn() },
+    onCompleted: { addListener: jest.fn(), removeListener: jest.fn() },
+    onErrorOccurred: { addListener: jest.fn(), removeListener: jest.fn() },
+    filterResponseData: jest.fn(),
+  },
 };
 
 // Override the global browser object

@@ -167,6 +167,21 @@ export interface GetConsoleMessagesServerMessage extends ServerMessageBase {
   limit?: number;
 }
 
+// Read the network activity captured for a tab. While Automation Mode is on the
+// extension observes requests via the webRequest API into a per-tab ring
+// buffer; this is a pure buffer read. `filter` is a case-insensitive substring
+// match on the URL or an exact resourceType match. `limit` caps the number of
+// most-recent records returned. `includeBody` opts into best-effort response
+// body capture (Firefox-specific); because bodies are captured at request time,
+// it only affects requests made AFTER it is enabled.
+export interface GetNetworkRequestsServerMessage extends ServerMessageBase {
+  cmd: "get-network-requests";
+  tabId: number;
+  filter?: string;
+  limit?: number;
+  includeBody?: boolean;
+}
+
 export type ServerMessage =
   | OpenTabServerMessage
   | CloseTabsServerMessage
@@ -191,6 +206,7 @@ export type ServerMessage =
   | EvaluateScriptServerMessage
   | UploadFileServerMessage
   | TakeScreenshotServerMessage
-  | GetConsoleMessagesServerMessage;
+  | GetConsoleMessagesServerMessage
+  | GetNetworkRequestsServerMessage;
 
 export type ServerMessageRequest = ServerMessage & { correlationId: string };

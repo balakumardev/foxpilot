@@ -8,6 +8,8 @@
         "tabGroups",
         "history",
         "storage",
+        "webRequest",
+        "webRequestBlocking",
         "http://localhost/*",
         "http://127.0.0.1/*"
     ],

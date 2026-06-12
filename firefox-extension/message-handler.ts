@@ -17,6 +17,10 @@ import {
   type ImageFormat,
 } from "./injected/screenshot-script";
 import { getConsoleEntries } from "./console-capture";
+import {
+  getNetworkRequests,
+  setBodyCaptureEnabled,
+} from "./network-capture";
 
 // The argument shape accepted by the injected `performInputAction` function.
 type InputActionArgs = Parameters<typeof performInputAction>[1];
@@ -305,6 +309,13 @@ export class MessageHandler {
         break;
       case "get-console-messages":
         await this.getConsoleMessages(req.correlationId, req.tabId, req.limit);
+        break;
+      case "get-network-requests":
+        await this.getNetworkRequestsForTab(req.correlationId, req.tabId, {
+          filter: req.filter,
+          limit: req.limit,
+          includeBody: req.includeBody,
+        });
         break;
       default:
         const _exhaustiveCheck: never = req;
@@ -902,6 +913,34 @@ export class MessageHandler {
       resource: "console-messages",
       correlationId,
       entries,
+    });
+  }
+
+  // Reads the per-tab network ring buffer populated by the webRequest listeners
+  // (registered while Automation Mode is on). This is a pure in-memory read — no
+  // page scripting, no permission prompt. If nothing was captured (e.g. the page
+  // loaded before Automation Mode was enabled), an empty list is returned.
+  //
+  // `includeBody` toggles best-effort response-body capture (Firefox-specific).
+  // Bodies are captured at request time, not read time, so enabling it here only
+  // affects FUTURE requests — the bodies already attached to captured records
+  // are returned as-is.
+  private async getNetworkRequestsForTab(
+    correlationId: string,
+    tabId: number,
+    opts: { filter?: string; limit?: number; includeBody?: boolean }
+  ): Promise<void> {
+    if (opts.includeBody !== undefined) {
+      setBodyCaptureEnabled(opts.includeBody);
+    }
+    const requests = getNetworkRequests(tabId, {
+      filter: opts.filter,
+      limit: opts.limit,
+    });
+    await this.client.sendResourceToServer({
+      resource: "network-requests",
+      correlationId,
+      requests,
     });
   }
 
