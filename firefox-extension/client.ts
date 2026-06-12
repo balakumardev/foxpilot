@@ -21,9 +21,11 @@ export class WebsocketClient {
   }
 
   public connect(): void {
-    console.log("Connecting to WebSocket server at port", this.port);
+    console.log("Connecting to broker at port", this.port);
 
-    this.socket = new WebSocket(`ws://localhost:${this.port}`);
+    // Connect to the broker daemon's extension leg. The broker owns the single
+    // browser connection and fans many MCP-client sessions in/out of it.
+    this.socket = new WebSocket(`ws://localhost:${this.port}/extension`);
 
     this.socket.addEventListener("open", () => {
       console.log("Connected to WebSocket server at port", this.port);

@@ -407,6 +407,24 @@
     </div>
 
     <div class="section-container">
+      <h2>Automation Mode</h2>
+      <div class="section-content">
+        <p>Automation Mode lets the MCP server actively control web pages — clicking, typing, filling forms, navigating, taking page snapshots, running scripts, and inspecting console/network activity on <strong>any</strong> site. Enabling it grants the extension access to all websites at once, so the automation tools work without a per-site prompt. Leave it off unless you want full browser automation. Your domain deny list and per-tool toggles still apply.</p>
+        <div class="tool-row">
+          <div class="tool-label-container">
+            <div class="tool-name">Enable Automation Mode</div>
+            <div class="tool-description">Required for page-interaction tools (click, type, fill, navigate, snapshot, evaluate, console, network).</div>
+          </div>
+          <label class="toggle-switch">
+            <input type="checkbox" id="automation-mode-toggle" />
+            <span class="slider"></span>
+          </label>
+        </div>
+        <div class="status" id="automation-mode-status"></div>
+      </div>
+    </div>
+
+    <div class="section-container">
       <h2 class="collapsed" role="button" aria-expanded="false" tabindex="0" id="domain-filtering-header">Domain Filtering</h2>
       <div class="section-content collapsed" aria-labelledby="domain-filtering-header">
         <p>Configure which domains the extension can interact with:</p>

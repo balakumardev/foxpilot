@@ -8,7 +8,9 @@
   "scripts": {
     "build": "tsc",
     "start": "node dist/server.js",
-    "pack-dxt": "npx @anthropic-ai/dxt pack"
+    "broker": "node dist/broker-main.js",
+    "pack-dxt": "npx @anthropic-ai/dxt pack",
+    "test": "jest"
   },
   "license": "MIT",
   "description": "Browser Control MCP Server",
@@ -20,7 +22,10 @@
     "ws": "^8.18.1"
   },
   "devDependencies": {
+    "@types/jest": "^29.5.14",
     "@types/ws": "^8.18.0",
+    "jest": "^30.0.4",
+    "ts-jest": "^29.4.0",
     "typescript": "^5.8.2"
   }
 }

@@ -13,6 +13,8 @@ import {
   getAuditLog,
   clearAuditLog,
   getToolNameById,
+  isAutomationModeEnabled,
+  setAutomationModeEnabled,
 } from "./extension-config";
 
 const secretDisplay = document.getElementById(
@@ -38,6 +40,12 @@ const portsStatusElement = document.getElementById("ports-status") as HTMLDivEle
 const auditLogContainer = document.getElementById("audit-log-container") as HTMLDivElement;
 const clearAuditLogButton = document.getElementById("clear-audit-log") as HTMLButtonElement;
 const auditLogStatusElement = document.getElementById("audit-log-status") as HTMLDivElement;
+const automationModeToggle = document.getElementById(
+  "automation-mode-toggle"
+) as HTMLInputElement;
+const automationModeStatus = document.getElementById(
+  "automation-mode-status"
+) as HTMLDivElement;
 
 /**
  * Loads the secret from storage and displays it
@@ -173,6 +181,65 @@ async function handleToolToggle(event: Event) {
 
     // Revert the checkbox state
     checkbox.checked = !isEnabled;
+  }
+}
+
+/**
+ * Loads the current Automation Mode state into the toggle.
+ */
+async function loadAutomationMode() {
+  try {
+    automationModeToggle.checked = await isAutomationModeEnabled();
+  } catch (error) {
+    console.error("Error loading automation mode:", error);
+  }
+}
+
+/**
+ * Handles enabling/disabling Automation Mode. Enabling requests the broad
+ * host permission; if the user denies it, the toggle reverts.
+ */
+async function handleAutomationModeToggle(event: Event) {
+  if (!event.isTrusted) {
+    return;
+  }
+  const enabled = automationModeToggle.checked;
+  try {
+    if (enabled) {
+      const granted = await browser.permissions.request({
+        origins: ["*://*/*"],
+      });
+      if (!granted) {
+        automationModeToggle.checked = false;
+        automationModeStatus.textContent =
+          "Permission denied — Automation Mode not enabled.";
+        automationModeStatus.style.color = "red";
+        setTimeout(() => {
+          automationModeStatus.textContent = "";
+          automationModeStatus.style.color = "";
+        }, 4000);
+        return;
+      }
+      await setAutomationModeEnabled(true);
+      automationModeStatus.textContent = "Automation Mode enabled.";
+      automationModeStatus.style.color = "#4caf50";
+    } else {
+      await setAutomationModeEnabled(false);
+      try {
+        await browser.permissions.remove({ origins: ["*://*/*"] });
+      } catch (removeError) {
+        console.error("Could not remove host permission:", removeError);
+      }
+      automationModeStatus.textContent = "Automation Mode disabled.";
+      automationModeStatus.style.color = "#4caf50";
+    }
+    setTimeout(() => {
+      automationModeStatus.textContent = "";
+      automationModeStatus.style.color = "";
+    }, 4000);
+  } catch (error) {
+    console.error("Error toggling automation mode:", error);
+    automationModeToggle.checked = !enabled;
   }
 }
 
@@ -579,12 +646,14 @@ copyButton.addEventListener("click", copyToClipboard);
 saveDomainListsButton.addEventListener("click", saveDomainLists);
 savePortsButton.addEventListener("click", savePorts);
 clearAuditLogButton.addEventListener("click", handleClearAuditLog);
+automationModeToggle.addEventListener("change", handleAutomationModeToggle);
 document.addEventListener("DOMContentLoaded", () => {
   loadSecret();
   createToolSettingsUI();
   loadDomainLists();
   loadPorts();
   loadAuditLog();
+  loadAutomationMode();
   initializeCollapsibleSections();
 
   // Ensure modal is hidden by default

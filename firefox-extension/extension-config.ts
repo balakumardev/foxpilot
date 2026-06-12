@@ -64,6 +64,52 @@ export const COMMAND_TO_TOOL_ID: Record<ServerMessageRequest["cmd"], string> = {
   "group-tabs": "reorder-browser-tabs",
 };
 
+// Commands that actively control a page (navigation, input, scripting, page
+// inspection) and therefore require the global Automation Mode opt-in.
+// Pre-populated with all planned automation command names so each tool is
+// gated as soon as it is implemented. `get-active-tab` is intentionally NOT
+// here: reading the active tab id is benign, like get-tab-list.
+export const AUTOMATION_COMMANDS: ReadonlySet<string> = new Set<string>([
+  "navigate-tab",
+  "navigate-page-history",
+  "select-tab",
+  "wait-for-text",
+  "take-snapshot",
+  "click-element",
+  "hover-element",
+  "fill-element",
+  "fill-form",
+  "type-text",
+  "press-key",
+  "drag-element",
+  "upload-file",
+  "take-screenshot",
+  "handle-dialog",
+  "resize-window",
+  "emulate",
+  "evaluate-script",
+  "get-console-messages",
+  "get-network-requests",
+]);
+
+/**
+ * Returns whether a command requires Automation Mode to be enabled.
+ */
+export function requiresAutomationMode(cmd: string): boolean {
+  return AUTOMATION_COMMANDS.has(cmd);
+}
+
+/**
+ * Returns whether a command should be blocked given the current Automation
+ * Mode state. Pure decision used by the message handler's gate.
+ */
+export function shouldBlockForAutomationMode(
+  cmd: string,
+  automationModeEnabled: boolean
+): boolean {
+  return requiresAutomationMode(cmd) && !automationModeEnabled;
+}
+
 // Storage schema for tool settings
 export interface ToolSettings {
   [toolId: string]: boolean;
@@ -84,6 +130,7 @@ export interface ExtensionConfig {
   domainDenyList?: string[];
   ports: number[];
   auditLog?: AuditLogEntry[];
+  automationMode?: boolean;
 }
 
 /**
@@ -262,6 +309,23 @@ export async function getPorts(): Promise<number[]> {
 export async function setPorts(ports: number[]): Promise<void> {
   const config = await getConfig();
   config.ports = ports;
+  await saveConfig(config);
+}
+
+/**
+ * Returns whether Automation Mode is enabled. Defaults to false (disabled).
+ */
+export async function isAutomationModeEnabled(): Promise<boolean> {
+  const config = await getConfig();
+  return config.automationMode === true;
+}
+
+/**
+ * Enables or disables Automation Mode.
+ */
+export async function setAutomationModeEnabled(enabled: boolean): Promise<void> {
+  const config = await getConfig();
+  config.automationMode = enabled;
   await saveConfig(config);
 }
 

@@ -1,6 +1,6 @@
 import type { ServerMessageRequest } from "@browser-control-mcp/common";
 import { WebsocketClient } from "./client";
-import { isCommandAllowed, isDomainInDenyList, COMMAND_TO_TOOL_ID, addAuditLogEntry } from "./extension-config";
+import { isCommandAllowed, isDomainInDenyList, COMMAND_TO_TOOL_ID, addAuditLogEntry, requiresAutomationMode, isAutomationModeEnabled } from "./extension-config";
 
 export class MessageHandler {
   private client: WebsocketClient;
@@ -10,6 +10,13 @@ export class MessageHandler {
   }
 
   public async handleDecodedMessage(req: ServerMessageRequest): Promise<void> {
+    if (requiresAutomationMode(req.cmd) && !(await isAutomationModeEnabled())) {
+      throw new Error(
+        `Command '${req.cmd}' requires Automation Mode, which is currently disabled. ` +
+          `Ask the user to enable Automation Mode in the Browser Control MCP extension's options page, then try again.`
+      );
+    }
+
     const isAllowed = await isCommandAllowed(req.cmd);
     if (!isAllowed) {
       throw new Error(`Command '${req.cmd}' is disabled in extension settings`);

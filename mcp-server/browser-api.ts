@@ -1,36 +1,58 @@
+/**
+ * BrowserAPI — the per-session MCP server's client to the broker.
+ *
+ * Public API is unchanged from the original WebSocket-server implementation, so
+ * `server.ts` does not change: it constructs a `BrowserAPI`, calls `init()`,
+ * and invokes `openTab` / `getTabList` / etc.
+ *
+ * Internally this is now a thin client of the long-lived broker daemon. On
+ * `init()` it connects to the broker, auto-spawning the broker (detached) if
+ * none is listening. Tool calls are posted as signed frames and matched back
+ * by `requestId`. Many MCP-client processes share one broker, which owns the
+ * single connection to the browser extension.
+ */
+
 import WebSocket from "ws";
+import { spawn } from "child_process";
+import * as path from "path";
 import type {
+  ServerMessage,
   ExtensionMessage,
   BrowserTab,
   BrowserHistoryItem,
-  ServerMessage,
   TabContentExtensionMessage,
-  ServerMessageRequest,
-  ExtensionError,
+  OpenedTabIdExtensionMessage,
+  TabsExtensionMessage,
+  BrowserHistoryExtensionMessage,
+  ReorderedTabsExtensionMessage,
+  FindHighlightExtensionMessage,
+  TabGroupCreatedExtensionMessage,
 } from "@browser-control-mcp/common";
-import { isPortInUse } from "./util";
-import * as crypto from "crypto";
+import { BrokerClientFrame, BrokerServerFrame } from "./broker-protocol";
+import { createSignature, verifySignature } from "./signing";
 
 const WS_DEFAULT_PORT = 8089;
-const EXTENSION_RESPONSE_TIMEOUT_MS = 1000;
+const CONNECT_TIMEOUT_MS = 10000;
+const CONNECT_RETRY_INTERVAL_MS = 200;
+// Client-side safety net; the broker enforces its own per-command timeouts.
+const REQUEST_TIMEOUT_MS = 60000;
 
-interface ExtensionRequestResolver<T extends ExtensionMessage["resource"]> {
-  resource: T;
-  resolve: (value: Extract<ExtensionMessage, { resource: T }>) => void;
-  reject: (reason?: string) => void;
+interface RequestResolver {
+  resolve: (msg: ExtensionMessage) => void;
+  reject: (err: Error) => void;
+  timer: ReturnType<typeof setTimeout>;
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 export class BrowserAPI {
   private ws: WebSocket | null = null;
-  private wsServer: WebSocket.Server | null = null;
-  private sharedSecret: string | null = null;
-
-  // Map to persist the request to the extension. It maps the request correlationId
-  // to a resolver, fulfulling a promise created when sending a message to the extension.
-  private extensionRequestMap: Map<
-    string,
-    ExtensionRequestResolver<ExtensionMessage["resource"]>
-  > = new Map();
+  private secret: string | null = null;
+  private port: number = WS_DEFAULT_PORT;
+  private requestCounter = 0;
+  private readonly requestMap = new Map<string, RequestResolver>();
 
   async init() {
     const { secret, port } = readConfig();
@@ -39,88 +61,200 @@ export class BrowserAPI {
         "EXTENSION_SECRET env var missing. See the extension's options page."
       );
     }
-    this.sharedSecret = secret;
-
-    if (await isPortInUse(port)) {
-      throw new Error(
-        `Configured port ${port} is already in use. Please configure a different port.`
-      );
-    }
-
-    // Unless running in a container, bind to localhost only
-    const host = process.env.CONTAINERIZED ? "0.0.0.0" : "localhost";
-
-    this.wsServer = new WebSocket.Server({
-      host,
-      port,
-    });
-
-    console.error(`Starting WebSocket server on ${host}:${port}`);
-    this.wsServer.on("connection", async (connection) => {
-      this.ws = connection;
-
-      console.error("WebSocket connection established on port", port);
-
-      this.ws.on("message", (message) => {
-        const decoded = JSON.parse(message.toString());
-        if (isErrorMessage(decoded)) {
-          this.handleExtensionError(decoded);
-          return;
-        }
-        const signature = this.createSignature(JSON.stringify(decoded.payload));
-        if (signature !== decoded.signature) {
-          console.error("Invalid message signature");
-          return;
-        }
-        this.handleDecodedExtensionMessage(decoded.payload);
-      });
-    });
-    this.wsServer.on("error", (error) => {
-      console.error("WebSocket server error:", error);
-    });
+    this.secret = secret;
+    this.port = port;
+    await this.ensureBrokerAndConnect();
   }
 
   close() {
-    this.wsServer?.close();
+    this.rejectAllPending("MCP server shutting down");
+    if (this.ws) {
+      try {
+        this.ws.close();
+      } catch {
+        /* ignore */
+      }
+      this.ws = null;
+    }
   }
 
   getSelectedPort() {
-    return this.wsServer?.options.port;
+    return this.port;
   }
 
+  // ---- connection / auto-spawn ----
+
+  private async ensureBrokerAndConnect(): Promise<void> {
+    if (await this.tryConnect()) {
+      return;
+    }
+    // No broker listening — spawn one (detached) and retry connecting.
+    this.spawnBroker();
+    const deadline = Date.now() + CONNECT_TIMEOUT_MS;
+    while (Date.now() < deadline) {
+      await delay(CONNECT_RETRY_INTERVAL_MS);
+      if (await this.tryConnect()) {
+        return;
+      }
+    }
+    throw new Error(
+      `Could not connect to or start the browser-control broker on port ${this.port}.`
+    );
+  }
+
+  private tryConnect(): Promise<boolean> {
+    return new Promise((resolve) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${this.port}/mcp`);
+      let settled = false;
+      ws.on("open", () => {
+        settled = true;
+        this.attachSocket(ws);
+        resolve(true);
+      });
+      ws.on("error", () => {
+        if (!settled) {
+          settled = true;
+          resolve(false);
+        }
+      });
+    });
+  }
+
+  private spawnBroker(): void {
+    const brokerEntry = path.join(__dirname, "broker-main.js");
+    const child = spawn(process.execPath, [brokerEntry], {
+      detached: true,
+      stdio: "ignore",
+      env: {
+        ...process.env,
+        EXTENSION_SECRET: this.secret ?? "",
+        EXTENSION_PORT: String(this.port),
+      },
+    });
+    child.unref();
+  }
+
+  private attachSocket(ws: WebSocket): void {
+    this.ws = ws;
+    ws.on("message", (data) => this.onMessage(data.toString()));
+    ws.on("close", () => {
+      if (this.ws === ws) {
+        this.ws = null;
+      }
+      this.rejectAllPending("Broker connection closed");
+    });
+    ws.on("error", () => {
+      /* close handler will run */
+    });
+  }
+
+  private onMessage(raw: string): void {
+    let decoded: { payload?: BrokerServerFrame; signature?: string };
+    try {
+      decoded = JSON.parse(raw);
+    } catch {
+      return;
+    }
+    if (!decoded || !decoded.payload || typeof decoded.signature !== "string") {
+      return;
+    }
+    if (
+      !verifySignature(
+        this.secret!,
+        JSON.stringify(decoded.payload),
+        decoded.signature
+      )
+    ) {
+      console.error("BrowserAPI: invalid broker message signature");
+      return;
+    }
+
+    const frame = decoded.payload;
+    if (frame.kind === "tool-result") {
+      const resolver = this.requestMap.get(frame.requestId);
+      if (!resolver) {
+        return;
+      }
+      clearTimeout(resolver.timer);
+      this.requestMap.delete(frame.requestId);
+      resolver.resolve(frame.message);
+    } else if (frame.kind === "tool-error") {
+      const resolver = this.requestMap.get(frame.requestId);
+      if (!resolver) {
+        return;
+      }
+      clearTimeout(resolver.timer);
+      this.requestMap.delete(frame.requestId);
+      resolver.reject(new Error(frame.errorMessage));
+    }
+    // control-result frames are handled by control-specific waiters (none yet).
+  }
+
+  private rejectAllPending(reason: string): void {
+    for (const [requestId, resolver] of this.requestMap) {
+      clearTimeout(resolver.timer);
+      resolver.reject(new Error(reason));
+      this.requestMap.delete(requestId);
+    }
+  }
+
+  private sendTool<T extends ExtensionMessage>(
+    message: ServerMessage
+  ): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+        reject(new Error("Not connected to the broker"));
+        return;
+      }
+      const requestId = `${process.pid}-${++this.requestCounter}`;
+      const timer = setTimeout(() => {
+        if (this.requestMap.has(requestId)) {
+          this.requestMap.delete(requestId);
+          reject(new Error("Timed out waiting for broker response"));
+        }
+      }, REQUEST_TIMEOUT_MS);
+      (timer as { unref?: () => void }).unref?.();
+      this.requestMap.set(requestId, {
+        resolve: resolve as (msg: ExtensionMessage) => void,
+        reject,
+        timer,
+      });
+
+      const frame: BrokerClientFrame = { kind: "tool", requestId, message };
+      const payload = JSON.stringify(frame);
+      const signature = createSignature(this.secret!, payload);
+      this.ws.send(JSON.stringify({ payload: frame, signature }));
+    });
+  }
+
+  // ---- public tool API (unchanged signatures) ----
+
   async openTab(url: string): Promise<number | undefined> {
-    const correlationId = this.sendMessageToExtension({
+    const message = await this.sendTool<OpenedTabIdExtensionMessage>({
       cmd: "open-tab",
       url,
     });
-    const message = await this.waitForResponse(correlationId, "opened-tab-id");
     return message.tabId;
   }
 
-  async closeTabs(tabIds: number[]) {
-    const correlationId = this.sendMessageToExtension({
-      cmd: "close-tabs",
-      tabIds,
-    });
-    await this.waitForResponse(correlationId, "tabs-closed");
+  async closeTabs(tabIds: number[]): Promise<void> {
+    await this.sendTool({ cmd: "close-tabs", tabIds });
   }
 
   async getTabList(): Promise<BrowserTab[]> {
-    const correlationId = this.sendMessageToExtension({
+    const message = await this.sendTool<TabsExtensionMessage>({
       cmd: "get-tab-list",
     });
-    const message = await this.waitForResponse(correlationId, "tabs");
     return message.tabs;
   }
 
   async getBrowserRecentHistory(
     searchQuery?: string
   ): Promise<BrowserHistoryItem[]> {
-    const correlationId = this.sendMessageToExtension({
+    const message = await this.sendTool<BrowserHistoryExtensionMessage>({
       cmd: "get-browser-recent-history",
       searchQuery,
     });
-    const message = await this.waitForResponse(correlationId, "history");
     return message.historyItems;
   }
 
@@ -128,33 +262,27 @@ export class BrowserAPI {
     tabId: number,
     offset: number
   ): Promise<TabContentExtensionMessage> {
-    const correlationId = this.sendMessageToExtension({
+    return await this.sendTool<TabContentExtensionMessage>({
       cmd: "get-tab-content",
       tabId,
       offset,
     });
-    return await this.waitForResponse(correlationId, "tab-content");
   }
 
   async reorderTabs(tabOrder: number[]): Promise<number[]> {
-    const correlationId = this.sendMessageToExtension({
+    const message = await this.sendTool<ReorderedTabsExtensionMessage>({
       cmd: "reorder-tabs",
       tabOrder,
     });
-    const message = await this.waitForResponse(correlationId, "tabs-reordered");
     return message.tabOrder;
   }
 
   async findHighlight(tabId: number, queryPhrase: string): Promise<number> {
-    const correlationId = this.sendMessageToExtension({
+    const message = await this.sendTool<FindHighlightExtensionMessage>({
       cmd: "find-highlight",
       tabId,
       queryPhrase,
     });
-    const message = await this.waitForResponse(
-      correlationId,
-      "find-highlight-result"
-    );
     return message.noOfResults;
   }
 
@@ -164,81 +292,14 @@ export class BrowserAPI {
     groupColor: string,
     groupTitle: string
   ): Promise<number> {
-    const correlationId = this.sendMessageToExtension({
+    const message = await this.sendTool<TabGroupCreatedExtensionMessage>({
       cmd: "group-tabs",
       tabIds,
       isCollapsed,
       groupColor,
       groupTitle,
     });
-    const message = await this.waitForResponse(correlationId, "new-tab-group");
     return message.groupId;
-  }
-
-  private createSignature(payload: string): string {
-    if (!this.sharedSecret) {
-      throw new Error("Shared secret not initialized");
-    }
-    const hmac = crypto.createHmac("sha256", this.sharedSecret);
-    hmac.update(payload);
-    return hmac.digest("hex");
-  }
-
-  private sendMessageToExtension(message: ServerMessage): string {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-      throw new Error("WebSocket is not open");
-    }
-
-    const correlationId = Math.random().toString(36).substring(2);
-    const req: ServerMessageRequest = { ...message, correlationId };
-    const payload = JSON.stringify(req);
-    const signature = this.createSignature(payload);
-    const signedMessage = {
-      payload: req,
-      signature: signature,
-    };
-
-    // Send the signed message to the extension
-    this.ws.send(JSON.stringify(signedMessage));
-
-    return correlationId;
-  }
-
-  private handleDecodedExtensionMessage(decoded: ExtensionMessage) {
-    const { correlationId } = decoded;
-    const { resolve, resource } = this.extensionRequestMap.get(correlationId)!;
-    if (resource !== decoded.resource) {
-      console.error("Resource mismatch:", resource, decoded.resource);
-      return;
-    }
-    this.extensionRequestMap.delete(correlationId);
-    resolve(decoded);
-  }
-
-  private handleExtensionError(decoded: ExtensionError) {
-    const { correlationId, errorMessage } = decoded;
-    const { reject } = this.extensionRequestMap.get(correlationId)!;
-    this.extensionRequestMap.delete(correlationId);
-    reject(errorMessage);
-  }
-
-  private async waitForResponse<T extends ExtensionMessage["resource"]>(
-    correlationId: string,
-    resource: T
-  ): Promise<Extract<ExtensionMessage, { resource: T }>> {
-    return new Promise<Extract<ExtensionMessage, { resource: T }>>(
-      (resolve, reject) => {
-        this.extensionRequestMap.set(correlationId, {
-          resolve: resolve as (value: ExtensionMessage) => void,
-          resource,
-          reject,
-        });
-        setTimeout(() => {
-          this.extensionRequestMap.delete(correlationId);
-          reject("Timed out waiting for response");
-        }, EXTENSION_RESPONSE_TIMEOUT_MS);
-      }
-    );
   }
 }
 
@@ -249,10 +310,4 @@ function readConfig() {
       ? parseInt(process.env.EXTENSION_PORT, 10)
       : WS_DEFAULT_PORT,
   };
-}
-
-export function isErrorMessage(message: any): message is ExtensionError {
-  return (
-    message.errorMessage !== undefined && message.correlationId !== undefined
-  );
 }

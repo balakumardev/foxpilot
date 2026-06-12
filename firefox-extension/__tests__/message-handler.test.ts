@@ -550,4 +550,37 @@ describe("MessageHandler", () => {
       });
     });
   });
+
+  describe("automation mode gate", () => {
+    it("blocks an automation command when automation mode is disabled", async () => {
+      (browser.storage.local.get as jest.Mock).mockResolvedValue({
+        config: { secret: "test-secret", ports: [8089], automationMode: false },
+      });
+
+      const request = {
+        cmd: "take-snapshot",
+        tabId: 1,
+        correlationId: "c1",
+      } as unknown as ServerMessageRequest;
+
+      await expect(
+        messageHandler.handleDecodedMessage(request)
+      ).rejects.toThrow("requires Automation Mode");
+    });
+
+    it("allows a non-automation command when automation mode is disabled", async () => {
+      (browser.tabs.create as jest.Mock).mockResolvedValue({ id: 7 });
+
+      const request: ServerMessageRequest = {
+        cmd: "open-tab",
+        url: "https://example.com",
+        correlationId: "c2",
+      };
+
+      await messageHandler.handleDecodedMessage(request);
+      expect(browser.tabs.create).toHaveBeenCalledWith({
+        url: "https://example.com",
+      });
+    });
+  });
 });
