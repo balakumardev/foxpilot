@@ -4,10 +4,11 @@ import type {
   ServerMessageRequest,
 } from "@browser-control-mcp/common";
 import { getMessageSignature } from "./auth";
+import { ExtensionTransport } from "./transport";
 
 const RECONNECT_INTERVAL = 2000; // 2 seconds
 
-export class WebsocketClient {
+export class WebsocketClient implements ExtensionTransport {
   private socket: WebSocket | null = null;
   private readonly port: number;
   private readonly secret: string;

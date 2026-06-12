@@ -1,11 +1,11 @@
 import type { ServerMessageRequest } from "@browser-control-mcp/common";
-import { WebsocketClient } from "./client";
+import { ExtensionTransport } from "./transport";
 import { isCommandAllowed, isDomainInDenyList, COMMAND_TO_TOOL_ID, addAuditLogEntry, requiresAutomationMode, isAutomationModeEnabled } from "./extension-config";
 
 export class MessageHandler {
-  private client: WebsocketClient;
+  private client: ExtensionTransport;
 
-  constructor(client: WebsocketClient) {
+  constructor(client: ExtensionTransport) {
     this.client = client;
   }
 

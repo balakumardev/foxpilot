@@ -1,14 +1,19 @@
 import { WebsocketClient } from "./client";
+import { LongPollClient } from "./longpoll-client";
+import { ExtensionTransport } from "./transport";
 import { MessageHandler } from "./message-handler";
-import { getConfig, generateSecret } from "./extension-config";
+import { getConfig, generateSecret, getTransport } from "./extension-config";
 
-function initClient(port: number, secret: string) {
-  const wsClient = new WebsocketClient(port, secret);
-  const messageHandler = new MessageHandler(wsClient);
+function initClient(port: number, secret: string, transport: "websocket" | "longpoll") {
+  const client: ExtensionTransport =
+    transport === "longpoll"
+      ? new LongPollClient(port, secret)
+      : new WebsocketClient(port, secret);
+  const messageHandler = new MessageHandler(client);
 
-  wsClient.connect();
+  client.connect();
 
-  wsClient.addMessageListener(async (message) => {
+  client.addMessageListener(async (message) => {
     console.log("Message from server:", message);
 
     try {
@@ -16,7 +21,7 @@ function initClient(port: number, secret: string) {
     } catch (error) {
       console.error("Error handling message:", error);
       if (error instanceof Error) {
-        await wsClient.sendErrorToServer(message.correlationId, error.message);
+        await client.sendErrorToServer(message.correlationId, error.message);
       }
     }
   });
@@ -35,7 +40,7 @@ async function initExtension() {
 }
 
 initExtension()
-  .then((config) => {
+  .then(async (config) => {
     const secret = config.secret;
 
     if (!secret) {
@@ -47,8 +52,9 @@ initExtension()
       console.error("No ports configured in extension config");
       return;
     }
+    const transport = await getTransport();
     for (const port of portList) {
-      initClient(port, secret);
+      initClient(port, secret, transport);
     }
     console.log("Browser extension initialized");
   })

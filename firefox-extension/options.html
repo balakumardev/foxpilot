@@ -425,6 +425,18 @@
     </div>
 
     <div class="section-container">
+      <h2>Connection Transport</h2>
+      <div class="section-content">
+        <p>WebSocket (default, recommended) or HTTP long-poll fallback for environments where WebSocket is unreliable. Changing this reloads the extension.</p>
+        <select id="transport-select" style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; margin-bottom: 10px;">
+          <option value="websocket">WebSocket (recommended)</option>
+          <option value="longpoll">HTTP long-poll</option>
+        </select>
+        <div class="status" id="transport-status"></div>
+      </div>
+    </div>
+
+    <div class="section-container">
       <h2 class="collapsed" role="button" aria-expanded="false" tabindex="0" id="domain-filtering-header">Domain Filtering</h2>
       <div class="section-content collapsed" aria-labelledby="domain-filtering-header">
         <p>Configure which domains the extension can interact with:</p>

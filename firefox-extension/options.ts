@@ -15,6 +15,8 @@ import {
   getToolNameById,
   isAutomationModeEnabled,
   setAutomationModeEnabled,
+  getTransport,
+  setTransport,
 } from "./extension-config";
 
 const secretDisplay = document.getElementById(
@@ -45,6 +47,12 @@ const automationModeToggle = document.getElementById(
 ) as HTMLInputElement;
 const automationModeStatus = document.getElementById(
   "automation-mode-status"
+) as HTMLDivElement;
+const transportSelect = document.getElementById(
+  "transport-select"
+) as HTMLSelectElement;
+const transportStatus = document.getElementById(
+  "transport-status"
 ) as HTMLDivElement;
 
 /**
@@ -240,6 +248,43 @@ async function handleAutomationModeToggle(event: Event) {
   } catch (error) {
     console.error("Error toggling automation mode:", error);
     automationModeToggle.checked = !enabled;
+  }
+}
+
+/**
+ * Loads the current transport preference into the selector.
+ */
+async function loadTransport() {
+  try {
+    transportSelect.value = await getTransport();
+  } catch (error) {
+    console.error("Error loading transport:", error);
+  }
+}
+
+/**
+ * Handles changing the connection transport. Persists the choice and reloads
+ * the extension so the new transport takes effect (same pattern as ports).
+ */
+async function handleTransportChange(event: Event) {
+  if (!event.isTrusted) {
+    return;
+  }
+  const value = transportSelect.value === "longpoll" ? "longpoll" : "websocket";
+  try {
+    await setTransport(value);
+    transportStatus.textContent = "Transport saved. Reloading extension...";
+    transportStatus.style.color = "#4caf50";
+    // Reload the extension so the new transport takes effect:
+    browser.runtime.reload();
+  } catch (error) {
+    console.error("Error saving transport:", error);
+    transportStatus.textContent = "Failed to save transport";
+    transportStatus.style.color = "red";
+    setTimeout(() => {
+      transportStatus.textContent = "";
+      transportStatus.style.color = "";
+    }, 3000);
   }
 }
 
@@ -647,6 +692,7 @@ saveDomainListsButton.addEventListener("click", saveDomainLists);
 savePortsButton.addEventListener("click", savePorts);
 clearAuditLogButton.addEventListener("click", handleClearAuditLog);
 automationModeToggle.addEventListener("change", handleAutomationModeToggle);
+transportSelect.addEventListener("change", handleTransportChange);
 document.addEventListener("DOMContentLoaded", () => {
   loadSecret();
   createToolSettingsUI();
@@ -654,6 +700,7 @@ document.addEventListener("DOMContentLoaded", () => {
   loadPorts();
   loadAuditLog();
   loadAutomationMode();
+  loadTransport();
   initializeCollapsibleSections();
 
   // Ensure modal is hidden by default

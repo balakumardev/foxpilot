@@ -131,6 +131,7 @@ export interface ExtensionConfig {
   ports: number[];
   auditLog?: AuditLogEntry[];
   automationMode?: boolean;
+  transport?: "websocket" | "longpoll";
 }
 
 /**
@@ -309,6 +310,26 @@ export async function getPorts(): Promise<number[]> {
 export async function setPorts(ports: number[]): Promise<void> {
   const config = await getConfig();
   config.ports = ports;
+  await saveConfig(config);
+}
+
+/**
+ * Gets the configured transport. Defaults to "websocket" when unset.
+ * @returns A Promise that resolves with the transport preference
+ */
+export async function getTransport(): Promise<"websocket" | "longpoll"> {
+  const config = await getConfig();
+  return config.transport === "longpoll" ? "longpoll" : "websocket";
+}
+
+/**
+ * Sets the transport preference (WebSocket or HTTP long-poll).
+ * @param transport The transport to use
+ * @returns A Promise that resolves when the setting is saved
+ */
+export async function setTransport(transport: "websocket" | "longpoll"): Promise<void> {
+  const config = await getConfig();
+  config.transport = transport;
   await saveConfig(config);
 }
 

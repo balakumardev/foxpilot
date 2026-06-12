@@ -33,6 +33,45 @@ describe("automation mode config", () => {
   });
 });
 
+import { getTransport, setTransport } from "../extension-config";
+
+describe("transport config", () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it("defaults to websocket when not set", async () => {
+    (browser.storage.local.get as jest.Mock).mockResolvedValue({
+      config: { secret: "s", ports: [8089] },
+    });
+    expect(await getTransport()).toBe("websocket");
+  });
+
+  it("reports longpoll when configured", async () => {
+    (browser.storage.local.get as jest.Mock).mockResolvedValue({
+      config: { secret: "s", ports: [8089], transport: "longpoll" },
+    });
+    expect(await getTransport()).toBe("longpoll");
+  });
+
+  it("falls back to websocket for an unrecognized value", async () => {
+    (browser.storage.local.get as jest.Mock).mockResolvedValue({
+      config: { secret: "s", ports: [8089], transport: "bogus" },
+    });
+    expect(await getTransport()).toBe("websocket");
+  });
+
+  it("persists the transport when set", async () => {
+    (browser.storage.local.get as jest.Mock).mockResolvedValue({
+      config: { secret: "s", ports: [8089] },
+    });
+    await setTransport("longpoll");
+    expect(browser.storage.local.set).toHaveBeenCalledWith({
+      config: expect.objectContaining({ transport: "longpoll" }),
+    });
+  });
+});
+
 import {
   requiresAutomationMode,
   shouldBlockForAutomationMode,
