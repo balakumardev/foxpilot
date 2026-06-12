@@ -116,6 +116,11 @@ export const AVAILABLE_TOOLS: ToolInfo[] = [
     description: "Allows the MCP server to run JavaScript in a page and read its result"
   },
   {
+    id: "upload-file",
+    name: "Upload File",
+    description: "Allows the MCP server to upload a local file into a file input on a page by snapshot uid"
+  },
+  {
     id: "take-screenshot",
     name: "Take Screenshot",
     description: "Allows the MCP server to capture a screenshot of a page (viewport, full page, or a single element)"
@@ -145,6 +150,7 @@ export const COMMAND_TO_TOOL_ID: Record<ServerMessageRequest["cmd"], string> = {
   "type-text": "type-text",
   "press-key": "press-key",
   "evaluate-script": "evaluate-script",
+  "upload-file": "upload-file",
   "take-screenshot": "take-screenshot",
 };
 

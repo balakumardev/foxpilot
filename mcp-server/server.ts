@@ -3,6 +3,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import * as fs from "fs";
 import { BrowserAPI } from "./browser-api";
+import { readFileForUpload } from "./file-upload";
 import dayjs from "dayjs";
 import relativeTime from "dayjs/plugin/relativeTime";
 
@@ -402,6 +403,34 @@ mcpServer.tool(
     return {
       content: [{ type: "text", text: JSON.stringify(value) }],
     };
+  }
+);
+
+mcpServer.tool(
+  "upload-file",
+  "Upload a local file into a file <input> on a page. Pass the 'uid' of the file input from a recent take-snapshot and the absolute 'filePath' of the file on the machine running the MCP server. The server reads the file itself and injects it into the input (browsers forbid setting a file input's path from script, so this is the reliable way). Works for arbitrary local paths. Max file size 25 MB.",
+  { tabId: z.number(), uid: z.string(), filePath: z.string() },
+  async ({ tabId, uid, filePath }) => {
+    try {
+      // The server reads the file off disk and ships the bytes (base64) to the
+      // extension; the extension never sees a filesystem path.
+      const file = readFileForUpload(filePath);
+      await browserApi.uploadFile(tabId, uid, file);
+      return {
+        content: [
+          { type: "text", text: `Uploaded ${file.filename} to element ${uid}` },
+        ],
+      };
+    } catch (err) {
+      // Missing/too-large file or a failed in-page upload — surface a clear,
+      // non-throwing error content item so the model can recover (e.g. fix the
+      // path or take a fresh snapshot for a stale uid).
+      const message = err instanceof Error ? err.message : String(err);
+      return {
+        content: [{ type: "text", text: `Upload failed: ${message}` }],
+        isError: true,
+      };
+    }
   }
 );
 

@@ -137,6 +137,84 @@ export function buildEvalPageScript(
 }
 
 /**
+ * Builds the PAGE-world script for the `upload-file` tool.
+ *
+ * Browsers forbid setting a file `<input>`'s value from JS, so the only way to
+ * programmatically populate one is the verified `DataTransfer` technique:
+ * reconstruct a `File` from the bytes and assign it via a `DataTransfer`'s
+ * `files`. The MCP server has already read the file off disk and passed its
+ * bytes here as `base64` — this script decodes them in the page.
+ *
+ * Returns the source of a synchronous IIFE that:
+ *   - resolves the element by its snapshot uid (`data-bcmcp-uid="<uid>"`);
+ *     if it no longer resolves, writes
+ *     `{ ok:false, error:"...not found — take a fresh snapshot." }`;
+ *   - decodes `base64` (`atob` → a `Uint8Array` built with a `charCodeAt` loop);
+ *   - builds `new File([bytes], filename, { type: mimeType })`;
+ *   - assigns it to the input via `DataTransfer` (`el.files = dt.files`);
+ *   - dispatches bubbling `input` and `change` events so frameworks observe it;
+ *   - writes `{ ok:true }` to `resultAttr` on `document.documentElement`.
+ * The whole body is wrapped in try/catch → `{ ok:false, error:String(e) }`.
+ *
+ * It is synchronous (File/DataTransfer/dispatch are all sync), so the result
+ * attribute is set immediately and `runInPageWorld`'s first poll sees it.
+ *
+ * `uid`, `filename`, `mimeType`, `base64`, and `resultAttr` are embedded via
+ * `jsonForScript` so any characters — including `</script>` — are injected
+ * safely.
+ */
+export function buildUploadPageScript(
+  uid: string,
+  filename: string,
+  mimeType: string,
+  base64: string,
+  resultAttr: string
+): string {
+  return (
+    "(function () {" +
+    "var __attr = " +
+    jsonForScript(resultAttr) +
+    ";" +
+    "try {" +
+    "var __uid = " +
+    jsonForScript(uid) +
+    ";" +
+    "var __el = document.querySelector('[data-bcmcp-uid=\"' + __uid + '\"]');" +
+    "if (!__el) {" +
+    "document.documentElement.setAttribute(__attr, JSON.stringify({ ok:false, error: \"Element uid '\" + __uid + \"' not found \\u2014 take a fresh snapshot (uids are reassigned each snapshot).\" }));" +
+    "return;" +
+    "}" +
+    "var __b64 = " +
+    jsonForScript(base64) +
+    ";" +
+    "var __filename = " +
+    jsonForScript(filename) +
+    ";" +
+    "var __mimeType = " +
+    jsonForScript(mimeType) +
+    ";" +
+    // Decode base64 to a byte string, then to a Uint8Array via charCodeAt.
+    "var __bin = atob(__b64);" +
+    "var __len = __bin.length;" +
+    "var __bytes = new Uint8Array(__len);" +
+    "for (var __i = 0; __i < __len; __i++) { __bytes[__i] = __bin.charCodeAt(__i); }" +
+    // Reconstruct the File and assign it to the input via DataTransfer.
+    "var __file = new File([__bytes], __filename, { type: __mimeType });" +
+    "var __dt = new DataTransfer();" +
+    "__dt.items.add(__file);" +
+    "__el.files = __dt.files;" +
+    // Notify frameworks listening in the page world.
+    "__el.dispatchEvent(new Event(\"input\", { bubbles: true }));" +
+    "__el.dispatchEvent(new Event(\"change\", { bubbles: true }));" +
+    "document.documentElement.setAttribute(__attr, JSON.stringify({ ok:true }));" +
+    "} catch (err) {" +
+    "document.documentElement.setAttribute(__attr, JSON.stringify({ ok:false, error: String(err && err.message || err) }));" +
+    "}" +
+    "})();"
+  );
+}
+
+/**
  * Orchestrates inject → poll → parse. `exec` is the injected
  * `browser.tabs.executeScript`-style wrapper (`(code) => Promise<any[]>`), and
  * `sleep` is injected for testability.

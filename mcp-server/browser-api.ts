@@ -471,6 +471,24 @@ export class BrowserAPI {
     return message.value;
   }
 
+  async uploadFile(
+    tabId: number,
+    uid: string,
+    file: { filename: string; mimeType: string; base64: string }
+  ): Promise<void> {
+    const message = await this.sendTool<ActionResultExtensionMessage>({
+      cmd: "upload-file",
+      tabId,
+      uid,
+      filename: file.filename,
+      mimeType: file.mimeType,
+      base64: file.base64,
+    });
+    if (!message.ok) {
+      throw new Error(message.error ?? "Upload failed");
+    }
+  }
+
   async takeScreenshot(
     tabId: number,
     opts: { fullPage?: boolean; uid?: string; format?: "png" | "jpeg" }

@@ -128,6 +128,21 @@ export interface EvaluateScriptServerMessage extends ServerMessageBase {
   args?: unknown[];
 }
 
+// Upload a local file into a file <input> identified by a snapshot uid. The MCP
+// server (a Node process with filesystem access) reads the file itself and ships
+// the bytes here as base64 — the extension never sees a filesystem path. The
+// page-world script reconstructs a `File` via `DataTransfer` and assigns it to
+// the input, which is the only way to programmatically populate a file input
+// (browsers forbid setting `input.value` for security).
+export interface UploadFileServerMessage extends ServerMessageBase {
+  cmd: "upload-file";
+  tabId: number;
+  uid: string;
+  filename: string;
+  mimeType: string;
+  base64: string;
+}
+
 // Capture a screenshot of a tab. `fullPage` stitches the whole scrollable page;
 // `uid` (a snapshot uid) crops to just that element; otherwise the visible
 // viewport is captured. `format` defaults to png. The server-side `filePath`
@@ -163,6 +178,7 @@ export type ServerMessage =
   | TypeTextServerMessage
   | PressKeyServerMessage
   | EvaluateScriptServerMessage
+  | UploadFileServerMessage
   | TakeScreenshotServerMessage;
 
 export type ServerMessageRequest = ServerMessage & { correlationId: string };

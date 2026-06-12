@@ -2,6 +2,7 @@ import {
   buildInjectorCode,
   buildPollerCode,
   buildEvalPageScript,
+  buildUploadPageScript,
   runInPageWorld,
 } from "../injected/page-world";
 
@@ -129,6 +130,103 @@ describe("buildEvalPageScript", () => {
     const parsed = JSON.parse(document.documentElement.getAttribute(attr) as string);
     expect(parsed.ok).toBe(false);
     expect(parsed.error).toContain("boom");
+    document.documentElement.removeAttribute(attr);
+    el.remove();
+  });
+});
+
+describe("buildUploadPageScript", () => {
+  const attr = "data-bcmcp-result-upload-1";
+
+  it("embeds the uid, filename, mimeType, and result attribute (JSON-encoded)", () => {
+    const code = buildUploadPageScript(
+      "e7",
+      "report.pdf",
+      "application/pdf",
+      "QUJD", // base64 for "ABC"
+      attr
+    );
+
+    expect(code).toContain(JSON.stringify("e7"));
+    expect(code).toContain(JSON.stringify("report.pdf"));
+    expect(code).toContain(JSON.stringify("application/pdf"));
+    expect(code).toContain(JSON.stringify("QUJD"));
+    expect(code).toContain(JSON.stringify(attr));
+  });
+
+  it("uses the DataTransfer + File technique and decodes base64 with atob", () => {
+    const code = buildUploadPageScript("e1", "a.txt", "text/plain", "QQ==", attr);
+
+    // The verified technique: reconstruct a File and assign it via DataTransfer.
+    expect(code).toContain("DataTransfer");
+    expect(code).toContain("new File(");
+    expect(code).toContain("atob");
+    // charCodeAt loop turns the decoded binary string into a Uint8Array.
+    expect(code).toContain("charCodeAt");
+    expect(code).toContain("Uint8Array");
+    // Assigns to input.files so the browser sees the file as if the user picked it.
+    expect(code).toContain(".files");
+  });
+
+  it("dispatches bubbling input and change events", () => {
+    const code = buildUploadPageScript("e1", "a.txt", "text/plain", "QQ==", attr);
+    expect(code).toContain('"input"');
+    expect(code).toContain('"change"');
+    expect(code).toContain("bubbles");
+    expect(code).toContain("dispatchEvent");
+  });
+
+  it("resolves the element by its bcmcp uid attribute and has a missing-uid branch", () => {
+    const code = buildUploadPageScript("e9", "a.txt", "text/plain", "QQ==", attr);
+    // Looks up the element by the snapshot uid attribute.
+    expect(code).toContain("data-bcmcp-uid");
+    expect(code).toContain("querySelector");
+    // Writes a not-found error when the uid no longer resolves.
+    expect(code).toContain("not found");
+    expect(code).toContain("setAttribute");
+  });
+
+  it("has both ok:true and ok:false branches wrapped in try/catch", () => {
+    const code = buildUploadPageScript("e1", "a.txt", "text/plain", "QQ==", attr);
+    expect(code).toContain("ok:true");
+    expect(code).toContain("ok:false");
+    expect(code).toContain("try");
+    expect(code).toContain("catch");
+  });
+
+  it("escapes a filename containing </script> and quotes safely", () => {
+    const nasty = `</script><img>"'.png`;
+    const code = buildUploadPageScript("e1", nasty, "image/png", "QQ==", attr);
+    // The `</` sequence must be escaped so a literal closing tag never appears.
+    expect(code).not.toContain("</script>");
+    expect(code).toContain("<\\/script>");
+  });
+
+  it("reports a missing uid by writing an ok:false envelope to the result attribute", () => {
+    // The emitted body is plain JS; running it against jsdom for a uid that does
+    // NOT exist exercises the not-found branch end-to-end (no File/DataTransfer
+    // needed on this path, so jsdom handles it). The happy path that assigns
+    // input.files is browser-only and is covered by the structural assertions
+    // above plus the message-handler orchestration test.
+    document.documentElement.removeAttribute(attr);
+    const code = buildUploadPageScript(
+      "missing-uid",
+      "a.txt",
+      "text/plain",
+      "QQ==",
+      attr
+    );
+
+    const el = document.createElement("script");
+    el.textContent = code;
+    document.head.appendChild(el);
+
+    const raw = document.documentElement.getAttribute(attr);
+    expect(raw).not.toBeNull();
+    const parsed = JSON.parse(raw as string);
+    expect(parsed.ok).toBe(false);
+    expect(parsed.error).toContain("not found");
+
     document.documentElement.removeAttribute(attr);
     el.remove();
   });

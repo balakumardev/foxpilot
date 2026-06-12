@@ -3,7 +3,11 @@ import { ExtensionTransport } from "./transport";
 import { isCommandAllowed, isDomainInDenyList, COMMAND_TO_TOOL_ID, addAuditLogEntry, requiresAutomationMode, isAutomationModeEnabled } from "./extension-config";
 import { buildSnapshot } from "./injected/snapshot-script";
 import { performInputAction } from "./injected/action-script";
-import { buildEvalPageScript, runInPageWorld } from "./injected/page-world";
+import {
+  buildEvalPageScript,
+  buildUploadPageScript,
+  runInPageWorld,
+} from "./injected/page-world";
 import {
   cropElementFromCapture,
   mimeTypeForFormat,
@@ -28,6 +32,13 @@ let evalKeyCounter = 0;
 // (and reporting a likely-CSP timeout). The broker's evaluate-script response
 // timeout (30s) is comfortably larger than this.
 const EVAL_TIMEOUT_MS = 10000;
+
+// upload-file uses the same inject/poll page-world machinery. Its page script is
+// synchronous (File/DataTransfer assignment), so the result attribute appears on
+// the first poll — but larger files take a moment to decode, so we allow a
+// slightly higher ceiling than eval. The broker's upload-file response timeout
+// (30s) is comfortably larger than this.
+const UPLOAD_TIMEOUT_MS = 15000;
 
 /**
  * Returns whether a URL is allowed for in-tab navigation: https:// always, and
@@ -272,6 +283,16 @@ export class MessageHandler {
           req.tabId,
           req.function,
           req.args
+        );
+        break;
+      case "upload-file":
+        await this.uploadFile(
+          req.correlationId,
+          req.tabId,
+          req.uid,
+          req.filename,
+          req.mimeType,
+          req.base64
         );
         break;
       case "take-screenshot":
@@ -577,6 +598,55 @@ export class MessageHandler {
       correlationId,
       ok: result.ok,
       value: result.value,
+      error: result.error,
+    });
+  }
+
+  // Uploads a file into a file <input> identified by a snapshot uid. Browsers
+  // forbid setting an input's value from JS, so the only way to populate a file
+  // input is the DataTransfer technique, which must run in the page's REAL world
+  // (frameworks listen there). The MCP server has already read the file off disk
+  // and passed its bytes as base64 — the extension never sees a path. We build a
+  // page-world script that reconstructs the File and assigns it via DataTransfer,
+  // then use the shared inject/poll helper to run it and read the {ok,error}
+  // result. A stale uid is reported as ok:false; CSP-strict pages time out with a
+  // CSP hint (also surfaced as ok:false) rather than throwing.
+  private async uploadFile(
+    correlationId: string,
+    tabId: number,
+    uid: string,
+    filename: string,
+    mimeType: string,
+    base64: string
+  ): Promise<void> {
+    const tab = await browser.tabs.get(tabId);
+    if (tab.url && (await isDomainInDenyList(tab.url))) {
+      throw new Error(`Domain in tab URL is in the deny list`);
+    }
+
+    await this.checkForUrlPermission(tab.url);
+
+    const resultAttr = `data-bcmcp-result-${Date.now()}-${++evalKeyCounter}`;
+    const pageScript = buildUploadPageScript(
+      uid,
+      filename,
+      mimeType,
+      base64,
+      resultAttr
+    );
+
+    const result = await runInPageWorld(
+      (code) => browser.tabs.executeScript(tabId, { code }),
+      pageScript,
+      resultAttr,
+      UPLOAD_TIMEOUT_MS,
+      sleep
+    );
+
+    await this.client.sendResourceToServer({
+      resource: "action-result",
+      correlationId,
+      ok: result.ok,
       error: result.error,
     });
   }
