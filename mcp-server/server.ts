@@ -198,7 +198,7 @@ mcpServer.tool(
 
 mcpServer.tool(
   "take-snapshot",
-  "Take an accessibility snapshot of a browser tab's page. Returns a list of interactive elements, each tagged with a stable uid (e.g. [uid=e12]). Use these uids with the click/fill/hover tools to act on elements. Re-take a snapshot after the page changes, as uids are reassigned each time.",
+  "Take an accessibility snapshot of a browser tab's page. Returns a list of interactive elements, each tagged with a stable uid (e.g. [uid=e12]). Use these uids with the click/fill/hover tools to act on elements. Re-take a snapshot after the page changes, as uids are reassigned each time. Set verbose:true to also include headings, aria-labelled elements, and visually-clickable elements that carry cursor:pointer but no semantic role/href/onclick (e.g. React dialog buttons built from <div onClick>) — useful when an expected control is missing from the default snapshot.",
   { tabId: z.number(), verbose: z.boolean().optional() },
   async ({ tabId, verbose }) => {
     const result = await browserApi.takeSnapshot(tabId, verbose ?? false);

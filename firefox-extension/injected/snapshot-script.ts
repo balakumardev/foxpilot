@@ -338,6 +338,100 @@ export function buildSnapshot(
     lines.push(line);
   }
 
+  // --- 6b. (verbose only) second pass: visually-clickable non-semantic
+  // elements. Modern React apps build dialogs/menus from `<div onClick>`-style
+  // controls that carry no role/tabindex/href/onclick attribute (the handler is
+  // attached via addEventListener), so the base pass can't see them. They are
+  // distinguishable only by `cursor: pointer`, which needs getComputedStyle.
+  //
+  // This pass is opt-in (verbose) so the default snapshot stays unchanged, and
+  // it is feature-guarded so jsdom — which has no layout engine and returns
+  // default styles — neither crashes nor alters existing behaviour. The
+  // getComputedStyle call is wrapped in try/catch as a further safety net.
+  const win = doc.defaultView;
+  if (verbose && win && typeof win.getComputedStyle === "function") {
+    const MAX_CLICKABLES = 300;
+    let added = 0;
+
+    function ownDirectText(el: Element): string {
+      // Build the name from the element's IMMEDIATE text only (its direct child
+      // text nodes), never the deep textContent of a large container.
+      const parts: string[] = [];
+      const kids = el.childNodes;
+      for (let k = 0; k < kids.length; k++) {
+        const node = kids[k];
+        if (node.nodeType === 3) {
+          parts.push(node.textContent || "");
+        }
+      }
+      return parts.join(" ");
+    }
+
+    const allEls = doc.querySelectorAll("*");
+    for (let i = 0; i < allEls.length && added < MAX_CLICKABLES; i++) {
+      const el = allEls[i];
+
+      // Already captured by the base pass.
+      if (el.hasAttribute(UID_ATTR)) {
+        continue;
+      }
+      if (isHidden(el)) {
+        continue;
+      }
+
+      let cursor = "";
+      try {
+        cursor = win.getComputedStyle(el).cursor || "";
+      } catch (e) {
+        cursor = "";
+      }
+      if (cursor !== "pointer") {
+        continue;
+      }
+
+      // Prefer leaf-ish clickables: if this element already contains a stamped
+      // descendant, it is a wrapper around a real control — skip it to avoid
+      // duplicating a bigger target.
+      if (el.querySelector("[" + UID_ATTR + "]")) {
+        continue;
+      }
+
+      // Name: aria-label/title, else the element's OWN direct text. A clickable
+      // with no derivable label is noise — skip it.
+      const ariaLabel = el.getAttribute("aria-label");
+      let name = "";
+      if (ariaLabel && collapseWhitespace(ariaLabel)) {
+        name = clip(ariaLabel);
+      } else {
+        const direct = ownDirectText(el);
+        if (collapseWhitespace(direct)) {
+          name = clip(direct);
+        } else {
+          const title = el.getAttribute("title");
+          if (title && collapseWhitespace(title)) {
+            name = clip(title);
+          }
+        }
+      }
+      if (!name) {
+        continue;
+      }
+
+      const flags = getStateFlags(el, "clickable");
+
+      uidCounter += 1;
+      const uid = "e" + uidCounter;
+      el.setAttribute(UID_ATTR, uid);
+      added += 1;
+
+      let line = 'clickable "' + name + '" [uid=' + uid + "]";
+      if (flags.length > 0) {
+        line += " (" + flags.join(", ") + ")";
+      }
+      lines.push(line);
+    }
+  }
+
   // --- 7. join and truncate ---
   const full = lines.join("\n");
   if (full.length > maxLength) {

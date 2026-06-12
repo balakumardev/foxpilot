@@ -328,4 +328,130 @@ describe("buildSnapshot", () => {
     expect(tree).toContain("[uid=e2]");
     expect(tree).toContain("[uid=e3]");
   });
+
+  /**
+   * The verbose-only second pass captures "visually clickable" non-semantic
+   * elements — `<div onClick={...}>`-style controls that modern React apps
+   * (e.g. Linear) build without any role/tabindex/href/onclick attribute.
+   * These are invisible to the base pass but carry `cursor: pointer`.
+   *
+   * jsdom note: jsdom has no layout engine, but it DOES reflect an inline
+   * `cursor: pointer` declaration through `getComputedStyle().cursor`. It does
+   * NOT compute `cursor: pointer` from a UA/author stylesheet rule or from an
+   * element's default behaviour, so the only cursor:pointer inclusions
+   * exercisable here are inline-styled ones. Real pages set the cursor through
+   * CSS classes — that path is browser-only and not reproducible in jsdom.
+   */
+  describe("verbose visually-clickable second pass", () => {
+    it("does not throw and returns a valid result for a DOM of plain divs (guard is safe)", () => {
+      document.body.innerHTML = `
+        <div>One</div>
+        <div><span>Two</span></div>
+        <div>Three</div>
+      `;
+      expect(() => build(true)).not.toThrow();
+      const { tree } = build(true);
+      expect(typeof tree).toBe("string");
+    });
+
+    it("produces byte-identical base lines in verbose vs non-verbose for a semantic-only DOM", () => {
+      // No headings, no aria-label-only, no cursor:pointer elements — so the
+      // verbose extras (headings/aria-label/clickable pass) contribute nothing
+      // and the output must be exactly the same in both modes.
+      document.body.innerHTML = `
+        <a href="/home">Home</a>
+        <button>Sign in</button>
+        <input type="text" aria-label="Name" />
+      `;
+      const nonVerbose = build(false);
+      const verbose = build(true);
+      expect(verbose.tree).toBe(nonVerbose.tree);
+    });
+
+    it("still surfaces base-pass elements (links/buttons/inputs) in verbose mode", () => {
+      document.body.innerHTML = `
+        <a href="/home">Home</a>
+        <button>Sign in</button>
+        <input type="text" aria-label="Name" />
+      `;
+      const { tree } = build(true);
+      expect(tree).toContain('link "Home"');
+      expect(tree).toContain('button "Sign in"');
+      expect(tree).toContain('textbox "Name"');
+    });
+
+    it("captures a non-semantic div with inline cursor:pointer as a clickable (verbose only)", () => {
+      document.body.innerHTML = `<div style="cursor: pointer">Click me</div>`;
+      const verbose = build(true);
+      expect(verbose.tree).toMatch(/clickable "Click me" \[uid=e\d+\]/);
+      // It is verbose-only: the default snapshot must not contain it.
+      const nonVerbose = build(false);
+      expect(nonVerbose.tree).not.toContain("Click me");
+    });
+
+    it("derives the clickable name from aria-label when present", () => {
+      document.body.innerHTML = `<div style="cursor: pointer" aria-label="Open menu"></div>`;
+      const { tree } = build(true);
+      expect(tree).toMatch(/clickable "Open menu" \[uid=e\d+\]/);
+    });
+
+    it("skips a cursor:pointer element that has no derivable name (noise)", () => {
+      document.body.innerHTML = `<div style="cursor: pointer"></div>`;
+      const { tree } = build(true);
+      // An empty-named clickable would be pure noise — it must not be emitted.
+      expect(tree).not.toMatch(/clickable ""/);
+    });
+
+    it("does not capture a cursor:pointer wrapper that contains a stamped descendant (leaf preference)", () => {
+      // The wrapper is cursor:pointer but it already contains a real <button>
+      // captured by the base pass. Adding the wrapper too would just duplicate
+      // a bigger target, so it must be skipped (dedup-by-descendant).
+      document.body.innerHTML = `
+        <div style="cursor: pointer">Wrapper text
+          <button>Inner</button>
+        </div>
+      `;
+      const { tree } = build(true);
+      expect(tree).toContain('button "Inner"');
+      // The wrapper's own text must not appear as a separate clickable entry.
+      expect(tree).not.toMatch(/clickable "Wrapper text"/);
+    });
+
+    it("uses only the element's own direct text, not deep textContent of a container", () => {
+      // The outer div is cursor:pointer and has direct text "Outer" plus a deep
+      // nested span with lots of text. The clickable name must be derived from
+      // the immediate text node ("Outer"), never the nested content.
+      document.body.innerHTML = `<div style="cursor: pointer">Outer<span>deeply nested content that should not be dumped</span></div>`;
+      const { tree } = build(true);
+      expect(tree).toMatch(/clickable "Outer" \[uid=e\d+\]/);
+      expect(tree).not.toContain("deeply nested content");
+    });
+
+    it("does not re-stamp an element already captured by the base pass", () => {
+      // A <button> with cursor:pointer is already a base-pass element; the
+      // second pass must skip it (it is already stamped) so it appears once.
+      document.body.innerHTML = `<button style="cursor: pointer">Only Once</button>`;
+      const { tree } = build(true);
+      const matches = tree.match(/Only Once/g) || [];
+      expect(matches.length).toBe(1);
+      expect(tree).toContain('button "Only Once"');
+      expect(tree).not.toMatch(/clickable "Only Once"/);
+    });
+
+    it("skips hidden cursor:pointer elements", () => {
+      document.body.innerHTML = `
+        <div style="cursor: pointer; display:none">HiddenClick</div>
+        <div style="cursor: pointer" aria-hidden="true">AriaHiddenClick</div>
+      `;
+      const { tree } = build(true);
+      expect(tree).not.toContain("HiddenClick");
+      expect(tree).not.toContain("AriaHiddenClick");
+    });
+
+    it("carries state flags on a captured clickable", () => {
+      document.body.innerHTML = `<div style="cursor: pointer" aria-label="Toggle" aria-expanded="true"></div>`;
+      const { tree } = build(true);
+      expect(tree).toMatch(/clickable "Toggle" \[uid=e\d+\] \(expanded\)/);
+    });
+  });
 });
