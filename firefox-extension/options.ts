@@ -215,7 +215,7 @@ async function handleAutomationModeToggle(event: Event) {
   try {
     if (enabled) {
       const granted = await browser.permissions.request({
-        origins: ["*://*/*"],
+        origins: ["<all_urls>"],
       });
       if (!granted) {
         automationModeToggle.checked = false;
@@ -234,7 +234,7 @@ async function handleAutomationModeToggle(event: Event) {
     } else {
       await setAutomationModeEnabled(false);
       try {
-        await browser.permissions.remove({ origins: ["*://*/*"] });
+        await browser.permissions.remove({ origins: ["<all_urls>"] });
       } catch (removeError) {
         console.error("Could not remove host permission:", removeError);
       }

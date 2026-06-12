@@ -14,7 +14,7 @@
         "http://127.0.0.1/*"
     ],
     "optional_permissions": [
-        "*://*/*",
+        "<all_urls>",
         "find"
     ],
     "background": {
