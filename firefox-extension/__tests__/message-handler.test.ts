@@ -621,6 +621,139 @@ describe("MessageHandler", () => {
     });
   });
 
+  describe("input action commands", () => {
+    const automationConfig = {
+      secret: "test-secret",
+      ports: [8089],
+      domainDenyList: [] as string[],
+      auditLog: [],
+      automationMode: true,
+    };
+
+    beforeEach(() => {
+      (browser.storage.local.get as jest.Mock).mockResolvedValue({
+        config: automationConfig,
+      });
+      (browser.tabs.get as jest.Mock).mockResolvedValue({
+        id: 123,
+        url: "https://example.com",
+      });
+      (browser.permissions.contains as jest.Mock).mockResolvedValue(true);
+    });
+
+    it("click-element replies action-result ok:true when the injected action succeeds", async () => {
+      (browser.tabs.executeScript as jest.Mock).mockResolvedValue([
+        { ok: true },
+      ]);
+
+      const request: ServerMessageRequest = {
+        cmd: "click-element",
+        tabId: 123,
+        uid: "e1",
+        correlationId: "test-correlation-id",
+      };
+
+      await messageHandler.handleDecodedMessage(request);
+
+      expect(browser.tabs.executeScript).toHaveBeenCalled();
+      expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+        resource: "action-result",
+        correlationId: "test-correlation-id",
+        ok: true,
+        error: undefined,
+      });
+    });
+
+    it("click-element replies action-result ok:false with the error when the uid is not found", async () => {
+      (browser.tabs.executeScript as jest.Mock).mockResolvedValue([
+        {
+          ok: false,
+          error:
+            "Element uid 'e9' not found — take a fresh snapshot (uids are reassigned each snapshot).",
+        },
+      ]);
+
+      const request: ServerMessageRequest = {
+        cmd: "click-element",
+        tabId: 123,
+        uid: "e9",
+        correlationId: "test-correlation-id",
+      };
+
+      await messageHandler.handleDecodedMessage(request);
+
+      expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+        resource: "action-result",
+        correlationId: "test-correlation-id",
+        ok: false,
+        error:
+          "Element uid 'e9' not found — take a fresh snapshot (uids are reassigned each snapshot).",
+      });
+    });
+
+    it("fill-element passes the value through to the injected action and replies ok:true", async () => {
+      (browser.tabs.executeScript as jest.Mock).mockResolvedValue([
+        { ok: true },
+      ]);
+
+      const request: ServerMessageRequest = {
+        cmd: "fill-element",
+        tabId: 123,
+        uid: "e2",
+        value: "hello",
+        correlationId: "test-correlation-id",
+      };
+
+      await messageHandler.handleDecodedMessage(request);
+
+      // The injected code must carry the fill action + value.
+      const call = (browser.tabs.executeScript as jest.Mock).mock.calls[0][1];
+      expect(call.code).toContain('"action":"fill"');
+      expect(call.code).toContain('"value":"hello"');
+      expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+        resource: "action-result",
+        correlationId: "test-correlation-id",
+        ok: true,
+        error: undefined,
+      });
+    });
+
+    it("throws if the tab URL domain is in the deny list (no script injected)", async () => {
+      (browser.storage.local.get as jest.Mock).mockResolvedValue({
+        config: { ...automationConfig, domainDenyList: ["example.com"] },
+      });
+
+      const request: ServerMessageRequest = {
+        cmd: "click-element",
+        tabId: 123,
+        uid: "e1",
+        correlationId: "test-correlation-id",
+      };
+
+      await expect(
+        messageHandler.handleDecodedMessage(request)
+      ).rejects.toThrow("Domain in tab URL is in the deny list");
+      expect(browser.tabs.executeScript).not.toHaveBeenCalled();
+    });
+
+    it("blocks input actions when automation mode is disabled", async () => {
+      (browser.storage.local.get as jest.Mock).mockResolvedValue({
+        config: { secret: "test-secret", ports: [8089], automationMode: false },
+      });
+
+      const request: ServerMessageRequest = {
+        cmd: "click-element",
+        tabId: 123,
+        uid: "e1",
+        correlationId: "test-correlation-id",
+      };
+
+      await expect(
+        messageHandler.handleDecodedMessage(request)
+      ).rejects.toThrow("requires Automation Mode");
+    });
+  });
+
   describe("navigate-tab command", () => {
     const automationConfig = {
       secret: "test-secret",

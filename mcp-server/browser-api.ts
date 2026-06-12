@@ -32,6 +32,7 @@ import type {
   TabSelectedExtensionMessage,
   ActiveTabExtensionMessage,
   WaitForTextResultExtensionMessage,
+  ActionResultExtensionMessage,
 } from "@browser-control-mcp/common";
 import { BrokerClientFrame, BrokerServerFrame } from "./broker-protocol";
 import { createSignature, verifySignature } from "./signing";
@@ -368,6 +369,87 @@ export class BrowserAPI {
       timeoutMs,
     });
     return message.found;
+  }
+
+  async clickElement(
+    tabId: number,
+    uid: string,
+    doubleClick?: boolean
+  ): Promise<void> {
+    const message = await this.sendTool<ActionResultExtensionMessage>({
+      cmd: "click-element",
+      tabId,
+      uid,
+      doubleClick,
+    });
+    if (!message.ok) {
+      throw new Error(message.error ?? "Action failed");
+    }
+  }
+
+  async hoverElement(tabId: number, uid: string): Promise<void> {
+    const message = await this.sendTool<ActionResultExtensionMessage>({
+      cmd: "hover-element",
+      tabId,
+      uid,
+    });
+    if (!message.ok) {
+      throw new Error(message.error ?? "Action failed");
+    }
+  }
+
+  async fillElement(tabId: number, uid: string, value: string): Promise<void> {
+    const message = await this.sendTool<ActionResultExtensionMessage>({
+      cmd: "fill-element",
+      tabId,
+      uid,
+      value,
+    });
+    if (!message.ok) {
+      throw new Error(message.error ?? "Action failed");
+    }
+  }
+
+  async fillForm(
+    tabId: number,
+    fields: { uid: string; value: string }[]
+  ): Promise<void> {
+    const message = await this.sendTool<ActionResultExtensionMessage>({
+      cmd: "fill-form",
+      tabId,
+      fields,
+    });
+    if (!message.ok) {
+      throw new Error(message.error ?? "Action failed");
+    }
+  }
+
+  async typeText(tabId: number, text: string, submit?: boolean): Promise<void> {
+    const message = await this.sendTool<ActionResultExtensionMessage>({
+      cmd: "type-text",
+      tabId,
+      text,
+      submit,
+    });
+    if (!message.ok) {
+      throw new Error(message.error ?? "Action failed");
+    }
+  }
+
+  async pressKey(
+    tabId: number,
+    key: string,
+    modifiers?: string[]
+  ): Promise<void> {
+    const message = await this.sendTool<ActionResultExtensionMessage>({
+      cmd: "press-key",
+      tabId,
+      key,
+      modifiers,
+    });
+    if (!message.ok) {
+      throw new Error(message.error ?? "Action failed");
+    }
   }
 }
 

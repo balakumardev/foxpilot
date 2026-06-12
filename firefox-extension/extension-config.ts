@@ -79,6 +79,36 @@ export const AVAILABLE_TOOLS: ToolInfo[] = [
     id: "wait-for-text",
     name: "Wait for Text",
     description: "Allows the MCP server to wait until text appears on a page"
+  },
+  {
+    id: "click-element",
+    name: "Click Element",
+    description: "Allows the MCP server to click elements on a page by snapshot uid"
+  },
+  {
+    id: "hover-element",
+    name: "Hover Element",
+    description: "Allows the MCP server to hover over elements on a page by snapshot uid"
+  },
+  {
+    id: "fill-element",
+    name: "Fill Element",
+    description: "Allows the MCP server to fill inputs and form fields on a page by snapshot uid"
+  },
+  {
+    id: "fill-form",
+    name: "Fill Form",
+    description: "Allows the MCP server to fill multiple form fields on a page in one step"
+  },
+  {
+    id: "type-text",
+    name: "Type Text",
+    description: "Allows the MCP server to type text into the focused element on a page"
+  },
+  {
+    id: "press-key",
+    name: "Press Key",
+    description: "Allows the MCP server to press keyboard keys on a page"
   }
 ];
 
@@ -98,6 +128,12 @@ export const COMMAND_TO_TOOL_ID: Record<ServerMessageRequest["cmd"], string> = {
   "select-tab": "select-tab",
   "get-active-tab": "get-active-tab",
   "wait-for-text": "wait-for-text",
+  "click-element": "click-element",
+  "hover-element": "hover-element",
+  "fill-element": "fill-element",
+  "fill-form": "fill-form",
+  "type-text": "type-text",
+  "press-key": "press-key",
 };
 
 // Commands that actively control a page (navigation, input, scripting, page

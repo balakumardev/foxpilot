@@ -88,6 +88,15 @@ export interface WaitForTextResultExtensionMessage extends ExtensionMessageBase 
   found: boolean;
 }
 
+// Shared reply for all input-automation tools (click, hover, fill, fill-form,
+// type-text, press-key). `ok` is false when the injected action failed (e.g. a
+// uid could not be resolved), with a human-readable `error`.
+export interface ActionResultExtensionMessage extends ExtensionMessageBase {
+  resource: "action-result";
+  ok: boolean;
+  error?: string;
+}
+
 export type ExtensionMessage =
   | TabContentExtensionMessage
   | TabsExtensionMessage
@@ -101,7 +110,8 @@ export type ExtensionMessage =
   | NavigatedExtensionMessage
   | TabSelectedExtensionMessage
   | ActiveTabExtensionMessage
-  | WaitForTextResultExtensionMessage;
+  | WaitForTextResultExtensionMessage
+  | ActionResultExtensionMessage;
 
 export interface ExtensionError {
   correlationId: string;

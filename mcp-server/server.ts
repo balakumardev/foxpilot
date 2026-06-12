@@ -296,6 +296,103 @@ mcpServer.tool(
 );
 
 mcpServer.tool(
+  "click-element",
+  "Click an element on a page. Pass a 'uid' from a recent take-snapshot (e.g. e12). Set doubleClick to fire a double-click. If the uid is stale, this returns an error asking you to take a fresh snapshot.",
+  { tabId: z.number(), uid: z.string(), doubleClick: z.boolean().optional() },
+  async ({ tabId, uid, doubleClick }) => {
+    await browserApi.clickElement(tabId, uid, doubleClick);
+    return {
+      content: [
+        {
+          type: "text",
+          text: `${doubleClick ? "Double-clicked" : "Clicked"} element ${uid}`,
+        },
+      ],
+    };
+  }
+);
+
+mcpServer.tool(
+  "hover-element",
+  "Hover the mouse over an element on a page (useful to reveal menus/tooltips). Pass a 'uid' from a recent take-snapshot (e.g. e12).",
+  { tabId: z.number(), uid: z.string() },
+  async ({ tabId, uid }) => {
+    await browserApi.hoverElement(tabId, uid);
+    return {
+      content: [{ type: "text", text: `Hovered element ${uid}` }],
+    };
+  }
+);
+
+mcpServer.tool(
+  "fill-element",
+  "Set the value of a form field (text input, textarea, <select>, checkbox, or radio) on a page. Pass a 'uid' from a recent take-snapshot (e.g. e12) and the value. For checkboxes/radios, use \"true\"/\"false\". For <select>, use the option's value.",
+  { tabId: z.number(), uid: z.string(), value: z.string() },
+  async ({ tabId, uid, value }) => {
+    await browserApi.fillElement(tabId, uid, value);
+    return {
+      content: [{ type: "text", text: `Filled element ${uid}` }],
+    };
+  }
+);
+
+mcpServer.tool(
+  "fill-form",
+  "Fill multiple form fields in one step. Provide an array of { uid, value } pairs, each uid taken from a recent take-snapshot. Filling stops at the first uid that cannot be resolved and reports it.",
+  {
+    tabId: z.number(),
+    fields: z.array(z.object({ uid: z.string(), value: z.string() })),
+  },
+  async ({ tabId, fields }) => {
+    await browserApi.fillForm(tabId, fields);
+    return {
+      content: [
+        {
+          type: "text",
+          text: `Filled ${fields.length} field(s): ${fields
+            .map((f) => f.uid)
+            .join(", ")}`,
+        },
+      ],
+    };
+  }
+);
+
+mcpServer.tool(
+  "type-text",
+  "Type text into the currently focused element on a page (click or fill an input first to focus it). Set submit to also press Enter and submit the enclosing form. Fails if no input/textarea is focused.",
+  { tabId: z.number(), text: z.string(), submit: z.boolean().optional() },
+  async ({ tabId, text, submit }) => {
+    await browserApi.typeText(tabId, text, submit);
+    return {
+      content: [
+        {
+          type: "text",
+          text: submit ? `Typed text and submitted` : `Typed text`,
+        },
+      ],
+    };
+  }
+);
+
+mcpServer.tool(
+  "press-key",
+  "Press a keyboard key on a page (e.g. 'Enter', 'Escape', 'ArrowDown', 'a'). Optionally hold modifiers (ctrl, shift, alt, meta). Targets the focused element, or the page body if nothing is focused.",
+  {
+    tabId: z.number(),
+    key: z.string(),
+    modifiers: z.array(z.enum(["ctrl", "shift", "alt", "meta"])).optional(),
+  },
+  async ({ tabId, key, modifiers }) => {
+    await browserApi.pressKey(tabId, key, modifiers);
+    const mods = modifiers && modifiers.length ? `${modifiers.join("+")}+` : "";
+    return {
+      content: [{ type: "text", text: `Pressed ${mods}${key}` }],
+    };
+  }
+);
+
+mcpServer.tool(
   "group-browser-tabs",
   "Organize opened browser tabs in a new tab group",
   {

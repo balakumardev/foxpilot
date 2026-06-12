@@ -81,6 +81,46 @@ export interface WaitForTextServerMessage extends ServerMessageBase {
   timeoutMs?: number;
 }
 
+export interface ClickElementServerMessage extends ServerMessageBase {
+  cmd: "click-element";
+  tabId: number;
+  uid: string;
+  doubleClick?: boolean;
+}
+
+export interface HoverElementServerMessage extends ServerMessageBase {
+  cmd: "hover-element";
+  tabId: number;
+  uid: string;
+}
+
+export interface FillElementServerMessage extends ServerMessageBase {
+  cmd: "fill-element";
+  tabId: number;
+  uid: string;
+  value: string;
+}
+
+export interface FillFormServerMessage extends ServerMessageBase {
+  cmd: "fill-form";
+  tabId: number;
+  fields: { uid: string; value: string }[];
+}
+
+export interface TypeTextServerMessage extends ServerMessageBase {
+  cmd: "type-text";
+  tabId: number;
+  text: string;
+  submit?: boolean;
+}
+
+export interface PressKeyServerMessage extends ServerMessageBase {
+  cmd: "press-key";
+  tabId: number;
+  key: string;
+  modifiers?: string[];
+}
+
 export type ServerMessage =
   | OpenTabServerMessage
   | CloseTabsServerMessage
@@ -95,6 +135,12 @@ export type ServerMessage =
   | NavigatePageHistoryServerMessage
   | SelectTabServerMessage
   | GetActiveTabServerMessage
-  | WaitForTextServerMessage;
+  | WaitForTextServerMessage
+  | ClickElementServerMessage
+  | HoverElementServerMessage
+  | FillElementServerMessage
+  | FillFormServerMessage
+  | TypeTextServerMessage
+  | PressKeyServerMessage;
 
 export type ServerMessageRequest = ServerMessage & { correlationId: string };

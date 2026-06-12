@@ -2,6 +2,10 @@ import type { ServerMessageRequest } from "@browser-control-mcp/common";
 import { ExtensionTransport } from "./transport";
 import { isCommandAllowed, isDomainInDenyList, COMMAND_TO_TOOL_ID, addAuditLogEntry, requiresAutomationMode, isAutomationModeEnabled } from "./extension-config";
 import { buildSnapshot } from "./injected/snapshot-script";
+import { performInputAction } from "./injected/action-script";
+
+// The argument shape accepted by the injected `performInputAction` function.
+type InputActionArgs = Parameters<typeof performInputAction>[1];
 
 const sleep = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
@@ -112,6 +116,46 @@ export class MessageHandler {
           req.text,
           req.timeoutMs
         );
+        break;
+      case "click-element":
+        await this.runInputAction(req.correlationId, req.tabId, {
+          action: "click",
+          uid: req.uid,
+          doubleClick: req.doubleClick,
+        });
+        break;
+      case "hover-element":
+        await this.runInputAction(req.correlationId, req.tabId, {
+          action: "hover",
+          uid: req.uid,
+        });
+        break;
+      case "fill-element":
+        await this.runInputAction(req.correlationId, req.tabId, {
+          action: "fill",
+          uid: req.uid,
+          value: req.value,
+        });
+        break;
+      case "fill-form":
+        await this.runInputAction(req.correlationId, req.tabId, {
+          action: "fill-form",
+          fields: req.fields,
+        });
+        break;
+      case "type-text":
+        await this.runInputAction(req.correlationId, req.tabId, {
+          action: "type",
+          text: req.text,
+          submit: req.submit,
+        });
+        break;
+      case "press-key":
+        await this.runInputAction(req.correlationId, req.tabId, {
+          action: "press-key",
+          key: req.key,
+          modifiers: req.modifiers,
+        });
         break;
       default:
         const _exhaustiveCheck: never = req;
@@ -338,6 +382,38 @@ export class MessageHandler {
       tabId,
       snapshot: tree,
       isTruncated,
+    });
+  }
+
+  // Shared executor for the input-automation tools (click, hover, fill,
+  // fill-form, type-text, press-key). Each runs the self-contained
+  // `performInputAction` in the page's JS world against the snapshot uids and
+  // replies with a uniform `action-result`. A failed action (e.g. a stale uid)
+  // is reported as `ok: false` with the error so the MCP layer can surface it.
+  private async runInputAction(
+    correlationId: string,
+    tabId: number,
+    args: InputActionArgs
+  ): Promise<void> {
+    const tab = await browser.tabs.get(tabId);
+    if (tab.url && (await isDomainInDenyList(tab.url))) {
+      throw new Error(`Domain in tab URL is in the deny list`);
+    }
+
+    await this.checkForUrlPermission(tab.url);
+
+    const results = await browser.tabs.executeScript(tabId, {
+      code: `(${performInputAction.toString()})(document, ${JSON.stringify(
+        args
+      )})`,
+    });
+
+    const result = results[0] as { ok: boolean; error?: string };
+    await this.client.sendResourceToServer({
+      resource: "action-result",
+      correlationId,
+      ok: result.ok,
+      error: result.error,
     });
   }
 
