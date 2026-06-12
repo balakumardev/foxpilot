@@ -1,0 +1,227 @@
+import {
+  buildInjectorCode,
+  buildPollerCode,
+  buildEvalPageScript,
+  runInPageWorld,
+} from "../injected/page-world";
+
+/**
+ * These tests exercise the PURE builders and the `runInPageWorld` orchestrator
+ * with a mocked `exec` (the `browser.tabs.executeScript` wrapper). The builders
+ * emit strings of isolated-world / page-world JS; we assert on their shape
+ * rather than executing them, because jsdom has no isolated-vs-page world
+ * separation. The orchestration is verified end-to-end through the mock.
+ */
+describe("buildInjectorCode", () => {
+  it("appends a page-world <script> whose textContent is the JSON-encoded pageScript", () => {
+    const pageScript = "document.title = 'hi';";
+    const code = buildInjectorCode(pageScript);
+
+    // Creates a <script> element.
+    expect(code).toContain("createElement('script')");
+    // Embeds the page script safely as the script's textContent.
+    expect(code).toContain("textContent");
+    expect(code).toContain(JSON.stringify(pageScript));
+    // Appends to head or documentElement, then removes the element.
+    expect(code).toContain("appendChild");
+    expect(code).toContain("document.head");
+  });
+
+  it("escapes a pageScript that contains quotes and </script> safely", () => {
+    const nasty = `const s = "</script><b>x</b>"; alert('x');`;
+    const code = buildInjectorCode(nasty);
+    // The `</` sequence is escaped to `<\/`, so a literal closing tag can never
+    // appear verbatim in the injector (a JS parser reads `<\/` as `</`).
+    expect(code).not.toContain("</script>");
+    expect(code).toContain("<\\/script>");
+    // The embedded value is still parseable JS: re-deriving the escaped form
+    // from the input matches what the builder embeds.
+    const escaped = JSON.stringify(nasty).replace(/<\//g, "<\\/");
+    expect(code).toContain(escaped);
+  });
+});
+
+describe("buildPollerCode", () => {
+  it("reads the result attribute and removes it when present", () => {
+    const attr = "data-bcmcp-result-abc";
+    const code = buildPollerCode(attr);
+    expect(code).toContain("getAttribute");
+    expect(code).toContain("removeAttribute");
+    expect(code).toContain(JSON.stringify(attr));
+    expect(code).toContain("documentElement");
+  });
+});
+
+describe("buildEvalPageScript", () => {
+  const attr = "data-bcmcp-result-1";
+
+  it("embeds the function source, args, and result attribute", () => {
+    const fn = "() => document.title";
+    const args = [1, "two", { three: true }];
+    const code = buildEvalPageScript(fn, args, attr);
+
+    expect(code).toContain(JSON.stringify(fn));
+    expect(code).toContain(JSON.stringify(args));
+    expect(code).toContain(JSON.stringify(attr));
+  });
+
+  it("references setAttribute and has both ok:true and ok:false branches", () => {
+    const code = buildEvalPageScript("() => 1", [], attr);
+    expect(code).toContain("setAttribute");
+    expect(code).toContain("ok:true");
+    expect(code).toContain("ok:false");
+  });
+
+  it("produces a script that actually runs in the page world for a sync function", async () => {
+    // Although the builder targets the page world, the emitted body is plain JS
+    // that we can execute here to prove the contract: it sets the result attr to
+    // a JSON {ok:true,value:...} envelope. We run it as the body of a script
+    // element appended to the jsdom document.
+    document.documentElement.removeAttribute(attr);
+    const fn = "() => 6 * 7";
+    const code = buildEvalPageScript(fn, [], attr);
+
+    const el = document.createElement("script");
+    el.textContent = code;
+    document.head.appendChild(el);
+    // The eval script is synchronous-ish but wraps in an async IIFE; give the
+    // microtask queue a tick to flush before reading the attribute.
+    await Promise.resolve();
+    await new Promise((r) => setTimeout(r, 0));
+
+    const raw = document.documentElement.getAttribute(attr);
+    expect(raw).not.toBeNull();
+    expect(JSON.parse(raw as string)).toEqual({ ok: true, value: 42 });
+    document.documentElement.removeAttribute(attr);
+    el.remove();
+  });
+
+  it("spreads args into the evaluated function", async () => {
+    document.documentElement.removeAttribute(attr);
+    const fn = "(a, b) => a + b";
+    const code = buildEvalPageScript(fn, [3, 4], attr);
+
+    const el = document.createElement("script");
+    el.textContent = code;
+    document.head.appendChild(el);
+    await Promise.resolve();
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(JSON.parse(document.documentElement.getAttribute(attr) as string)).toEqual({
+      ok: true,
+      value: 7,
+    });
+    document.documentElement.removeAttribute(attr);
+    el.remove();
+  });
+
+  it("captures a thrown error as ok:false with the message", async () => {
+    document.documentElement.removeAttribute(attr);
+    const fn = "() => { throw new Error('boom'); }";
+    const code = buildEvalPageScript(fn, [], attr);
+
+    const el = document.createElement("script");
+    el.textContent = code;
+    document.head.appendChild(el);
+    await Promise.resolve();
+    await new Promise((r) => setTimeout(r, 0));
+
+    const parsed = JSON.parse(document.documentElement.getAttribute(attr) as string);
+    expect(parsed.ok).toBe(false);
+    expect(parsed.error).toContain("boom");
+    document.documentElement.removeAttribute(attr);
+    el.remove();
+  });
+});
+
+describe("runInPageWorld", () => {
+  const noSleep = () => Promise.resolve();
+
+  it("injects once, polls until the result attribute appears, and parses it", async () => {
+    const resultAttr = "data-bcmcp-result-x";
+    const envelope = JSON.stringify({ ok: true, value: 42 });
+    const calls: string[] = [];
+    // First call is the injector (resolves [true]); subsequent calls are the
+    // poller: [null] (not ready yet) then the serialized envelope.
+    const responses: any[][] = [[true], [null], [envelope]];
+    let i = 0;
+    const exec = jest.fn(async (code: string) => {
+      calls.push(code);
+      return responses[i++] ?? [null];
+    });
+
+    const result = await runInPageWorld(
+      exec,
+      "PAGE_SCRIPT",
+      resultAttr,
+      1000,
+      noSleep
+    );
+
+    expect(result).toEqual({ ok: true, value: 42 });
+    // The first exec was the injector (contains createElement('script')).
+    expect(calls[0]).toContain("createElement('script')");
+    // The injector embeds the page script.
+    expect(calls[0]).toContain(JSON.stringify("PAGE_SCRIPT"));
+    // Later calls are the poller (read the attribute).
+    expect(calls[1]).toContain("getAttribute");
+  });
+
+  it("returns the inner envelope verbatim (ok:false from the page propagates)", async () => {
+    const resultAttr = "data-bcmcp-result-y";
+    const envelope = JSON.stringify({ ok: false, error: "page blew up" });
+    const responses: any[][] = [[true], [envelope]];
+    let i = 0;
+    const exec = jest.fn(async () => responses[i++] ?? [null]);
+
+    const result = await runInPageWorld(
+      exec,
+      "PAGE",
+      resultAttr,
+      1000,
+      noSleep
+    );
+
+    expect(result).toEqual({ ok: false, error: "page blew up" });
+  });
+
+  it("times out with a CSP hint when the result attribute never appears", async () => {
+    const resultAttr = "data-bcmcp-result-z";
+    // Injector resolves, then the poller always returns [null].
+    const exec = jest.fn(async (code: string) => {
+      if (code.includes("createElement('script')")) {
+        return [true];
+      }
+      return [null];
+    });
+
+    const result = await runInPageWorld(
+      exec,
+      "PAGE",
+      resultAttr,
+      5, // tiny timeout so the loop exits almost immediately
+      noSleep
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("Content-Security-Policy");
+  });
+
+  it("returns ok:false when the stored attribute is not valid JSON", async () => {
+    const resultAttr = "data-bcmcp-result-bad";
+    const responses: any[][] = [[true], ["this is not json"]];
+    let i = 0;
+    const exec = jest.fn(async () => responses[i++] ?? [null]);
+
+    const result = await runInPageWorld(
+      exec,
+      "PAGE",
+      resultAttr,
+      1000,
+      noSleep
+    );
+
+    expect(result.ok).toBe(false);
+    expect(typeof result.error).toBe("string");
+  });
+});

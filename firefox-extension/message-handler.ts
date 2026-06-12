@@ -3,12 +3,23 @@ import { ExtensionTransport } from "./transport";
 import { isCommandAllowed, isDomainInDenyList, COMMAND_TO_TOOL_ID, addAuditLogEntry, requiresAutomationMode, isAutomationModeEnabled } from "./extension-config";
 import { buildSnapshot } from "./injected/snapshot-script";
 import { performInputAction } from "./injected/action-script";
+import { buildEvalPageScript, runInPageWorld } from "./injected/page-world";
 
 // The argument shape accepted by the injected `performInputAction` function.
 type InputActionArgs = Parameters<typeof performInputAction>[1];
 
 const sleep = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
+
+// Monotonic counter combined with Date.now() to build a unique per-call result
+// attribute key (data-bcmcp-result-<key>), so concurrent evaluate-script calls
+// against the same tab never read each other's results.
+let evalKeyCounter = 0;
+
+// How long to wait for the in-page result attribute to appear before giving up
+// (and reporting a likely-CSP timeout). The broker's evaluate-script response
+// timeout (30s) is comfortably larger than this.
+const EVAL_TIMEOUT_MS = 10000;
 
 /**
  * Returns whether a URL is allowed for in-tab navigation: https:// always, and
@@ -162,6 +173,14 @@ export class MessageHandler {
           key: req.key,
           modifiers: req.modifiers,
         });
+        break;
+      case "evaluate-script":
+        await this.evaluateScript(
+          req.correlationId,
+          req.tabId,
+          req.function,
+          req.args
+        );
         break;
       default:
         const _exhaustiveCheck: never = req;
@@ -419,6 +438,46 @@ export class MessageHandler {
       resource: "action-result",
       correlationId,
       ok: result.ok,
+      error: result.error,
+    });
+  }
+
+  // Runs a JS function expression in the page's REAL world and returns its
+  // (awaited, JSON-serialized) result. `executeScript` runs only in the
+  // isolated content-script world and cannot await, so we use the shared
+  // page-world helper: inject a page-world <script> that writes its result to a
+  // unique attribute, then poll that attribute. CSP-strict pages may block the
+  // injected script, in which case the poll times out and we reply ok:false
+  // with a CSP hint instead of throwing.
+  private async evaluateScript(
+    correlationId: string,
+    tabId: number,
+    functionSource: string,
+    args?: unknown[]
+  ): Promise<void> {
+    const tab = await browser.tabs.get(tabId);
+    if (tab.url && (await isDomainInDenyList(tab.url))) {
+      throw new Error(`Domain in tab URL is in the deny list`);
+    }
+
+    await this.checkForUrlPermission(tab.url);
+
+    const resultAttr = `data-bcmcp-result-${Date.now()}-${++evalKeyCounter}`;
+    const pageScript = buildEvalPageScript(functionSource, args ?? [], resultAttr);
+
+    const result = await runInPageWorld(
+      (code) => browser.tabs.executeScript(tabId, { code }),
+      pageScript,
+      resultAttr,
+      EVAL_TIMEOUT_MS,
+      sleep
+    );
+
+    await this.client.sendResourceToServer({
+      resource: "eval-result",
+      correlationId,
+      ok: result.ok,
+      value: result.value,
       error: result.error,
     });
   }

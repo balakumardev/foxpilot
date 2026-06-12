@@ -33,6 +33,7 @@ import type {
   ActiveTabExtensionMessage,
   WaitForTextResultExtensionMessage,
   ActionResultExtensionMessage,
+  EvalResultExtensionMessage,
 } from "@browser-control-mcp/common";
 import { BrokerClientFrame, BrokerServerFrame } from "./broker-protocol";
 import { createSignature, verifySignature } from "./signing";
@@ -450,6 +451,23 @@ export class BrowserAPI {
     if (!message.ok) {
       throw new Error(message.error ?? "Action failed");
     }
+  }
+
+  async evaluateScript(
+    tabId: number,
+    functionSource: string,
+    args?: unknown[]
+  ): Promise<unknown> {
+    const message = await this.sendTool<EvalResultExtensionMessage>({
+      cmd: "evaluate-script",
+      tabId,
+      function: functionSource,
+      args,
+    });
+    if (!message.ok) {
+      throw new Error(message.error ?? "Script evaluation failed");
+    }
+    return message.value;
   }
 }
 

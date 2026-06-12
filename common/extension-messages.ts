@@ -97,6 +97,17 @@ export interface ActionResultExtensionMessage extends ExtensionMessageBase {
   error?: string;
 }
 
+// Reply for the evaluate-script tool. `ok` is false when the in-page evaluation
+// threw or could not be retrieved (e.g. the page's CSP blocked the injected
+// script and it timed out), with a human-readable `error`. On success, `value`
+// holds the JSON-serializable result the page function returned.
+export interface EvalResultExtensionMessage extends ExtensionMessageBase {
+  resource: "eval-result";
+  ok: boolean;
+  value?: unknown;
+  error?: string;
+}
+
 export type ExtensionMessage =
   | TabContentExtensionMessage
   | TabsExtensionMessage
@@ -111,7 +122,8 @@ export type ExtensionMessage =
   | TabSelectedExtensionMessage
   | ActiveTabExtensionMessage
   | WaitForTextResultExtensionMessage
-  | ActionResultExtensionMessage;
+  | ActionResultExtensionMessage
+  | EvalResultExtensionMessage;
 
 export interface ExtensionError {
   correlationId: string;

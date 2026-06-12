@@ -393,6 +393,18 @@ mcpServer.tool(
 );
 
 mcpServer.tool(
+  "evaluate-script",
+  'Evaluate a JavaScript function in the page\'s real world and return its result. Pass "function" as a function EXPRESSION string, e.g. "() => document.title" or "(sel) => document.querySelector(sel)?.textContent". The function runs in the page context (it can see the page\'s window, frameworks, and DOM), is awaited if it returns a promise, and its result is JSON-serialized back to you. Pass "args" to forward arguments to the function. Note: pages with a strict Content-Security-Policy may block injected scripts; if so this times out with a CSP error.',
+  { tabId: z.number(), function: z.string(), args: z.array(z.any()).optional() },
+  async ({ tabId, function: functionSource, args }) => {
+    const value = await browserApi.evaluateScript(tabId, functionSource, args);
+    return {
+      content: [{ type: "text", text: JSON.stringify(value) }],
+    };
+  }
+);
+
+mcpServer.tool(
   "group-browser-tabs",
   "Organize opened browser tabs in a new tab group",
   {

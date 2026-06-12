@@ -109,6 +109,11 @@ export const AVAILABLE_TOOLS: ToolInfo[] = [
     id: "press-key",
     name: "Press Key",
     description: "Allows the MCP server to press keyboard keys on a page"
+  },
+  {
+    id: "evaluate-script",
+    name: "Evaluate Script",
+    description: "Allows the MCP server to run JavaScript in a page and read its result"
   }
 ];
 
@@ -134,6 +139,7 @@ export const COMMAND_TO_TOOL_ID: Record<ServerMessageRequest["cmd"], string> = {
   "fill-form": "fill-form",
   "type-text": "type-text",
   "press-key": "press-key",
+  "evaluate-script": "evaluate-script",
 };
 
 // Commands that actively control a page (navigation, input, scripting, page

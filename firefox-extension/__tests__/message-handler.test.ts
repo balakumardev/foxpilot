@@ -1160,6 +1160,148 @@ describe("MessageHandler", () => {
     });
   });
 
+  describe("evaluate-script command", () => {
+    const automationConfig = {
+      secret: "test-secret",
+      ports: [8089],
+      domainDenyList: [] as string[],
+      auditLog: [],
+      automationMode: true,
+    };
+
+    beforeEach(() => {
+      (browser.storage.local.get as jest.Mock).mockResolvedValue({
+        config: automationConfig,
+      });
+      (browser.tabs.get as jest.Mock).mockResolvedValue({
+        id: 123,
+        url: "https://example.com",
+      });
+      (browser.permissions.contains as jest.Mock).mockResolvedValue(true);
+    });
+
+    it("injects the page-world script, polls the result, and replies eval-result ok:true with the value", async () => {
+      // First executeScript call is the injector (returns [true]); the next is
+      // the poller, which returns the serialized in-page envelope.
+      (browser.tabs.executeScript as jest.Mock)
+        .mockResolvedValueOnce([true])
+        .mockResolvedValueOnce([JSON.stringify({ ok: true, value: "Hello" })]);
+
+      const request: ServerMessageRequest = {
+        cmd: "evaluate-script",
+        tabId: 123,
+        function: "() => document.title",
+        correlationId: "test-correlation-id",
+      };
+
+      await messageHandler.handleDecodedMessage(request);
+
+      // The injector executeScript carries the page-world script (which embeds
+      // the evaluated function source). The function source is nested two JSON
+      // layers deep (page script inside injector), so assert on the recognizable
+      // source rather than a single-encoded literal.
+      const injectorCode = (browser.tabs.executeScript as jest.Mock).mock
+        .calls[0][1].code;
+      expect(injectorCode).toContain("createElement('script')");
+      expect(injectorCode).toContain("() => document.title");
+
+      expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+        resource: "eval-result",
+        correlationId: "test-correlation-id",
+        ok: true,
+        value: "Hello",
+        error: undefined,
+      });
+    });
+
+    it("replies eval-result ok:false with the error when the page script throws", async () => {
+      (browser.tabs.executeScript as jest.Mock)
+        .mockResolvedValueOnce([true])
+        .mockResolvedValueOnce([
+          JSON.stringify({ ok: false, error: "ReferenceError: x is not defined" }),
+        ]);
+
+      const request: ServerMessageRequest = {
+        cmd: "evaluate-script",
+        tabId: 123,
+        function: "() => x",
+        correlationId: "test-correlation-id",
+      };
+
+      await messageHandler.handleDecodedMessage(request);
+
+      expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+        resource: "eval-result",
+        correlationId: "test-correlation-id",
+        ok: false,
+        value: undefined,
+        error: "ReferenceError: x is not defined",
+      });
+    });
+
+    it("forwards args by embedding them in the injected page script", async () => {
+      (browser.tabs.executeScript as jest.Mock)
+        .mockResolvedValueOnce([true])
+        .mockResolvedValueOnce([JSON.stringify({ ok: true, value: 7 })]);
+
+      const request: ServerMessageRequest = {
+        cmd: "evaluate-script",
+        tabId: 123,
+        function: "(a, b) => a + b",
+        args: [3, 4],
+        correlationId: "test-correlation-id",
+      };
+
+      await messageHandler.handleDecodedMessage(request);
+
+      const injectorCode = (browser.tabs.executeScript as jest.Mock).mock
+        .calls[0][1].code;
+      expect(injectorCode).toContain(JSON.stringify([3, 4]));
+      expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+        resource: "eval-result",
+        correlationId: "test-correlation-id",
+        ok: true,
+        value: 7,
+        error: undefined,
+      });
+    });
+
+    it("throws if the tab URL domain is in the deny list (no script injected)", async () => {
+      (browser.storage.local.get as jest.Mock).mockResolvedValue({
+        config: { ...automationConfig, domainDenyList: ["example.com"] },
+      });
+
+      const request: ServerMessageRequest = {
+        cmd: "evaluate-script",
+        tabId: 123,
+        function: "() => 1",
+        correlationId: "test-correlation-id",
+      };
+
+      await expect(
+        messageHandler.handleDecodedMessage(request)
+      ).rejects.toThrow("Domain in tab URL is in the deny list");
+      expect(browser.tabs.executeScript).not.toHaveBeenCalled();
+    });
+
+    it("is blocked when automation mode is disabled", async () => {
+      (browser.storage.local.get as jest.Mock).mockResolvedValue({
+        config: { secret: "test-secret", ports: [8089], automationMode: false },
+      });
+
+      const request: ServerMessageRequest = {
+        cmd: "evaluate-script",
+        tabId: 123,
+        function: "() => 1",
+        correlationId: "test-correlation-id",
+      };
+
+      await expect(
+        messageHandler.handleDecodedMessage(request)
+      ).rejects.toThrow("requires Automation Mode");
+    });
+  });
+
   describe("automation mode gate", () => {
     it("blocks an automation command when automation mode is disabled", async () => {
       (browser.storage.local.get as jest.Mock).mockResolvedValue({

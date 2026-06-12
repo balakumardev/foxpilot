@@ -121,6 +121,13 @@ export interface PressKeyServerMessage extends ServerMessageBase {
   modifiers?: string[];
 }
 
+export interface EvaluateScriptServerMessage extends ServerMessageBase {
+  cmd: "evaluate-script";
+  tabId: number;
+  function: string;
+  args?: unknown[];
+}
+
 export type ServerMessage =
   | OpenTabServerMessage
   | CloseTabsServerMessage
@@ -141,6 +148,7 @@ export type ServerMessage =
   | FillElementServerMessage
   | FillFormServerMessage
   | TypeTextServerMessage
-  | PressKeyServerMessage;
+  | PressKeyServerMessage
+  | EvaluateScriptServerMessage;
 
 export type ServerMessageRequest = ServerMessage & { correlationId: string };
