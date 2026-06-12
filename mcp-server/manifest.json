@@ -1,172 +1,172 @@
 {
-    "dxt_version": "0.1",
-    "name": "foxpilot",
-    "version": "1.0.0",
-    "display_name": "FoxPilot",
-    "description": "Control Mozilla Firefox: tabs, history and web content (privacy aware)",
-    "long_description": "This MCP server provides AI assistants with access to the browser's tab management, browsing history, page search, and webpage text content through a local MCP (Model Context Protocol) connection.\n\nIt also provides advanced page automation: page interaction (click, type, fill, navigate), accessibility snapshots, screenshots, JavaScript evaluation, file upload, and console/network inspection. These powerful automation tools require enabling \"Automation Mode\" in the Firefox extension.\n\nBefore accessing any webpage content, explicit user consent is required for each domain through browser-side permissions.\n\n**Note:** This extension requires a separate Firefox add-on component, which is available at [https://addons.mozilla.org/en-US/firefox/addon/foxpilot/](https://addons.mozilla.org/en-US/firefox/addon/foxpilot/). Start by installing the Firefox add-on, then copy the secret key from the add-on settings page (it will open automatically) and paste it into this extension's configuration.",
-    "author": {
-        "name": "Bala Kumar",
-        "email": "mail@balakumar.dev",
-        "url": "https://github.com/balakumardev"
+  "dxt_version": "0.1",
+  "name": "foxpilot",
+  "version": "1.0.1",
+  "display_name": "FoxPilot",
+  "description": "Control Mozilla Firefox: tabs, history and web content (privacy aware)",
+  "long_description": "This MCP server provides AI assistants with access to the browser's tab management, browsing history, page search, and webpage text content through a local MCP (Model Context Protocol) connection.\n\nIt also provides advanced page automation: page interaction (click, type, fill, navigate), accessibility snapshots, screenshots, JavaScript evaluation, file upload, and console/network inspection. These powerful automation tools require enabling \"Automation Mode\" in the Firefox extension.\n\nBefore accessing any webpage content, explicit user consent is required for each domain through browser-side permissions.\n\n**Note:** This extension requires a separate Firefox add-on component, which is available at [https://addons.mozilla.org/en-US/firefox/addon/foxpilot/](https://addons.mozilla.org/en-US/firefox/addon/foxpilot/). Start by installing the Firefox add-on, then copy the secret key from the add-on settings page (it will open automatically) and paste it into this extension's configuration.",
+  "author": {
+    "name": "Bala Kumar",
+    "email": "mail@balakumar.dev",
+    "url": "https://github.com/balakumardev"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/balakumardev/foxpilot"
+  },
+  "support": "https://github.com/balakumardev/foxpilot/issues",
+  "documentation": "https://github.com/balakumardev/foxpilot",
+  "license": "MIT",
+  "keywords": [
+    "browser",
+    "firefox"
+  ],
+  "server": {
+    "type": "node",
+    "entry_point": "dist/server.js",
+    "mcp_config": {
+      "command": "node",
+      "args": [
+        "${__dirname}/dist/server.js"
+      ],
+      "env": {
+        "EXTENSION_SECRET": "${user_config.extension_secret}",
+        "EXTENSION_PORT": "${user_config.port}"
+      }
+    }
+  },
+  "user_config": {
+    "extension_secret": {
+      "type": "string",
+      "title": "Firefox Extension Secret",
+      "description": "The secret key provided by the Firefox extension",
+      "sensitive": true,
+      "required": true
     },
-    "repository": {
-        "type": "git",
-        "url": "https://github.com/balakumardev/foxpilot"
+    "port": {
+      "type": "string",
+      "title": "Extension Port",
+      "description": "The port that the MCP server will use to communicate with the Firefox extension (default is 8089)",
+      "default": "8089",
+      "required": false
+    }
+  },
+  "tools": [
+    {
+      "name": "open-browser-tab",
+      "description": "Open a new tab in the browser"
     },
-    "support": "https://github.com/balakumardev/foxpilot/issues",
-    "documentation": "https://github.com/balakumardev/foxpilot",
-    "license": "MIT",
-    "keywords": [
-        "browser",
-        "firefox"
-    ],
-    "server": {
-        "type": "node",
-        "entry_point": "dist/server.js",
-        "mcp_config": {
-            "command": "node",
-            "args": [
-                "${__dirname}/dist/server.js"
-            ],
-            "env": {
-                "EXTENSION_SECRET": "${user_config.extension_secret}",
-                "EXTENSION_PORT": "${user_config.port}"
-            }
-        }
+    {
+      "name": "close-browser-tabs",
+      "description": "Close tabs in the browser"
     },
-    "user_config": {
-        "extension_secret": {
-            "type": "string",
-            "title": "Firefox Extension Secret",
-            "description": "The secret key provided by the Firefox extension",
-            "sensitive": true,
-            "required": true
-        },
-        "port": {
-            "type": "string",
-            "title": "Extension Port",
-            "description": "The port that the MCP server will use to communicate with the Firefox extension (default is 8089)",
-            "default": "8089",
-            "required": false
-        }
+    {
+      "name": "get-list-of-open-tabs",
+      "description": "Get the list of open tabs in the browser"
     },
-    "tools": [
-        {
-            "name": "open-browser-tab",
-            "description": "Open a new tab in the browser"
-        },
-        {
-            "name": "close-browser-tabs",
-            "description": "Close tabs in the browser"
-        },
-        {
-            "name": "get-list-of-open-tabs",
-            "description": "Get the list of open tabs in the browser"
-        },
-        {
-            "name": "get-recent-browser-history",
-            "description": "Get the list of recent browser history"
-        },
-        {
-            "name": "get-tab-web-content",
-            "description": "Get the full text content of the webpage and the list of links in the webpage (requires user consent)"
-        },
-        {
-            "name": "reorder-browser-tabs",
-            "description": "Change the order of open browser tabs"
-        },
-        {
-            "name": "group-browser-tabs",
-            "description": "Group browser tabs into a new tab group"
-        },
-        {
-            "name": "find-highlight-in-browser-tab",
-            "description": "Find and highlight text in a browser tab"
-        },
-        {
-            "name": "navigate-tab",
-            "description": "Load a URL in an existing browser tab"
-        },
-        {
-            "name": "navigate-page-history",
-            "description": "Navigate a tab's history: go back, forward, or reload"
-        },
-        {
-            "name": "select-tab",
-            "description": "Focus/activate a browser tab and bring its window to the foreground"
-        },
-        {
-            "name": "get-active-tab",
-            "description": "Get the currently active tab in the browser"
-        },
-        {
-            "name": "wait-for-text",
-            "description": "Wait until the given text appears on a tab's page (polls until found or timeout)"
-        },
-        {
-            "name": "take-snapshot",
-            "description": "Take an accessibility snapshot of a tab's page, returning interactive elements tagged with stable uids"
-        },
-        {
-            "name": "click-element",
-            "description": "Click an element on a page by its uid from a recent snapshot"
-        },
-        {
-            "name": "hover-element",
-            "description": "Hover the mouse over an element on a page by its uid from a recent snapshot"
-        },
-        {
-            "name": "fill-element",
-            "description": "Set the value of a form field (input, textarea, select, checkbox, radio) by its uid"
-        },
-        {
-            "name": "fill-form",
-            "description": "Fill multiple form fields in one step from an array of uid/value pairs"
-        },
-        {
-            "name": "type-text",
-            "description": "Type text into the currently focused element on a page, optionally submitting"
-        },
-        {
-            "name": "press-key",
-            "description": "Press a keyboard key on a page, optionally holding modifiers"
-        },
-        {
-            "name": "take-screenshot",
-            "description": "Take a screenshot of a browser tab (viewport, full page, or a single element) and return it as an image"
-        },
-        {
-            "name": "evaluate-script",
-            "description": "Evaluate a JavaScript function in the page's real world and return its result"
-        },
-        {
-            "name": "upload-file",
-            "description": "Upload a local file into a file input on a page by its uid"
-        },
-        {
-            "name": "get-console-messages",
-            "description": "Get the console output and uncaught errors captured for a tab (requires Automation Mode)"
-        },
-        {
-            "name": "get-network-requests",
-            "description": "Get the network requests captured for a tab (requires Automation Mode)"
-        },
-        {
-            "name": "drag-element",
-            "description": "Drag one element onto another on a page by their uids from a recent snapshot"
-        },
-        {
-            "name": "resize-window",
-            "description": "Resize the browser window that hosts a tab to the given width and height"
-        },
-        {
-            "name": "handle-dialog",
-            "description": "Arm a tab to automatically accept or dismiss future native JavaScript dialogs"
-        },
-        {
-            "name": "emulate",
-            "description": "Emulate device conditions for a tab (geolocation and/or user agent override)"
-        }
-    ]
+    {
+      "name": "get-recent-browser-history",
+      "description": "Get the list of recent browser history"
+    },
+    {
+      "name": "get-tab-web-content",
+      "description": "Get the full text content of the webpage and the list of links in the webpage (requires user consent)"
+    },
+    {
+      "name": "reorder-browser-tabs",
+      "description": "Change the order of open browser tabs"
+    },
+    {
+      "name": "group-browser-tabs",
+      "description": "Group browser tabs into a new tab group"
+    },
+    {
+      "name": "find-highlight-in-browser-tab",
+      "description": "Find and highlight text in a browser tab"
+    },
+    {
+      "name": "navigate-tab",
+      "description": "Load a URL in an existing browser tab"
+    },
+    {
+      "name": "navigate-page-history",
+      "description": "Navigate a tab's history: go back, forward, or reload"
+    },
+    {
+      "name": "select-tab",
+      "description": "Focus/activate a browser tab and bring its window to the foreground"
+    },
+    {
+      "name": "get-active-tab",
+      "description": "Get the currently active tab in the browser"
+    },
+    {
+      "name": "wait-for-text",
+      "description": "Wait until the given text appears on a tab's page (polls until found or timeout)"
+    },
+    {
+      "name": "take-snapshot",
+      "description": "Take an accessibility snapshot of a tab's page, returning interactive elements tagged with stable uids"
+    },
+    {
+      "name": "click-element",
+      "description": "Click an element on a page by its uid from a recent snapshot"
+    },
+    {
+      "name": "hover-element",
+      "description": "Hover the mouse over an element on a page by its uid from a recent snapshot"
+    },
+    {
+      "name": "fill-element",
+      "description": "Set the value of a form field (input, textarea, select, checkbox, radio) by its uid"
+    },
+    {
+      "name": "fill-form",
+      "description": "Fill multiple form fields in one step from an array of uid/value pairs"
+    },
+    {
+      "name": "type-text",
+      "description": "Type text into the currently focused element on a page, optionally submitting"
+    },
+    {
+      "name": "press-key",
+      "description": "Press a keyboard key on a page, optionally holding modifiers"
+    },
+    {
+      "name": "take-screenshot",
+      "description": "Take a screenshot of a browser tab (viewport, full page, or a single element) and return it as an image"
+    },
+    {
+      "name": "evaluate-script",
+      "description": "Evaluate a JavaScript function in the page's real world and return its result"
+    },
+    {
+      "name": "upload-file",
+      "description": "Upload a local file into a file input on a page by its uid"
+    },
+    {
+      "name": "get-console-messages",
+      "description": "Get the console output and uncaught errors captured for a tab (requires Automation Mode)"
+    },
+    {
+      "name": "get-network-requests",
+      "description": "Get the network requests captured for a tab (requires Automation Mode)"
+    },
+    {
+      "name": "drag-element",
+      "description": "Drag one element onto another on a page by their uids from a recent snapshot"
+    },
+    {
+      "name": "resize-window",
+      "description": "Resize the browser window that hosts a tab to the given width and height"
+    },
+    {
+      "name": "handle-dialog",
+      "description": "Arm a tab to automatically accept or dismiss future native JavaScript dialogs"
+    },
+    {
+      "name": "emulate",
+      "description": "Emulate device conditions for a tab (geolocation and/or user agent override)"
+    }
+  ]
 }
