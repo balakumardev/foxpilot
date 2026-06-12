@@ -85,6 +85,16 @@ export function clearConsoleEntries(tabId: number): void {
   buffers.delete(tabId);
 }
 
+/**
+ * Drop ALL accumulated console buffers across every tab. Called when Automation
+ * Mode turns off: once we stop capturing, retained entries are a stale
+ * prior-session snapshot and must not resurface if Automation Mode is later
+ * turned back on. Clearing here prevents a re-enable from leaking old output.
+ */
+export function clearAllConsoleState(): void {
+  buffers.clear();
+}
+
 // ---- capture-script registration ----
 
 // The handle returned by `contentScripts.register`, kept so we can unregister.
@@ -202,6 +212,9 @@ export function initConsoleCapture(): void {
         void registerCaptureScript();
       } else {
         void unregisterCaptureScript();
+        // Stop capturing AND drop every buffered entry, so a later re-enable
+        // starts clean instead of surfacing stale prior-session output.
+        clearAllConsoleState();
       }
     }
   );

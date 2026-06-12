@@ -1,5 +1,19 @@
 // Jest setup file for browser API mocking
 
+// jsdom in this jest version does not expose the WHATWG text encoders as
+// globals, but real Firefox (where this extension runs) always has them. Some
+// modules under test use `TextDecoder`/`TextEncoder` directly (e.g. the
+// network-capture response-body decode). Polyfill them from Node's `util` so the
+// real code paths run under test instead of silently hitting their best-effort
+// catch branches. These are standard web globals; installing them is benign.
+import { TextDecoder as NodeTextDecoder, TextEncoder as NodeTextEncoder } from "util";
+if (typeof (global as any).TextDecoder === "undefined") {
+  (global as any).TextDecoder = NodeTextDecoder;
+}
+if (typeof (global as any).TextEncoder === "undefined") {
+  (global as any).TextEncoder = NodeTextEncoder;
+}
+
 // Mock the browser API completely
 const mockBrowser = {
   tabs: {

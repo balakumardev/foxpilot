@@ -3,9 +3,22 @@ import {
   setTabUserAgent,
   clearTabUserAgent,
   getTabUserAgent,
+  clearAllUserAgents,
+  initEmulate,
   __getUserAgentMap,
 } from "../emulate";
 import type { NetworkHeader } from "@browser-control-mcp/common";
+
+// Grab the most-recently-registered listener for a mocked event API.
+function lastListener(mockFn: jest.Mock): (...args: any[]) => any {
+  const calls = mockFn.mock.calls;
+  return calls[calls.length - 1][0];
+}
+
+// Flush pending promise chains (microtasks across multiple awaits).
+function flushPromises(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
 
 /**
  * These tests exercise the PURE `rewriteUserAgentHeader` rewriter and the
@@ -145,5 +158,82 @@ describe("rewriteUserAgentHeader", () => {
       map
     );
     expect(result).toBeUndefined();
+  });
+});
+
+describe("clearAllUserAgents", () => {
+  afterEach(() => {
+    clearAllUserAgents();
+  });
+
+  it("drops every per-tab UA override", () => {
+    setTabUserAgent(11, "UA/A");
+    setTabUserAgent(12, "UA/B");
+    expect(getTabUserAgent(11)).toBe("UA/A");
+    expect(getTabUserAgent(12)).toBe("UA/B");
+
+    clearAllUserAgents();
+
+    expect(getTabUserAgent(11)).toBeUndefined();
+    expect(getTabUserAgent(12)).toBeUndefined();
+  });
+});
+
+describe("initEmulate wiring", () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    // Reset the map so each test starts clean.
+    clearAllUserAgents();
+    (browser.storage.local.get as jest.Mock).mockResolvedValue({
+      config: { secret: "s", ports: [8089] },
+    });
+  });
+
+  afterEach(() => {
+    clearAllUserAgents();
+  });
+
+  it("registers tabs.onRemoved and storage.onChanged listeners", () => {
+    initEmulate();
+    expect(browser.tabs.onRemoved.addListener).toHaveBeenCalledTimes(1);
+    expect(browser.storage.onChanged.addListener).toHaveBeenCalledTimes(1);
+  });
+
+  it("clears all UA overrides when Automation Mode flips off", async () => {
+    initEmulate();
+    const onChanged = lastListener(
+      browser.storage.onChanged.addListener as jest.Mock
+    );
+
+    // Set a UA override (this also lazily registers the header listener).
+    setTabUserAgent(20, "Spoofed/1.0");
+    expect(getTabUserAgent(20)).toBe("Spoofed/1.0");
+
+    // Flip Automation Mode OFF: the header listener is removed AND the per-tab UA
+    // map is cleared so a later re-enable does not resurrect stale spoofing.
+    onChanged(
+      { config: { oldValue: { automationMode: true }, newValue: { automationMode: false } } },
+      "local"
+    );
+    await flushPromises();
+
+    expect(browser.webRequest.onBeforeSendHeaders.removeListener).toHaveBeenCalledTimes(1);
+    expect(getTabUserAgent(20)).toBeUndefined();
+    expect(__getUserAgentMap().size).toBe(0);
+  });
+
+  it("ignores storage.onChanged events from other areas or unrelated keys", async () => {
+    initEmulate();
+    const onChanged = lastListener(
+      browser.storage.onChanged.addListener as jest.Mock
+    );
+    setTabUserAgent(21, "Keep/1.0");
+
+    onChanged({ config: { newValue: { automationMode: false } } }, "sync");
+    onChanged({ somethingElse: { newValue: 1 } }, "local");
+    await flushPromises();
+
+    // Unrelated events must not clear the override.
+    expect(getTabUserAgent(21)).toBe("Keep/1.0");
   });
 });

@@ -55,6 +55,16 @@ export function getTabUserAgent(tabId: number): string | undefined {
   return userAgents.get(tabId);
 }
 
+/**
+ * Drop ALL per-tab User-Agent overrides. Called when Automation Mode turns off:
+ * the header-rewrite listener is removed at the same time, so the overrides are
+ * inert anyway, but clearing them ensures a later re-enable does not resurrect
+ * stale prior-session UA spoofing for tabs that were emulated before.
+ */
+export function clearAllUserAgents(): void {
+  userAgents.clear();
+}
+
 // Test-only accessor for the live module map, so tests can prove that
 // setTabUserAgent/clearTabUserAgent drive the same map the rewriter consults.
 export function __getUserAgentMap(): Map<number, string> {
@@ -196,6 +206,9 @@ export function initEmulate(): void {
           void registerHeaderListener();
         } else {
           void unregisterHeaderListener();
+          // Drop every per-tab UA override too, so a later re-enable does not
+          // resurrect stale prior-session spoofing.
+          clearAllUserAgents();
         }
       }
     );

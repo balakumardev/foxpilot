@@ -23,6 +23,7 @@ import {
   onErrorOccurredRecord,
   getNetworkRequests,
   clearNetworkRequests,
+  clearAllNetworkState,
   initNetworkCapture,
   registerNetworkListeners,
   unregisterNetworkListeners,
@@ -398,5 +399,341 @@ describe("registerNetworkListeners idempotency and error handling", () => {
   it("setBodyCaptureEnabled toggles a module flag without throwing", () => {
     expect(() => setBodyCaptureEnabled(true)).not.toThrow();
     expect(() => setBodyCaptureEnabled(false)).not.toThrow();
+  });
+});
+
+// A stand-in for Firefox's StreamFilter returned by
+// `browser.webRequest.filterResponseData(requestId)`. jsdom has no real
+// `webRequest` byte-streaming engine, so we hand the module a fake filter and
+// drive its `ondata`/`onstop`/`onerror` callbacks by hand, exactly as the
+// browser would, to exercise the otherwise browser-only body-capture path.
+interface FakeFilter {
+  write: jest.Mock;
+  disconnect: jest.Mock;
+  close: jest.Mock;
+  ondata: ((event: { data: ArrayBuffer }) => void) | null;
+  onstop: (() => void) | null;
+  onerror: (() => void) | null;
+}
+
+function makeFakeFilter(): FakeFilter {
+  return {
+    write: jest.fn(),
+    disconnect: jest.fn(),
+    close: jest.fn(),
+    ondata: null,
+    onstop: null,
+    onerror: null,
+  };
+}
+
+// Encode a string to an ArrayBuffer for feeding `ondata`. `TextEncoder` is
+// installed as a global by the jest setup (jsdom omits it; real Firefox has it).
+function bytesOf(text: string): ArrayBuffer {
+  const u8 = new TextEncoder().encode(text);
+  // Return a standalone ArrayBuffer (not a view) like the browser hands us.
+  return u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength) as ArrayBuffer;
+}
+
+describe("attachBodyFilter response-body capture (fake StreamFilter)", () => {
+  beforeEach(async () => {
+    await unregisterNetworkListeners();
+    jest.clearAllMocks();
+    clearAllNetworkState();
+    setBodyCaptureEnabled(false);
+  });
+
+  afterEach(async () => {
+    await unregisterNetworkListeners();
+    setBodyCaptureEnabled(false);
+    clearAllNetworkState();
+  });
+
+  // Register the real listeners and return the onBeforeRequest handler the
+  // module installed (which is what calls attachBodyFilter when body capture
+  // is on). Also installs `filterResponseData` to return our fake filter.
+  async function setupWithFilter(
+    filter: FakeFilter
+  ): Promise<(details: any) => any> {
+    (browser.webRequest as any).filterResponseData = jest
+      .fn()
+      .mockReturnValue(filter);
+    await registerNetworkListeners();
+    return lastListener(
+      browser.webRequest.onBeforeRequest.addListener as jest.Mock
+    );
+  }
+
+  it("attaches no filter when body capture is DISABLED", async () => {
+    const filter = makeFakeFilter();
+    const onBeforeRequest = await setupWithFilter(filter);
+
+    // Body capture is off (default in beforeEach).
+    onBeforeRequest(details({ requestId: "nb", tabId: 40 }));
+
+    expect((browser.webRequest as any).filterResponseData).not.toHaveBeenCalled();
+    expect(filter.write).not.toHaveBeenCalled();
+  });
+
+  it("re-emits each chunk, disconnects on stop, and decodes the body onto the record", async () => {
+    setBodyCaptureEnabled(true);
+    const filter = makeFakeFilter();
+    const onBeforeRequest = await setupWithFilter(filter);
+
+    onBeforeRequest(details({ requestId: "bc", tabId: 41, url: "https://x/y" }));
+
+    // The module should have requested a stream filter for this request.
+    expect((browser.webRequest as any).filterResponseData).toHaveBeenCalledWith(
+      "bc"
+    );
+    expect(typeof filter.ondata).toBe("function");
+    expect(typeof filter.onstop).toBe("function");
+
+    // Drive two chunks of bytes, then stop.
+    const chunk1 = bytesOf("hello ");
+    const chunk2 = bytesOf("world");
+    filter.ondata!({ data: chunk1 });
+    filter.ondata!({ data: chunk2 });
+
+    // (a) The page still receives BOTH chunks unchanged.
+    expect(filter.write).toHaveBeenCalledTimes(2);
+    expect(filter.write).toHaveBeenNthCalledWith(1, chunk1);
+    expect(filter.write).toHaveBeenNthCalledWith(2, chunk2);
+
+    // The body is not finalized until stop.
+    filter.onstop!();
+    // (b) disconnect is called on stop so the stream completes for the page.
+    expect(filter.disconnect).toHaveBeenCalledTimes(1);
+
+    // Finalize the request so the record lands in the tab buffer.
+    onCompletedRecord(
+      details({ requestId: "bc", tabId: 41, url: "https://x/y", statusCode: 200 })
+    );
+
+    // (c) The decoded body text lands on the record.
+    const recs = getNetworkRequests(41);
+    expect(recs).toHaveLength(1);
+    expect(recs[0].body).toBe("hello world");
+  });
+
+  it("caps the stored body at ~64KB but still re-emits every (over-cap) chunk to the page", async () => {
+    setBodyCaptureEnabled(true);
+    const filter = makeFakeFilter();
+    const onBeforeRequest = await setupWithFilter(filter);
+
+    onBeforeRequest(details({ requestId: "big", tabId: 42, url: "https://x/big" }));
+
+    // 64KB cap. Send 50KB then another 50KB (total 100KB > cap).
+    const CAP = 64 * 1024;
+    const part = "a".repeat(50 * 1024);
+    const chunkA = bytesOf(part);
+    const chunkB = bytesOf(part);
+    filter.ondata!({ data: chunkA });
+    filter.ondata!({ data: chunkB });
+    filter.onstop!();
+
+    // Page integrity: BOTH chunks are written out even though the stored body
+    // is capped — we must never starve the page of bytes to save memory.
+    expect(filter.write).toHaveBeenCalledTimes(2);
+    expect(filter.write).toHaveBeenNthCalledWith(1, chunkA);
+    expect(filter.write).toHaveBeenNthCalledWith(2, chunkB);
+    expect(filter.disconnect).toHaveBeenCalledTimes(1);
+
+    onCompletedRecord(
+      details({ requestId: "big", tabId: 42, url: "https://x/big", statusCode: 200 })
+    );
+    const rec = getNetworkRequests(42)[0];
+    // Body is ASCII so 1 byte == 1 char; the stored snippet is clamped to CAP.
+    expect(rec.body!.length).toBe(CAP);
+  });
+
+  it("re-emits the chunk to the page EVEN IF the capture logic throws (write in finally)", async () => {
+    // This guards the robustness fix: a capture error must never truncate the
+    // page's response. We feed `ondata` an event whose `data` is not a valid
+    // ArrayBuffer, so `new Uint8Array(event.data)` throws inside the capture
+    // block — and assert the chunk was still written out to the page.
+    setBodyCaptureEnabled(true);
+    const filter = makeFakeFilter();
+    const onBeforeRequest = await setupWithFilter(filter);
+
+    onBeforeRequest(details({ requestId: "thr", tabId: 43 }));
+
+    const hostileData = { byteLength: 5 } as unknown as ArrayBuffer; // not a real buffer
+    expect(() => filter.ondata!({ data: hostileData })).not.toThrow();
+    // The page still got its bytes despite the capture throwing.
+    expect(filter.write).toHaveBeenCalledTimes(1);
+    expect(filter.write).toHaveBeenCalledWith(hostileData);
+
+    // Stop still disconnects so the page's stream completes.
+    filter.onstop!();
+    expect(filter.disconnect).toHaveBeenCalledTimes(1);
+  });
+
+  it("disconnects on filter error without throwing", async () => {
+    setBodyCaptureEnabled(true);
+    const filter = makeFakeFilter();
+    const onBeforeRequest = await setupWithFilter(filter);
+
+    onBeforeRequest(details({ requestId: "err", tabId: 44 }));
+    expect(typeof filter.onerror).toBe("function");
+    expect(() => filter.onerror!()).not.toThrow();
+    expect(filter.disconnect).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("in-flight map eviction (never-completing requests cannot leak)", () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    clearAllNetworkState();
+  });
+
+  afterEach(() => {
+    clearAllNetworkState();
+  });
+
+  it("bounds the in-flight map at its cap, evicting the oldest, as requests pile up uncompleted", () => {
+    // Start far more requests than the 1000 in-flight cap and never complete
+    // them, so the eviction path runs. We probe in-flight membership via
+    // `onSendHeadersRecord`, which attaches its headers ONLY when the request is
+    // still in-flight: the oldest started request must have been evicted (so no
+    // probe header survives onto its later-synthesized record), while the most
+    // recent one is still in-flight (so its probe header is retained).
+    const CAP = 1000;
+    const EXTRA = 50;
+    const tabId = 70;
+
+    for (let i = 0; i < CAP + EXTRA; i++) {
+      onBeforeRequestRecord({
+        requestId: `if${i}`,
+        url: `https://x/${i}`,
+        method: "GET",
+        type: "xmlhttprequest",
+        tabId,
+        timeStamp: 1000 + i,
+      });
+    }
+
+    // The oldest started request (if0) was evicted from in-flight, so
+    // onSendHeaders for it is a no-op (its probe header is dropped), while a
+    // recent one (the very last) is still in-flight and DOES get the header.
+    onSendHeadersRecord({
+      requestId: "if0",
+      tabId,
+      requestHeaders: [{ name: "X-Probe", value: "old" }],
+    } as any);
+    onSendHeadersRecord({
+      requestId: `if${CAP + EXTRA - 1}`,
+      tabId,
+      requestHeaders: [{ name: "X-Probe", value: "new" }],
+    } as any);
+
+    onCompletedRecord({
+      requestId: "if0",
+      url: "https://x/0",
+      method: "GET",
+      type: "xmlhttprequest",
+      tabId,
+      statusCode: 200,
+      timeStamp: 5000,
+    } as any);
+    onCompletedRecord({
+      requestId: `if${CAP + EXTRA - 1}`,
+      url: `https://x/${CAP + EXTRA - 1}`,
+      method: "GET",
+      type: "xmlhttprequest",
+      tabId,
+      statusCode: 200,
+      timeStamp: 5001,
+    } as any);
+
+    const recs = getNetworkRequests(tabId);
+    const old = recs.find((r) => r.requestId === "if0");
+    const recent = recs.find((r) => r.requestId === `if${CAP + EXTRA - 1}`);
+
+    // if0 was evicted from in-flight before completion: completion synthesized a
+    // fresh record (tabId >= 0), so it has NO probe header attached.
+    expect(old).toBeDefined();
+    expect(old!.requestHeaders).toBeUndefined();
+    // The most-recent request survived in-flight, so its probe header is present.
+    expect(recent).toBeDefined();
+    expect(recent!.requestHeaders).toEqual([{ name: "X-Probe", value: "new" }]);
+  });
+});
+
+describe("clearing all state when Automation Mode turns OFF", () => {
+  beforeEach(async () => {
+    jest.clearAllMocks();
+    await unregisterNetworkListeners();
+    jest.clearAllMocks();
+    clearAllNetworkState();
+    (browser.storage.local.get as jest.Mock).mockResolvedValue({
+      config: { secret: "s", ports: [8089] },
+    });
+  });
+
+  afterEach(async () => {
+    await unregisterNetworkListeners();
+    clearAllNetworkState();
+  });
+
+  it("clearAllNetworkState drops finalized buffers and in-flight records across all tabs", () => {
+    onBeforeRequestRecord(details({ requestId: "p1", tabId: 80 }));
+    onCompletedRecord(details({ requestId: "p1", tabId: 80, statusCode: 200 }));
+    onBeforeRequestRecord(details({ requestId: "p2", tabId: 81 })); // left in-flight
+    expect(getNetworkRequests(80)).toHaveLength(1);
+
+    clearAllNetworkState();
+
+    expect(getNetworkRequests(80)).toEqual([]);
+    expect(getNetworkRequests(81)).toEqual([]);
+    // The in-flight p2 is gone too: completing it now synthesizes a fresh record
+    // rather than finding a buffered in-flight one (proves in-flight was cleared).
+    onSendHeadersRecord(
+      details({ requestId: "p2", tabId: 81, requestHeaders: [{ name: "A", value: "1" }] })
+    );
+    onCompletedRecord(details({ requestId: "p2", tabId: 81, statusCode: 200 }));
+    expect(getNetworkRequests(81)[0].requestHeaders).toBeUndefined();
+  });
+
+  it("toggling Automation Mode off via storage.onChanged clears the captured buffers", async () => {
+    initNetworkCapture();
+    const onChanged = lastListener(
+      browser.storage.onChanged.addListener as jest.Mock
+    );
+
+    // Flip Automation Mode ON so the webRequest listeners are actually
+    // registered (otherwise the OFF path's unregister is a no-op).
+    onChanged(
+      {
+        config: {
+          oldValue: { automationMode: false },
+          newValue: { automationMode: true },
+        },
+      },
+      "local"
+    );
+    await flushPromises();
+    expect(browser.webRequest.onBeforeRequest.addListener).toHaveBeenCalledTimes(1);
+
+    // Some captured activity from this (on) session.
+    onBeforeRequestRecord(details({ requestId: "s1", tabId: 82 }));
+    onCompletedRecord(details({ requestId: "s1", tabId: 82, statusCode: 200 }));
+    expect(getNetworkRequests(82)).toHaveLength(1);
+
+    // Flip Automation Mode OFF.
+    onChanged(
+      {
+        config: {
+          oldValue: { automationMode: true },
+          newValue: { automationMode: false },
+        },
+      },
+      "local"
+    );
+    await flushPromises();
+
+    // Listeners unregistered AND the buffer cleared.
+    expect(browser.webRequest.onBeforeRequest.removeListener).toHaveBeenCalledTimes(1);
+    expect(getNetworkRequests(82)).toEqual([]);
   });
 });

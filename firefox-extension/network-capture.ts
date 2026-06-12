@@ -311,6 +311,19 @@ export function clearNetworkRequests(tabId: number): void {
   }
 }
 
+/**
+ * Drop ALL accumulated network state across every tab (finalized buffers and
+ * in-flight requests). Called when Automation Mode turns off: once we stop
+ * observing the wire, any retained records are a stale, ever-staler snapshot of
+ * a prior session, and they must not surface if Automation Mode is later turned
+ * back on. Clearing here prevents a re-enable from leaking prior-session data.
+ */
+export function clearAllNetworkState(): void {
+  buffers.clear();
+  inFlight.clear();
+  recordTabId.clear();
+}
+
 // ---- webRequest listener registration ----
 
 // The listener references, kept so they can be removed. `null` means not
@@ -437,14 +450,23 @@ function attachBodyFilter(details: any): void {
     let total = 0;
 
     filter.ondata = (event: { data: ArrayBuffer }) => {
-      if (total < MAX_BODY_BYTES) {
-        const bytes = new Uint8Array(event.data);
-        const remaining = MAX_BODY_BYTES - total;
-        chunks.push(remaining >= bytes.length ? bytes : bytes.subarray(0, remaining));
-        total += bytes.length;
+      // The capture is wrapped in try/finally so that re-emitting the chunk can
+      // NEVER be skipped: if anything in the capture path throws (a hostile
+      // ArrayBuffer, an out-of-memory allocation, a future code change), the
+      // page must still receive its bytes unchanged. Truncating the page's
+      // response to grab a debug snippet would be a far worse failure than
+      // losing the snippet.
+      try {
+        if (total < MAX_BODY_BYTES) {
+          const bytes = new Uint8Array(event.data);
+          const remaining = MAX_BODY_BYTES - total;
+          chunks.push(remaining >= bytes.length ? bytes : bytes.subarray(0, remaining));
+          total += bytes.length;
+        }
+      } finally {
+        // Always re-emit so the page still works.
+        filter.write(event.data);
       }
-      // Always re-emit so the page still works.
-      filter.write(event.data);
     };
 
     filter.onstop = () => {
@@ -505,6 +527,9 @@ export function initNetworkCapture(): void {
         void registerNetworkListeners();
       } else {
         void unregisterNetworkListeners();
+        // Stop observing AND drop everything captured so far, so a later
+        // re-enable starts clean instead of surfacing stale prior-session data.
+        clearAllNetworkState();
       }
     }
   );

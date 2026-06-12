@@ -16,6 +16,7 @@
 import {
   addConsoleEntry,
   getConsoleEntries,
+  clearAllConsoleState,
   initConsoleCapture,
   registerCaptureScript,
   unregisterCaptureScript,
@@ -166,6 +167,33 @@ describe("initConsoleCapture wiring", () => {
     ]);
   });
 
+  it("clamps an oversized entry text to the cap on the runtime.onMessage path", async () => {
+    // Defense in depth: even though the page-world wrapper clamps text, a forged
+    // or buggy content-script message could carry an over-long string. The
+    // background must re-clamp it so a hostile page cannot bloat the buffer with
+    // multi-megabyte entries. The cap (MAX_ENTRY_TEXT) is 2000 chars.
+    const MAX_ENTRY_TEXT = 2000;
+    initConsoleCapture();
+    const onMessage = lastListener(
+      browser.runtime.onMessage.addListener as jest.Mock
+    );
+
+    const tabId = 557;
+    const huge = "x".repeat(MAX_ENTRY_TEXT + 5000);
+    onMessage(
+      {
+        type: "bcmcp-console-entry",
+        entry: { level: "log", text: huge, timestamp: 7 },
+      },
+      { tab: { id: tabId } }
+    );
+
+    const entries = getConsoleEntries(tabId);
+    expect(entries).toHaveLength(1);
+    expect(entries[0].text.length).toBe(MAX_ENTRY_TEXT);
+    expect(entries[0].text).toBe("x".repeat(MAX_ENTRY_TEXT));
+  });
+
   it("ignores unrelated runtime messages and messages without a sender tab", async () => {
     initConsoleCapture();
     const onMessage = lastListener(browser.runtime.onMessage.addListener as jest.Mock);
@@ -254,6 +282,36 @@ describe("initConsoleCapture wiring", () => {
     await flushPromises();
     expect(browser.contentScripts.register).not.toHaveBeenCalled();
   });
+
+  it("clears buffered console entries when Automation Mode flips off", async () => {
+    const handle = { unregister: jest.fn() };
+    (browser.contentScripts.register as jest.Mock).mockResolvedValue(handle);
+
+    initConsoleCapture();
+    const onChanged = lastListener(
+      browser.storage.onChanged.addListener as jest.Mock
+    );
+
+    // Flip ON so capture is active and accumulate some entries.
+    onChanged(
+      { config: { oldValue: { automationMode: false }, newValue: { automationMode: true } } },
+      "local"
+    );
+    await flushPromises();
+    const tabId = 650;
+    addConsoleEntry(tabId, { level: "log", text: "prior-session", timestamp: 1 });
+    expect(getConsoleEntries(tabId)).toHaveLength(1);
+
+    // Flip OFF: the capture script is unregistered AND the buffers are cleared so
+    // a later re-enable does not surface stale prior-session output.
+    onChanged(
+      { config: { oldValue: { automationMode: true }, newValue: { automationMode: false } } },
+      "local"
+    );
+    await flushPromises();
+    expect(handle.unregister).toHaveBeenCalledTimes(1);
+    expect(getConsoleEntries(tabId)).toEqual([]);
+  });
 });
 
 describe("registerCaptureScript idempotency and error handling", () => {
@@ -331,5 +389,39 @@ describe("CAPTURE_CONTENT_SCRIPT structure", () => {
     // The content script bridges page-world postMessage to the background and
     // tags entries with the capture message type the background listens for.
     expect(CAPTURE_CONTENT_SCRIPT).toContain("bcmcp-console-entry");
+  });
+
+  it("forge-guards the bridge: only forwards same-window messages (e.source === window)", () => {
+    // The bridge listens to `window` "message" events, which ANY page script (or
+    // a cross-origin iframe via postMessage) can fire. Without the source check a
+    // hostile page could inject arbitrary console entries by posting a crafted
+    // `{ __bcmcp_console: ... }` message. The guard `e.source === window` ensures
+    // we only forward messages the page-world wrapper itself posted to this same
+    // window. This is a load-bearing security check — assert it structurally so a
+    // refactor cannot silently drop it.
+    expect(CAPTURE_CONTENT_SCRIPT).toContain("e.source === window");
+    // And the payload-shape guard that pairs with it.
+    expect(CAPTURE_CONTENT_SCRIPT).toContain("e.data.__bcmcp_console");
+  });
+
+  it("clamps text page-side to the same cap as the background (defense in depth)", () => {
+    // The page-world wrapper caps `text` to 2000 chars before posting, mirroring
+    // the background's MAX_ENTRY_TEXT re-clamp.
+    expect(CAPTURE_CONTENT_SCRIPT).toContain("var MAX = 2000");
+    expect(CAPTURE_CONTENT_SCRIPT).toContain("text.slice(0, MAX)");
+  });
+});
+
+describe("clearAllConsoleState", () => {
+  it("drops buffered entries across every tab", () => {
+    addConsoleEntry(901, { level: "log", text: "a", timestamp: 1 });
+    addConsoleEntry(902, { level: "log", text: "b", timestamp: 1 });
+    expect(getConsoleEntries(901)).toHaveLength(1);
+    expect(getConsoleEntries(902)).toHaveLength(1);
+
+    clearAllConsoleState();
+
+    expect(getConsoleEntries(901)).toEqual([]);
+    expect(getConsoleEntries(902)).toEqual([]);
   });
 });
