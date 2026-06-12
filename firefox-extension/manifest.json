@@ -7,7 +7,10 @@
   "homepage_url": "https://github.com/balakumardev/foxpilot",
   "browser_specific_settings": {
     "gecko": {
-      "id": "foxpilot@balakumar.dev"
+      "id": "foxpilot@balakumar.dev",
+      "data_collection_permissions": {
+        "required": ["none"]
+      }
     }
   },
   "permissions": [
