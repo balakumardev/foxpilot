@@ -83,6 +83,7 @@ jobs:
 
       - name: Publish MCP server to npm
         if: steps.secrets.outputs.npm == 'true'
+        continue-on-error: true
         working-directory: mcp-server
         run: npm publish
         env:
