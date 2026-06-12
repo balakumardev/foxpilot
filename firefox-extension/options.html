@@ -1,0 +1,445 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <meta charset="utf-8">
+  <title>Browser Control MCP Options</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen-Sans, Ubuntu, Cantarell, "Helvetica Neue", sans-serif;
+      padding: 20px;
+      max-width: 800px;
+      margin: 0 auto;
+    }
+
+    .container {
+      background-color: #f9f9f9;
+      border-radius: 8px;
+      padding: 20px;
+      box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+    }
+
+    h1 {
+      color: #333;
+      margin-top: 0;
+    }
+
+    h2 {
+      margin-top: 12px;
+      margin-bottom: 8px;
+      color: #333;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    h2::after {
+      content: "";
+      display: inline-block;
+      width: 16px;
+      height: 16px;
+      background-image: url("assets/caret.svg");
+      background-size: contain;
+      background-repeat: no-repeat;
+    }
+
+    h2.collapsed::after {
+      transform: rotate(180deg);
+    }
+
+    .section-container {
+      margin-top: 20px;
+      background-color: #fff;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      padding: 15px;
+    }
+
+    .section-content {
+      transition: max-height 0.3s ease, opacity 0.3s ease;
+      max-height: 2000px;
+      opacity: 1;
+      overflow: hidden;
+    }
+
+    .section-content.collapsed {
+      max-height: 0;
+      opacity: 0;
+      padding-top: 0;
+      padding-bottom: 0;
+    }
+
+    .secret-value {
+      font-family: monospace;
+      word-break: break-all;
+      background-color: #f5f5f5;
+      padding: 10px;
+      border-radius: 4px;
+      border: 1px solid #e0e0e0;
+    }
+
+    .copy-button {
+      margin-top: 10px;
+      background-color: #4285f4;
+      color: white;
+      border: none;
+      padding: 8px 16px;  
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 14px;
+    }
+
+    .copy-button:hover {
+      background-color: #3367d6;
+    }
+
+    .status {
+      margin-top: 10px;
+      color: #4caf50;
+      font-size: 14px;
+      height: 20px;
+    }
+
+    .tool-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 10px 0;
+      border-bottom: 1px solid #eee;
+    }
+
+    .tool-row:last-child {
+      border-bottom: none;
+    }
+
+    .tool-label-container {
+      flex: 1;
+      padding-right: 20px;
+    }
+
+    .tool-name {
+      font-weight: bold;
+      margin-bottom: 5px;
+    }
+
+    .tool-description {
+      font-size: 14px;
+      color: #666;
+    }
+
+    /* Toggle switch styles */
+    .toggle-switch {
+      position: relative;
+      display: inline-block;
+      width: 50px;
+      height: 24px;
+    }
+
+    .toggle-switch input {
+      opacity: 0;
+      width: 0;
+      height: 0;
+    }
+
+    .slider {
+      position: absolute;
+      cursor: pointer;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background-color: #ccc;
+      transition: .4s;
+      border-radius: 24px;
+    }
+
+    .slider:before {
+      position: absolute;
+      content: "";
+      height: 16px;
+      width: 16px;
+      left: 4px;
+      bottom: 4px;
+      background-color: white;
+      transition: .4s;
+      border-radius: 50%;
+    }
+
+    input:checked+.slider {
+      background-color: #4285f4;
+    }
+
+    input:focus+.slider {
+      box-shadow: 0 0 1px #4285f4;
+    }
+
+    input:checked+.slider:before {
+      transform: translateX(26px);
+    }
+
+    /* Permission modal styles */
+    .permission-modal {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background-color: rgba(0, 0, 0, 0.5);
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      z-index: 1000;
+    }
+
+    .permission-modal.hidden {
+      display: none;
+    }
+
+    .permission-modal-content {
+      background-color: white;
+      padding: 30px;
+      border-radius: 8px;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+      max-width: 500px;
+      width: 90%;
+      text-align: center;
+    }
+
+    .permission-modal h2 {
+      margin-top: 0;
+      margin-bottom: 20px;
+      color: #333;
+      cursor: default;
+    }
+
+    .permission-modal h2::after {
+      display: none;
+    }
+
+    .permission-modal p {
+      margin-bottom: 20px;
+      color: #666;
+      line-height: 1.5;
+    }
+
+    .permission-domain {
+      font-family: monospace;
+      background-color: #f5f5f5;
+      padding: 8px 12px;
+      border-radius: 4px;
+      border: 1px solid #e0e0e0;
+      display: inline-block;
+      margin: 0 4px;
+      font-weight: bold;
+    }
+
+    .permission-buttons {
+      display: flex;
+      gap: 10px;
+      justify-content: center;
+      margin-top: 25px;
+    }
+
+    .grant-button {
+      background-color: #4285f4;
+      color: white;
+      border: none;
+      padding: 10px 20px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 14px;
+      font-weight: bold;
+    }
+
+    .grant-button:hover {
+      background-color: #3367d6;
+    }
+
+    .cancel-button {
+      background-color: #f1f3f4;
+      color: #333;
+      border: 1px solid #dadce0;
+      padding: 10px 20px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 14px;
+    }
+
+    .cancel-button:hover {
+      background-color: #e8eaed;
+    }
+
+    .main-content.modal-open {
+      filter: blur(2px);
+      pointer-events: none;
+    }
+
+    /* Audit log styles */
+    .audit-log-table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 10px;
+      font-size: 14px;
+    }
+
+    .audit-log-table th,
+    .audit-log-table td {
+      padding: 8px 12px;
+      text-align: left;
+      border-bottom: 1px solid #eee;
+    }
+
+    .audit-log-table th {
+      background-color: #f5f5f5;
+      font-weight: bold;
+      color: #333;
+    }
+
+    .audit-log-table td {
+      color: #666;
+    }
+
+    .audit-log-url {
+      font-family: monospace;
+      font-size: 12px;
+      max-width: 200px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .audit-log-timestamp {
+      white-space: nowrap;
+      font-size: 12px;
+    }
+
+    .audit-log-empty {
+      text-align: center;
+      color: #999;
+      font-style: italic;
+      padding: 20px;
+    }
+  </style>
+</head>
+
+<body>
+  <!-- Permission Request Modal -->
+  <div id="permission-modal" class="permission-modal hidden">
+    <div class="permission-modal-content">
+      <h2>Permission Required</h2>
+      <p>The Browser Control MCP extension needs permission to access:</p>
+      <div class="permission-domain" id="permission-domain"></div>
+      <p id="permission-text">This will allow the extension to interact with pages on this domain as requested by the MCP server.</p>
+      <div class="permission-buttons">
+        <button id="grant-btn" class="grant-button">Grant Permission</button>
+        <button id="cancel-btn" class="cancel-button">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="container main-content" id="main-content">
+    <h1>Browser Control MCP Options</h1>
+    <p>Configure settings for the Browser Control MCP extension.</p>
+
+    <div class="section-container">
+      <h2>MCP Server Installation</h2>
+      <div class="section-content">
+        <p>To use this extension, you need to install the local MCP server. Choose one of the following options:</p>
+        
+        <div style="margin: 15px 0;">
+          <h3 style="margin: 10px 0; font-size: 16px; color: #333;">Option 1: Download DXT Package (Claude Desktop only)</h3>
+          <p>Download and open the pre-built DXT package:</p>
+          <a href="https://github.com/eyalzh/browser-control-mcp/releases/download/v1.5.0/mcp-server-v1.5.0.dxt" 
+             style="display: inline-block; background-color: #4285f4; color: white; padding: 8px 16px; 
+                    text-decoration: none; border-radius: 4px; margin: 5px 0; font-size: 14px;">
+            Download DXT Package
+          </a>
+        </div>
+        
+        <div style="margin: 15px 0;">
+          <h3 style="margin: 10px 0; font-size: 16px; color: #333;">Option 2: Manual MCP Installation</h3>
+          <p>Follow the detailed setup instructions in the github repository:</p>
+          <a href="https://github.com/eyalzh/browser-control-mcp?tab=readme-ov-file#installation" 
+             target="_blank" rel="noopener noreferrer"
+             style="display: inline-block; background-color: #f1f3f4; color: #333; padding: 8px 16px; 
+                    text-decoration: none; border-radius: 4px; border: 1px solid #dadce0; margin: 5px 0; font-size: 14px;">
+            View Installation Guide
+          </a>
+        </div>
+        
+        <p style="margin-top: 15px; color: #666; font-size: 14px;">
+          After installing the MCP server, you'll need to configure it with the secret key shown below.
+        </p>
+      </div>
+    </div>
+
+    <div class="section-container">
+      <h2>Secret Key</h2>
+      <div class="section-content">
+        <p>This secret key is automatically generated when the extension is installed and is used to authenticate
+          connections to the MCP server:</p>
+        <div class="secret-value" id="secret-display">Loading...</div>
+        <button class="copy-button" id="copy-button">Copy to Clipboard</button>
+        <div class="status" id="status"></div>
+      </div>
+    </div>
+
+    <div class="section-container">
+      <h2>WebSocket Ports</h2>
+      <div class="section-content">
+        <p>Configure the WebSocket ports for MCP server connections (comma-separated list). Note: Changing this value will reload the extension.</p>
+        <input type="text" id="ports-input" placeholder="8089, 8090, 8091" style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; font-family: monospace; margin-bottom: 10px;" />
+        <button class="copy-button" id="save-ports">Save Ports</button>
+        <div class="status" id="ports-status"></div>
+      </div>
+    </div>
+
+    <div class="section-container">
+      <h2>Tool Permissions</h2>
+      <div class="section-content">
+        <p>Enable or disable specific MCP tools that can interact with your browser:</p>
+        <div id="tool-settings-container">
+          <!-- Tool settings will be dynamically inserted here -->
+          <div class="loading">Loading tool settings...</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="section-container">
+      <h2 class="collapsed" role="button" aria-expanded="false" tabindex="0" id="domain-filtering-header">Domain Filtering</h2>
+      <div class="section-content collapsed" aria-labelledby="domain-filtering-header">
+        <p>Configure which domains the extension can interact with:</p>
+
+        <div class="domain-list-container" style="margin-top: 20px;">
+          <h3>Domain Deny List</h3>
+          <p>The extension will not open tabs or get content from tabs with these domains (one domain per line):</p>
+          <textarea id="domain-deny-list" rows="6" style="width: 100%; font-family: monospace;"></textarea>
+        </div>
+
+        <button id="save-domain-lists" class="copy-button" style="margin-top: 15px;">Save Domain Lists</button>
+        <div class="status" id="domain-status"></div>
+      </div>
+    </div>
+
+    <div class="section-container">
+      <h2 class="collapsed" role="button" aria-expanded="false" tabindex="0" id="audit-log-header">Audit Log</h2>
+      <div class="section-content collapsed" aria-labelledby="audit-log-header">
+        <p>View recent tool usage history:</p>
+        
+        <div id="audit-log-container" style="margin-top: 20px;">
+          <div class="loading">Loading audit log...</div>
+        </div>
+
+        <div style="margin-top: 15px;">
+          <button id="clear-audit-log" class="copy-button">Clear Log</button>
+          <div class="status" id="audit-log-status"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="dist/options.js"></script>
+</body>
+
+</html>

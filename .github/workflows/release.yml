@@ -1,0 +1,42 @@
+name: Build and Release MCP Server as DXT
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  build-and-upload:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: 22
+        cache: 'npm'
+    
+    - name: Install root dependencies
+      run: npm install
+    
+    - name: Install MCP server dependencies
+      run: npm install --prefix mcp-server
+    
+    - name: Build MCP server package
+      run: cd mcp-server && npm run build && npm run pack-dxt
+    
+    - name: Rename package file with version
+      run: |
+        cd mcp-server
+        mv mcp-server.dxt mcp-server-${{ github.event.release.tag_name }}.dxt
+    
+    - name: Upload package to release
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        gh release upload ${{ github.event.release.tag_name }} \
+          ./mcp-server/mcp-server-${{ github.event.release.tag_name }}.dxt \
+          --clobber
+
