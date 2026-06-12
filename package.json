@@ -1,7 +1,18 @@
 {
-  "name": "browser-control-mcp",
+  "name": "foxpilot",
   "version": "1.5.0",
   "private": true,
+  "description": "FoxPilot — AI browser automation for Firefox via MCP (Firefox extension + MCP server).",
+  "author": "Bala Kumar <mail@balakumar.dev> (https://github.com/balakumardev)",
+  "license": "MIT",
+  "homepage": "https://github.com/balakumardev/foxpilot#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/balakumardev/foxpilot.git"
+  },
+  "bugs": {
+    "url": "https://github.com/balakumardev/foxpilot/issues"
+  },
   "scripts": {
     "postinstall": "npm install --prefix mcp-server && npm install --prefix firefox-extension",
     "build": "nx run-many --target=build --all --parallel"

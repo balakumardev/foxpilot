@@ -7,7 +7,7 @@ import {
   initEmulate,
   __getUserAgentMap,
 } from "../emulate";
-import type { NetworkHeader } from "@browser-control-mcp/common";
+import type { NetworkHeader } from "@foxpilot/common";
 
 // Grab the most-recently-registered listener for a mocked event API.
 function lastListener(mockFn: jest.Mock): (...args: any[]) => any {

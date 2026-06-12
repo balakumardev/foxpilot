@@ -39,7 +39,7 @@ import type {
   ConsoleMessagesExtensionMessage,
   NetworkRecord,
   NetworkRequestsExtensionMessage,
-} from "@browser-control-mcp/common";
+} from "@foxpilot/common";
 import { BrokerClientFrame, BrokerServerFrame } from "./broker-protocol";
 import { createSignature, verifySignature } from "./signing";
 
@@ -110,7 +110,7 @@ export class BrowserAPI {
       }
     }
     throw new Error(
-      `Could not connect to or start the browser-control broker on port ${this.port}.`
+      `Could not connect to or start the FoxPilot broker on port ${this.port}.`
     );
   }
 

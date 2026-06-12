@@ -23,7 +23,7 @@ import type {
   ExtensionError,
   ExtensionMessage,
   ServerMessageRequest,
-} from "@browser-control-mcp/common";
+} from "@foxpilot/common";
 import { BrokerCore } from "./broker-core";
 import { BrokerClientFrame, BrokerServerFrame } from "./broker-protocol";
 import { createSignature, verifySignature } from "./signing";
@@ -272,7 +272,7 @@ export class BrokerServer {
           kind: "tool-error",
           requestId: frame.requestId,
           errorMessage:
-            "No browser extension is connected to the broker. Open Firefox with the Browser Control extension installed and connected, then retry.",
+            "No browser extension is connected to the broker. Open Firefox with the FoxPilot extension installed and connected, then retry.",
         });
         return;
       }

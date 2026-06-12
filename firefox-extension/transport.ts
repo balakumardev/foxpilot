@@ -1,7 +1,7 @@
 import type {
   ExtensionMessage,
   ServerMessageRequest,
-} from "@browser-control-mcp/common";
+} from "@foxpilot/common";
 
 /**
  * Common interface for the extension's connection to the broker. Implemented

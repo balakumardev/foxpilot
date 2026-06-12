@@ -2,7 +2,7 @@ import WebSocket from "ws";
 import { BrokerServer } from "../broker";
 import { BrowserAPI } from "../browser-api";
 import { createSignature } from "../signing";
-import type { ServerMessageRequest } from "@browser-control-mcp/common";
+import type { ServerMessageRequest } from "@foxpilot/common";
 
 const SECRET = "client-test-secret";
 

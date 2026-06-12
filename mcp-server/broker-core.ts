@@ -14,7 +14,7 @@ import type {
   ServerMessageRequest,
   ExtensionMessage,
   ExtensionError,
-} from "@browser-control-mcp/common";
+} from "@foxpilot/common";
 import { BrokerServerFrame, getMessageTabId } from "./broker-protocol";
 import * as crypto from "crypto";
 
@@ -302,7 +302,7 @@ export class BrokerCore {
         kind: "tool-error",
         requestId: pending.requestId,
         errorMessage:
-          "The browser extension disconnected before responding. Is Firefox open with the Browser Control extension installed and connected?",
+          "The browser extension disconnected before responding. Is Firefox open with the FoxPilot extension installed and connected?",
       });
     }
     for (const [, q] of this.tabQueues) {

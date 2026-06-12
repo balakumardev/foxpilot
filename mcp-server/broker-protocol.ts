@@ -9,14 +9,14 @@
  *
  * The broker <-> extension leg reuses the existing signed protocol unchanged
  * (`ServerMessageRequest` / `ExtensionMessage` / `ExtensionError` from
- * `@browser-control-mcp/common`). This file only defines the additional
+ * `@foxpilot/common`). This file only defines the additional
  * client <-> broker framing.
  *
  * Both legs wrap every frame in a `SignedEnvelope` (HMAC-SHA256 over the JSON
  * of `payload`), so a random local process cannot drive the browser.
  */
 
-import type { ServerMessage, ExtensionMessage } from "@browser-control-mcp/common";
+import type { ServerMessage, ExtensionMessage } from "@foxpilot/common";
 
 /** Generic signed envelope used on both transport legs. */
 export interface SignedEnvelope<T> {

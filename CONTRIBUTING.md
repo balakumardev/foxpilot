@@ -1,4 +1,4 @@
-# Contributing to Browser Control MCP
+# Contributing to FoxPilot
 
 We welcome pull requests for adding new features and tools to the extension, as well as for bug fixes.
 

@@ -1,8 +1,8 @@
 /**
- * Configuration management for Browser Control MCP extension
+ * Configuration management for FoxPilot extension
  */
 
-import { ServerMessageRequest } from "@browser-control-mcp/common/server-messages";
+import { ServerMessageRequest } from "@foxpilot/common/server-messages";
 
 const DEFAULT_WS_PORT = 8089;
 const AUDIT_LOG_SIZE_LIMIT = 100; // Maximum number of audit log entries to keep

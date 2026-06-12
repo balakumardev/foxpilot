@@ -1,5 +1,5 @@
 /**
- * Options page script for Browser Control MCP extension
+ * Options page script for FoxPilot extension
  */
 import {
   getSecret,

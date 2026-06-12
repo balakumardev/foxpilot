@@ -21,7 +21,7 @@
  *     function below is what the unit tests drive with synthetic details.
  */
 
-import type { NetworkHeader } from "@browser-control-mcp/common";
+import type { NetworkHeader } from "@foxpilot/common";
 import { isAutomationModeEnabled } from "./extension-config";
 
 // Per-tab User-Agent override. Keyed by tabId. A tab present here has its

@@ -1,7 +1,7 @@
 import type {
   ExtensionMessage,
   ServerMessageRequest,
-} from "@browser-control-mcp/common";
+} from "@foxpilot/common";
 import { getMessageSignature } from "./auth";
 import { ExtensionTransport } from "./transport";
 

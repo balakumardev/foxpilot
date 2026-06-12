@@ -10,7 +10,7 @@ import relativeTime from "dayjs/plugin/relativeTime";
 dayjs.extend(relativeTime);
 
 const mcpServer = new McpServer({
-  name: "BrowserControl",
+  name: "FoxPilot",
   version: "1.5.1",
 });
 

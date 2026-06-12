@@ -3,7 +3,7 @@ module.exports = {
   preset: 'ts-jest',
   testEnvironment: 'node',
   moduleNameMapper: {
-    '^@browser-control-mcp/common$': '<rootDir>/../common'
+    '^@foxpilot/common$': '<rootDir>/../common'
   },
   transform: {
     '^.+\\.tsx?$': ['ts-jest', {

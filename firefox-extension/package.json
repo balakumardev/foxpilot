@@ -7,7 +7,13 @@
     "test": "jest"
   },
   "license": "MIT",
-  "description": "Browser Control MCP Firefox Extension / Add-on",
+  "description": "FoxPilot Firefox Extension / Add-on",
+  "author": "Bala Kumar <mail@balakumar.dev> (https://github.com/balakumardev)",
+  "homepage": "https://github.com/balakumardev/foxpilot#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/balakumardev/foxpilot.git"
+  },
   "devDependencies": {
     "@types/jest": "^29.5.14",
     "esbuild": "0.25.1",
@@ -17,7 +23,7 @@
     "ts-jest": "^29.4.0",
     "typescript": "^5.8.2",
     "@types/firefox-webext-browser": "^120.0.4",
-    "@browser-control-mcp/common": "../common"
+    "@foxpilot/common": "../common"
   },
   "nx": {}
 }

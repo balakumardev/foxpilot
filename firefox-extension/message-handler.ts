@@ -1,4 +1,4 @@
-import type { ServerMessageRequest } from "@browser-control-mcp/common";
+import type { ServerMessageRequest } from "@foxpilot/common";
 import { ExtensionTransport } from "./transport";
 import { isCommandAllowed, isDomainInDenyList, COMMAND_TO_TOOL_ID, addAuditLogEntry, requiresAutomationMode, isAutomationModeEnabled } from "./extension-config";
 import { buildSnapshot } from "./injected/snapshot-script";
@@ -175,7 +175,7 @@ export class MessageHandler {
     if (requiresAutomationMode(req.cmd) && !(await isAutomationModeEnabled())) {
       throw new Error(
         `Command '${req.cmd}' requires Automation Mode, which is currently disabled. ` +
-          `Ask the user to enable Automation Mode in the Browser Control MCP extension's options page, then try again.`
+          `Ask the user to enable Automation Mode in the FoxPilot extension's options page, then try again.`
       );
     }
 

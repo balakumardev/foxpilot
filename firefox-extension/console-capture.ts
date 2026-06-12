@@ -23,7 +23,7 @@
  *     nonce could block injection (we log and ignore such failures).
  */
 
-import type { ConsoleEntry } from "@browser-control-mcp/common";
+import type { ConsoleEntry } from "@foxpilot/common";
 import { isAutomationModeEnabled } from "./extension-config";
 
 export type { ConsoleEntry };

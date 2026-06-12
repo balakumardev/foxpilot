@@ -2,7 +2,7 @@ import { BrokerCore, BrokerCoreOptions } from "../broker-core";
 import type {
   ServerMessageRequest,
   ExtensionMessage,
-} from "@browser-control-mcp/common";
+} from "@foxpilot/common";
 import type { BrokerServerFrame } from "../broker-protocol";
 
 function makeCore(overrides: Partial<BrokerCoreOptions> = {}) {

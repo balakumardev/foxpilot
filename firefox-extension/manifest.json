@@ -1,8 +1,15 @@
 {
     "manifest_version": 2,
-    "name": "Browser Control MCP",
+    "name": "FoxPilot",
     "version": "1.5.0",
-    "description": "An extension that allows a local MCP server to perform actions on the browser.",
+    "description": "An extension that lets a local MCP server drive Firefox: tabs, history, content, and opt-in page automation.",
+    "author": "Bala Kumar",
+    "homepage_url": "https://github.com/balakumardev/foxpilot",
+    "browser_specific_settings": {
+        "gecko": {
+            "id": "foxpilot@balakumar.dev"
+        }
+    },
     "permissions": [
         "tabs",
         "tabGroups",

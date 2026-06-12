@@ -13,7 +13,7 @@
  */
 
 import * as http from "http";
-import type { ServerMessageRequest } from "@browser-control-mcp/common";
+import type { ServerMessageRequest } from "@foxpilot/common";
 import { BrokerServer } from "./broker";
 import { createSignature, verifySignature } from "./signing";
 

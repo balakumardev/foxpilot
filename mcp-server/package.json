@@ -13,9 +13,18 @@
     "test": "jest"
   },
   "license": "MIT",
-  "description": "Browser Control MCP Server",
+  "description": "FoxPilot MCP Server",
+  "author": "Bala Kumar <mail@balakumar.dev> (https://github.com/balakumardev)",
+  "homepage": "https://github.com/balakumardev/foxpilot#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/balakumardev/foxpilot.git"
+  },
+  "bugs": {
+    "url": "https://github.com/balakumardev/foxpilot/issues"
+  },
   "dependencies": {
-    "@browser-control-mcp/common": "../common",
+    "@foxpilot/common": "../common",
     "@modelcontextprotocol/sdk": "^1.7.0",
     "dayjs": "^1.11.13",
     "readline": "^1.3.0",

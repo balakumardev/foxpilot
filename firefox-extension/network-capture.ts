@@ -24,7 +24,7 @@
 import type {
   NetworkRecord,
   NetworkHeader,
-} from "@browser-control-mcp/common";
+} from "@foxpilot/common";
 import { isAutomationModeEnabled } from "./extension-config";
 
 export type { NetworkRecord, NetworkHeader };

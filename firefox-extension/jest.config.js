@@ -4,7 +4,7 @@ module.exports = {
   testEnvironment: 'jsdom',
   setupFilesAfterEnv: ['<rootDir>/__tests__/setup.ts'],
   moduleNameMapper: {
-    '^@browser-control-mcp/common$': '<rootDir>/../common'
+    '^@foxpilot/common$': '<rootDir>/../common'
   },
   transform: {
     '^.+\\.tsx?$': ['ts-jest', {
