@@ -551,6 +551,76 @@ describe("MessageHandler", () => {
     });
   });
 
+  describe("take-snapshot command", () => {
+    it("takes a snapshot and sends it to the server when automation mode is enabled", async () => {
+      // Arrange — automation mode must be enabled for this gated command.
+      (browser.storage.local.get as jest.Mock).mockResolvedValue({
+        config: {
+          secret: "test-secret",
+          ports: [8089],
+          domainDenyList: [],
+          auditLog: [],
+          automationMode: true,
+        },
+      });
+
+      const request: ServerMessageRequest = {
+        cmd: "take-snapshot",
+        tabId: 123,
+        correlationId: "test-correlation-id",
+      };
+
+      const mockTab = { id: 123, url: "https://example.com" };
+      (browser.tabs.get as jest.Mock).mockResolvedValue(mockTab);
+      (browser.permissions.contains as jest.Mock).mockResolvedValue(true);
+      (browser.tabs.executeScript as jest.Mock).mockResolvedValue([
+        { tree: 'button "X" [uid=e1]', isTruncated: false },
+      ]);
+
+      // Act
+      await messageHandler.handleDecodedMessage(request);
+
+      // Assert
+      expect(browser.tabs.get).toHaveBeenCalledWith(123);
+      expect(browser.tabs.executeScript).toHaveBeenCalled();
+      expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+        resource: "snapshot",
+        correlationId: "test-correlation-id",
+        tabId: 123,
+        snapshot: 'button "X" [uid=e1]',
+        isTruncated: false,
+      });
+    });
+
+    it("throws if the tab URL domain is in the deny list", async () => {
+      // Arrange
+      (browser.storage.local.get as jest.Mock).mockResolvedValue({
+        config: {
+          secret: "test-secret",
+          ports: [8089],
+          domainDenyList: ["example.com"],
+          auditLog: [],
+          automationMode: true,
+        },
+      });
+
+      const request: ServerMessageRequest = {
+        cmd: "take-snapshot",
+        tabId: 123,
+        correlationId: "test-correlation-id",
+      };
+
+      const mockTab = { id: 123, url: "https://example.com" };
+      (browser.tabs.get as jest.Mock).mockResolvedValue(mockTab);
+
+      // Act & Assert
+      await expect(
+        messageHandler.handleDecodedMessage(request)
+      ).rejects.toThrow("Domain in tab URL is in the deny list");
+      expect(browser.tabs.executeScript).not.toHaveBeenCalled();
+    });
+  });
+
   describe("automation mode gate", () => {
     it("blocks an automation command when automation mode is disabled", async () => {
       (browser.storage.local.get as jest.Mock).mockResolvedValue({

@@ -46,6 +46,12 @@ export interface GroupTabsServerMessage extends ServerMessageBase {
   groupTitle: string;
 }
 
+export interface TakeSnapshotServerMessage extends ServerMessageBase {
+  cmd: "take-snapshot";
+  tabId: number;
+  verbose?: boolean;
+}
+
 export type ServerMessage =
   | OpenTabServerMessage
   | CloseTabsServerMessage
@@ -54,6 +60,7 @@ export type ServerMessage =
   | GetTabContentServerMessage
   | ReorderTabsServerMessage
   | FindHighlightServerMessage
-  | GroupTabsServerMessage;
+  | GroupTabsServerMessage
+  | TakeSnapshotServerMessage;
 
 export type ServerMessageRequest = ServerMessage & { correlationId: string };

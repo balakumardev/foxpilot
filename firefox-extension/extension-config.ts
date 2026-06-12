@@ -49,6 +49,11 @@ export const AVAILABLE_TOOLS: ToolInfo[] = [
     id: "find-highlight-in-browser-tab",
     name: "Find and Highlight in Browser Tab",
     description: "Allows the MCP server to search for and highlight text in web pages"
+  },
+  {
+    id: "take-snapshot",
+    name: "Take Page Snapshot",
+    description: "Allows the MCP server to read an accessibility snapshot of a page's interactive elements"
   }
 ];
 
@@ -62,6 +67,7 @@ export const COMMAND_TO_TOOL_ID: Record<ServerMessageRequest["cmd"], string> = {
   "reorder-tabs": "reorder-browser-tabs",
   "find-highlight": "find-highlight-in-browser-tab",
   "group-tabs": "reorder-browser-tabs",
+  "take-snapshot": "take-snapshot",
 };
 
 // Commands that actively control a page (navigation, input, scripting, page

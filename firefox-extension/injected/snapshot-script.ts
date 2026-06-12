@@ -1,0 +1,337 @@
+/**
+ * Accessibility-style snapshot builder.
+ *
+ * CRITICAL: `buildSnapshot` is used in TWO ways:
+ *   (a) Imported and unit-tested directly in jsdom.
+ *   (b) Stringified via `buildSnapshot.toString()` and injected into the page
+ *       with `browser.tabs.executeScript`, where it runs in the page's own
+ *       JS world with no access to this module.
+ *
+ * Because of (b) the function MUST be fully self-contained: it may NOT
+ * reference any imports, module-scope variables, or sibling functions. Every
+ * helper it needs is defined as an inner function. It operates ONLY on the
+ * `doc` argument passed to it.
+ *
+ * It also avoids any layout-dependent APIs (`offsetParent`, `getClientRects`,
+ * `getComputedStyle`) because jsdom has no layout engine — relying on those
+ * would filter out every element. Visibility is judged purely from explicit
+ * markup signals.
+ */
+export function buildSnapshot(
+  doc: Document,
+  options: { verbose: boolean; maxLength: number }
+): { tree: string; isTruncated: boolean } {
+  const verbose = !!options.verbose;
+  const maxLength = options.maxLength;
+
+  const UID_ATTR = "data-bcmcp-uid";
+  const NAME_MAX = 120;
+
+  // --- inner helpers (must stay inside this function body) ---
+
+  function collapseWhitespace(s: string): string {
+    return s.replace(/\s+/g, " ").trim();
+  }
+
+  function clip(s: string): string {
+    const collapsed = collapseWhitespace(s);
+    if (collapsed.length > NAME_MAX) {
+      return collapsed.slice(0, NAME_MAX);
+    }
+    return collapsed;
+  }
+
+  function getInlineStyle(el: Element): string {
+    return (el.getAttribute("style") || "").toLowerCase();
+  }
+
+  function isHidden(el: Element): boolean {
+    if (el.hasAttribute("hidden")) {
+      return true;
+    }
+    if (el.getAttribute("aria-hidden") === "true") {
+      return true;
+    }
+    const tag = el.tagName.toLowerCase();
+    if (tag === "input" && el.getAttribute("type") === "hidden") {
+      return true;
+    }
+    const style = getInlineStyle(el);
+    // Match `display:none` / `visibility:hidden` allowing optional whitespace.
+    if (/display\s*:\s*none/.test(style)) {
+      return true;
+    }
+    if (/visibility\s*:\s*hidden/.test(style)) {
+      return true;
+    }
+    return false;
+  }
+
+  function getRole(el: Element): string {
+    const explicit = el.getAttribute("role");
+    if (explicit) {
+      return explicit.trim();
+    }
+    const tag = el.tagName.toLowerCase();
+    const type = (el.getAttribute("type") || "").toLowerCase();
+
+    if (tag === "a" && el.hasAttribute("href")) {
+      return "link";
+    }
+    if (tag === "summary") {
+      return "button";
+    }
+    if (tag === "button") {
+      return "button";
+    }
+    if (tag === "input") {
+      if (type === "button" || type === "submit" || type === "reset") {
+        return "button";
+      }
+      if (type === "checkbox") {
+        return "checkbox";
+      }
+      if (type === "radio") {
+        return "radio";
+      }
+      if (type === "search") {
+        return "searchbox";
+      }
+      return "textbox";
+    }
+    if (tag === "textarea") {
+      return "textbox";
+    }
+    if (tag === "select") {
+      return "combobox";
+    }
+    if (el.hasAttribute("contenteditable")) {
+      const ce = (el.getAttribute("contenteditable") || "").toLowerCase();
+      if (ce !== "false") {
+        return "textbox";
+      }
+    }
+    if (/^h[1-6]$/.test(tag)) {
+      return "heading";
+    }
+    return "clickable";
+  }
+
+  function labelFromFor(el: Element): string {
+    const id = el.getAttribute("id");
+    if (!id) {
+      return "";
+    }
+    // Escape the id for use in a CSS attribute selector.
+    let selectorId = id;
+    try {
+      const anyWin = doc.defaultView as unknown as {
+        CSS?: { escape?: (v: string) => string };
+      } | null;
+      if (anyWin && anyWin.CSS && typeof anyWin.CSS.escape === "function") {
+        selectorId = anyWin.CSS.escape(id);
+      }
+    } catch (e) {
+      selectorId = id;
+    }
+    let labelEl: Element | null = null;
+    try {
+      labelEl = doc.querySelector('label[for="' + selectorId + '"]');
+    } catch (e) {
+      labelEl = null;
+    }
+    if (labelEl && labelEl.textContent) {
+      return labelEl.textContent;
+    }
+    return "";
+  }
+
+  function labelFromAncestor(el: Element): string {
+    let node: Element | null = el.parentElement;
+    while (node) {
+      if (node.tagName.toLowerCase() === "label") {
+        return node.textContent || "";
+      }
+      node = node.parentElement;
+    }
+    return "";
+  }
+
+  function nameFromLabelledBy(el: Element): string {
+    const ref = el.getAttribute("aria-labelledby");
+    if (!ref) {
+      return "";
+    }
+    const ids = ref.split(/\s+/);
+    const parts: string[] = [];
+    for (let i = 0; i < ids.length; i++) {
+      const id = ids[i];
+      if (!id) {
+        continue;
+      }
+      let target: Element | null = null;
+      try {
+        target = doc.getElementById(id);
+      } catch (e) {
+        target = null;
+      }
+      if (target && target.textContent) {
+        parts.push(target.textContent);
+      }
+    }
+    return parts.join(" ");
+  }
+
+  function getAccessibleName(el: Element, role: string): string {
+    const ariaLabel = el.getAttribute("aria-label");
+    if (ariaLabel && collapseWhitespace(ariaLabel)) {
+      return clip(ariaLabel);
+    }
+
+    const labelledBy = nameFromLabelledBy(el);
+    if (collapseWhitespace(labelledBy)) {
+      return clip(labelledBy);
+    }
+
+    const forLabel = labelFromFor(el);
+    if (collapseWhitespace(forLabel)) {
+      return clip(forLabel);
+    }
+
+    const ancestorLabel = labelFromAncestor(el);
+    if (collapseWhitespace(ancestorLabel)) {
+      return clip(ancestorLabel);
+    }
+
+    const tag = el.tagName.toLowerCase();
+    if (tag === "img") {
+      const alt = el.getAttribute("alt");
+      if (alt && collapseWhitespace(alt)) {
+        return clip(alt);
+      }
+    }
+
+    const title = el.getAttribute("title");
+    if (title && collapseWhitespace(title)) {
+      return clip(title);
+    }
+
+    const placeholder = el.getAttribute("placeholder");
+    if (placeholder && collapseWhitespace(placeholder)) {
+      return clip(placeholder);
+    }
+
+    // Only fall back to raw textContent for roles where the text is the label
+    // (avoid dumping the contents of large containers).
+    if (role === "link" || role === "button" || role === "heading") {
+      const text = el.textContent || "";
+      if (collapseWhitespace(text)) {
+        return clip(text);
+      }
+    }
+
+    return "";
+  }
+
+  function getStateFlags(el: Element, role: string): string[] {
+    const flags: string[] = [];
+
+    const disabledAttr =
+      (el as { disabled?: boolean }).disabled === true ||
+      el.hasAttribute("disabled");
+    if (disabledAttr || el.getAttribute("aria-disabled") === "true") {
+      flags.push("disabled");
+    }
+
+    if (role === "checkbox" || role === "radio") {
+      const checked =
+        (el as { checked?: boolean }).checked === true ||
+        el.hasAttribute("checked") ||
+        el.getAttribute("aria-checked") === "true";
+      if (checked) {
+        flags.push("checked");
+      }
+    }
+
+    const required =
+      (el as { required?: boolean }).required === true ||
+      el.hasAttribute("required") ||
+      el.getAttribute("aria-required") === "true";
+    if (required) {
+      flags.push("required");
+    }
+
+    const expanded = el.getAttribute("aria-expanded");
+    if (expanded === "true") {
+      flags.push("expanded");
+    } else if (expanded === "false") {
+      flags.push("collapsed");
+    }
+
+    if (el.getAttribute("aria-selected") === "true") {
+      flags.push("selected");
+    }
+
+    return flags;
+  }
+
+  // --- 1. clear stale uids from prior runs ---
+  const stale = doc.querySelectorAll("[" + UID_ATTR + "]");
+  for (let i = 0; i < stale.length; i++) {
+    stale[i].removeAttribute(UID_ATTR);
+  }
+
+  // --- 2. select candidate elements ---
+  const baseSelectors = [
+    "a[href]",
+    "button",
+    "input:not([type=hidden])",
+    "textarea",
+    "select",
+    "[role]",
+    "[tabindex]",
+    "[onclick]",
+    "summary",
+    "[contenteditable]",
+  ];
+  const verboseSelectors = ["h1", "h2", "h3", "h4", "h5", "h6", "[aria-label]"];
+  const selector = (verbose
+    ? baseSelectors.concat(verboseSelectors)
+    : baseSelectors
+  ).join(",");
+
+  const candidates = doc.querySelectorAll(selector);
+
+  // --- 3..6. walk, compute, stamp, and build the output ---
+  const lines: string[] = [];
+  let uidCounter = 0;
+
+  for (let i = 0; i < candidates.length; i++) {
+    const el = candidates[i];
+
+    if (isHidden(el)) {
+      continue;
+    }
+
+    const role = getRole(el);
+    const name = getAccessibleName(el, role);
+    const flags = getStateFlags(el, role);
+
+    uidCounter += 1;
+    const uid = "e" + uidCounter;
+    el.setAttribute(UID_ATTR, uid);
+
+    let line = role + ' "' + name + '" [uid=' + uid + "]";
+    if (flags.length > 0) {
+      line += " (" + flags.join(", ") + ")";
+    }
+    lines.push(line);
+  }
+
+  // --- 7. join and truncate ---
+  const full = lines.join("\n");
+  if (full.length > maxLength) {
+    return { tree: full.slice(0, maxLength), isTruncated: true };
+  }
+  return { tree: full, isTruncated: false };
+}

@@ -1,6 +1,7 @@
 import type { ServerMessageRequest } from "@browser-control-mcp/common";
 import { ExtensionTransport } from "./transport";
 import { isCommandAllowed, isDomainInDenyList, COMMAND_TO_TOOL_ID, addAuditLogEntry, requiresAutomationMode, isAutomationModeEnabled } from "./extension-config";
+import { buildSnapshot } from "./injected/snapshot-script";
 
 export class MessageHandler {
   private client: ExtensionTransport;
@@ -60,6 +61,9 @@ export class MessageHandler {
           req.groupColor as browser.tabGroups.Color,
           req.groupTitle
         );
+        break;
+      case "take-snapshot":
+        await this.takeSnapshot(req.correlationId, req.tabId, req.verbose);
         break;
       default:
         const _exhaustiveCheck: never = req;
@@ -255,6 +259,37 @@ export class MessageHandler {
       fullText,
       links,
       totalLength,
+    });
+  }
+
+  private async takeSnapshot(
+    correlationId: string,
+    tabId: number,
+    verbose?: boolean
+  ): Promise<void> {
+    const tab = await browser.tabs.get(tabId);
+    if (tab.url && (await isDomainInDenyList(tab.url))) {
+      throw new Error(`Domain in tab URL is in the deny list`);
+    }
+
+    await this.checkForUrlPermission(tab.url);
+
+    // `buildSnapshot` is fully self-contained, so stringifying it yields a
+    // function expression that runs standalone in the page's JS world.
+    const snapshotOptions = { verbose: !!verbose, maxLength: 25000 };
+    const results = await browser.tabs.executeScript(tabId, {
+      code: `(${buildSnapshot.toString()})(document, ${JSON.stringify(
+        snapshotOptions
+      )})`,
+    });
+
+    const { tree, isTruncated } = results[0];
+    await this.client.sendResourceToServer({
+      resource: "snapshot",
+      correlationId,
+      tabId,
+      snapshot: tree,
+      isTruncated,
     });
   }
 

@@ -27,6 +27,7 @@ import type {
   ReorderedTabsExtensionMessage,
   FindHighlightExtensionMessage,
   TabGroupCreatedExtensionMessage,
+  SnapshotExtensionMessage,
 } from "@browser-control-mcp/common";
 import { BrokerClientFrame, BrokerServerFrame } from "./broker-protocol";
 import { createSignature, verifySignature } from "./signing";
@@ -300,6 +301,17 @@ export class BrowserAPI {
       groupTitle,
     });
     return message.groupId;
+  }
+
+  async takeSnapshot(
+    tabId: number,
+    verbose: boolean
+  ): Promise<SnapshotExtensionMessage> {
+    return await this.sendTool<SnapshotExtensionMessage>({
+      cmd: "take-snapshot",
+      tabId,
+      verbose,
+    });
   }
 }
 

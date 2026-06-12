@@ -60,6 +60,13 @@ export interface TabGroupCreatedExtensionMessage extends ExtensionMessageBase {
   groupId: number;
 }
 
+export interface SnapshotExtensionMessage extends ExtensionMessageBase {
+  resource: "snapshot";
+  tabId: number;
+  snapshot: string;
+  isTruncated: boolean;
+}
+
 export type ExtensionMessage =
   | TabContentExtensionMessage
   | TabsExtensionMessage
@@ -68,7 +75,8 @@ export type ExtensionMessage =
   | ReorderedTabsExtensionMessage
   | FindHighlightExtensionMessage
   | TabsClosedExtensionMessage
-  | TabGroupCreatedExtensionMessage;
+  | TabGroupCreatedExtensionMessage
+  | SnapshotExtensionMessage;
 
 export interface ExtensionError {
   correlationId: string;

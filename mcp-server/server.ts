@@ -195,6 +195,17 @@ mcpServer.tool(
 );
 
 mcpServer.tool(
+  "take-snapshot",
+  "Take an accessibility snapshot of a browser tab's page. Returns a list of interactive elements, each tagged with a stable uid (e.g. [uid=e12]). Use these uids with the click/fill/hover tools to act on elements. Re-take a snapshot after the page changes, as uids are reassigned each time.",
+  { tabId: z.number(), verbose: z.boolean().optional() },
+  async ({ tabId, verbose }) => {
+    const result = await browserApi.takeSnapshot(tabId, verbose ?? false);
+    const hint = result.isTruncated ? "[snapshot truncated due to size]\n" : "";
+    return { content: [{ type: "text", text: hint + result.snapshot }] };
+  }
+);
+
+mcpServer.tool(
   "group-browser-tabs",
   "Organize opened browser tabs in a new tab group",
   {
