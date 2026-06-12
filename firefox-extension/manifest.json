@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "FoxPilot",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "An extension that lets a local MCP server drive Firefox: tabs, history, content, and opt-in page automation.",
   "author": "Bala Kumar",
   "homepage_url": "https://github.com/balakumardev/foxpilot",
@@ -9,7 +9,9 @@
     "gecko": {
       "id": "foxpilot@balakumar.dev",
       "data_collection_permissions": {
-        "required": ["none"]
+        "required": [
+          "none"
+        ]
       }
     }
   },
