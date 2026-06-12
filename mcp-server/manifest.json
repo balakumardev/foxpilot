@@ -4,7 +4,7 @@
     "version": "1.5.1",
     "display_name": "Firefox Control",
     "description": "Control Mozilla Firefox: tabs, history and web content (privacy aware)",
-    "long_description": "This MCP server provides AI assistants with access to the browser's tab management, browsing history, page search, and webpage text content through a local MCP (Model Context Protocol) connection.\n\nBefore accessing any webpage content, explicit user consent is required for each domain through browser-side permissions.\n\n**Note:** This extension requires a separate Firefox add-on component, which is available at [https://addons.mozilla.org/en-US/firefox/addon/browser-control-mcp/](https://addons.mozilla.org/en-US/firefox/addon/browser-control-mcp/). Start by installing the Firefox add-on, then copy the secret key from the add-on settings page (it will open automatically) and paste it into this extension's configuration.",
+    "long_description": "This MCP server provides AI assistants with access to the browser's tab management, browsing history, page search, and webpage text content through a local MCP (Model Context Protocol) connection.\n\nIt also provides advanced page automation: page interaction (click, type, fill, navigate), accessibility snapshots, screenshots, JavaScript evaluation, file upload, and console/network inspection. These powerful automation tools require enabling \"Automation Mode\" in the Firefox extension.\n\nBefore accessing any webpage content, explicit user consent is required for each domain through browser-side permissions.\n\n**Note:** This extension requires a separate Firefox add-on component, which is available at [https://addons.mozilla.org/en-US/firefox/addon/browser-control-mcp/](https://addons.mozilla.org/en-US/firefox/addon/browser-control-mcp/). Start by installing the Firefox add-on, then copy the secret key from the add-on settings page (it will open automatically) and paste it into this extension's configuration.",
     "author": {
         "name": "eyalzh",
         "url": "https://github.com/eyalzh"
@@ -82,6 +82,90 @@
         {
             "name": "find-highlight-in-browser-tab",
             "description": "Find and highlight text in a browser tab"
+        },
+        {
+            "name": "navigate-tab",
+            "description": "Load a URL in an existing browser tab"
+        },
+        {
+            "name": "navigate-page-history",
+            "description": "Navigate a tab's history: go back, forward, or reload"
+        },
+        {
+            "name": "select-tab",
+            "description": "Focus/activate a browser tab and bring its window to the foreground"
+        },
+        {
+            "name": "get-active-tab",
+            "description": "Get the currently active tab in the browser"
+        },
+        {
+            "name": "wait-for-text",
+            "description": "Wait until the given text appears on a tab's page (polls until found or timeout)"
+        },
+        {
+            "name": "take-snapshot",
+            "description": "Take an accessibility snapshot of a tab's page, returning interactive elements tagged with stable uids"
+        },
+        {
+            "name": "click-element",
+            "description": "Click an element on a page by its uid from a recent snapshot"
+        },
+        {
+            "name": "hover-element",
+            "description": "Hover the mouse over an element on a page by its uid from a recent snapshot"
+        },
+        {
+            "name": "fill-element",
+            "description": "Set the value of a form field (input, textarea, select, checkbox, radio) by its uid"
+        },
+        {
+            "name": "fill-form",
+            "description": "Fill multiple form fields in one step from an array of uid/value pairs"
+        },
+        {
+            "name": "type-text",
+            "description": "Type text into the currently focused element on a page, optionally submitting"
+        },
+        {
+            "name": "press-key",
+            "description": "Press a keyboard key on a page, optionally holding modifiers"
+        },
+        {
+            "name": "take-screenshot",
+            "description": "Take a screenshot of a browser tab (viewport, full page, or a single element) and return it as an image"
+        },
+        {
+            "name": "evaluate-script",
+            "description": "Evaluate a JavaScript function in the page's real world and return its result"
+        },
+        {
+            "name": "upload-file",
+            "description": "Upload a local file into a file input on a page by its uid"
+        },
+        {
+            "name": "get-console-messages",
+            "description": "Get the console output and uncaught errors captured for a tab (requires Automation Mode)"
+        },
+        {
+            "name": "get-network-requests",
+            "description": "Get the network requests captured for a tab (requires Automation Mode)"
+        },
+        {
+            "name": "drag-element",
+            "description": "Drag one element onto another on a page by their uids from a recent snapshot"
+        },
+        {
+            "name": "resize-window",
+            "description": "Resize the browser window that hosts a tab to the given width and height"
+        },
+        {
+            "name": "handle-dialog",
+            "description": "Arm a tab to automatically accept or dismiss future native JavaScript dialogs"
+        },
+        {
+            "name": "emulate",
+            "description": "Emulate device conditions for a tab (geolocation and/or user agent override)"
         }
     ]
 }
