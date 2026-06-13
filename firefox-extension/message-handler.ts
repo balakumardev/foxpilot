@@ -4,7 +4,7 @@ import { isCommandAllowed, isDomainInDenyList, COMMAND_TO_TOOL_ID, addAuditLogEn
 import { buildSnapshot } from "./injected/snapshot-script";
 import { performInputAction } from "./injected/action-script";
 import { dispatchMouseMoveStep, typeCharStep } from "./injected/humanize-steps";
-import { runHumanInput, HumanInputDeps, InstantArgs, StepResult } from "./humanize/run-human-input";
+import { runHumanInput, HumanInputDeps, StepResult } from "./humanize/run-human-input";
 import type { Point } from "./humanize/motion-model";
 import {
   buildEvalPageScript,
