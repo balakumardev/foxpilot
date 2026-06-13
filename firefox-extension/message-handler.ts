@@ -1,8 +1,11 @@
 import type { ServerMessageRequest } from "@foxpilot/common";
 import { ExtensionTransport } from "./transport";
-import { isCommandAllowed, isDomainInDenyList, COMMAND_TO_TOOL_ID, addAuditLogEntry, requiresAutomationMode, isAutomationModeEnabled } from "./extension-config";
+import { isCommandAllowed, isDomainInDenyList, COMMAND_TO_TOOL_ID, addAuditLogEntry, requiresAutomationMode, isAutomationModeEnabled, getInputRealismMode } from "./extension-config";
 import { buildSnapshot } from "./injected/snapshot-script";
 import { performInputAction } from "./injected/action-script";
+import { dispatchMouseMoveStep, typeCharStep } from "./injected/humanize-steps";
+import { runHumanInput, HumanInputDeps, InstantArgs, StepResult } from "./humanize/run-human-input";
+import type { Point } from "./humanize/motion-model";
 import {
   buildEvalPageScript,
   buildUploadPageScript,
@@ -166,6 +169,9 @@ function readPageDimensions(doc: Document): {
 
 export class MessageHandler {
   private client: ExtensionTransport;
+
+  // Per-tab virtual cursor position for continuous human-like mouse paths.
+  private cursorByTab: Map<number, Point> = new Map();
 
   constructor(client: ExtensionTransport) {
     this.client = client;
@@ -600,19 +606,75 @@ export class MessageHandler {
 
     await this.checkForUrlPermission(tab.url);
 
-    const results = await browser.tabs.executeScript(tabId, {
-      code: `(${performInputAction.toString()})(document, ${JSON.stringify(
-        args
-      )})`,
-    });
+    const mode = await getInputRealismMode();
+    let result: StepResult;
+    if (mode === "off") {
+      const results = await browser.tabs.executeScript(tabId, {
+        code: `(${performInputAction.toString()})(document, ${JSON.stringify(
+          args
+        )})`,
+      });
+      result = results[0] as StepResult;
+    } else {
+      // "synthetic" (and, until Phase 2, "native") use the humanized executor.
+      result = await this.runHumanInputAction(tabId, args);
+    }
 
-    const result = results[0] as { ok: boolean; error?: string };
     await this.client.sendResourceToServer({
       resource: "action-result",
       correlationId,
       ok: result.ok,
       error: result.error,
     });
+  }
+
+  // Builds the real injected-effect deps and runs the pure orchestrator. Each
+  // step is one `executeScript`; the background paces them with `sleep`. Every
+  // authoritative mutation still goes through `performInputAction`.
+  private async runHumanInputAction(
+    tabId: number,
+    args: InputActionArgs
+  ): Promise<StepResult> {
+    const exec = async <T>(code: string): Promise<T | undefined> => {
+      const r = await browser.tabs.executeScript(tabId, { code });
+      return (r && r[0]) as T | undefined;
+    };
+
+    const deps: HumanInputDeps = {
+      rng: Math.random,
+      sleep,
+      getCursor: () => this.cursorByTab.get(tabId) || { x: 100, y: 100 },
+      setCursor: (p) => {
+        this.cursorByTab.set(tabId, p);
+      },
+      readTargetInfo: async (uid) => {
+        const info = await exec<{
+          x: number;
+          y: number;
+          width: number;
+          height: number;
+          dpr: number;
+        }>(`(${readElementRect.toString()})(document, ${JSON.stringify(uid)})`);
+        return info || null;
+      },
+      mouseMove: async (x, y) => {
+        await exec(`(${dispatchMouseMoveStep.toString()})(document, ${x}, ${y})`);
+      },
+      typeChar: async (ch) => {
+        const r = await exec<StepResult>(
+          `(${typeCharStep.toString()})(document, ${JSON.stringify(ch)})`
+        );
+        return r || { ok: false, error: "type step returned no result" };
+      },
+      instant: async (a) => {
+        const r = await exec<StepResult>(
+          `(${performInputAction.toString()})(document, ${JSON.stringify(a)})`
+        );
+        return r || { ok: false, error: "instant step returned no result" };
+      },
+    };
+
+    return runHumanInput(args, deps);
   }
 
   // Runs a JS function expression in the page's REAL world and returns its

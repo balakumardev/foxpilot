@@ -635,6 +635,7 @@ describe("MessageHandler", () => {
       domainDenyList: [] as string[],
       auditLog: [],
       automationMode: true,
+      inputRealismMode: "off",
     };
 
     beforeEach(() => {
@@ -758,6 +759,44 @@ describe("MessageHandler", () => {
       await expect(
         messageHandler.handleDecodedMessage(request)
       ).rejects.toThrow("requires Automation Mode");
+    });
+  });
+
+  describe("input realism — synthetic mode", () => {
+    it("routes a click through the humanized path (multiple executeScript calls) and replies ok", async () => {
+      (browser.storage.local.get as jest.Mock).mockResolvedValue({
+        config: {
+          secret: "test-secret",
+          domainDenyList: [],
+          ports: [8089],
+          automationMode: true,
+          inputRealismMode: "synthetic",
+        },
+      });
+      (browser.tabs.get as jest.Mock).mockResolvedValue({
+        id: 123,
+        url: "https://example.com",
+      });
+      (browser.permissions.contains as jest.Mock).mockResolvedValue(true);
+      // readTargetInfo (a rect) + mouse moves + instant click all read [0].
+      (browser.tabs.executeScript as jest.Mock).mockResolvedValue([
+        { ok: true, x: 0, y: 0, width: 20, height: 10, dpr: 1 },
+      ]);
+
+      await messageHandler.handleDecodedMessage({
+        cmd: "click-element",
+        tabId: 123,
+        uid: "e1",
+        correlationId: "c1",
+      } as ServerMessageRequest);
+
+      expect((browser.tabs.executeScript as jest.Mock).mock.calls.length).toBeGreaterThan(1);
+      expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+        resource: "action-result",
+        correlationId: "c1",
+        ok: true,
+        error: undefined,
+      });
     });
   });
 
@@ -1831,6 +1870,7 @@ describe("MessageHandler", () => {
       domainDenyList: [] as string[],
       auditLog: [],
       automationMode: true,
+      inputRealismMode: "off",
     };
 
     beforeEach(() => {
