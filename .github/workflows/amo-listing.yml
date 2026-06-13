@@ -1,0 +1,30 @@
+name: Update AMO listing
+
+# On-demand: push a tag like "amo-listing-v1" to update the FoxPilot AMO listing's
+# description, icon, and screenshots via the AMO API, reusing the AMO_JWT_* secrets
+# the release pipeline already uses. Idempotent (existing screenshots are replaced).
+# Does NOT touch the signed version or trigger the release workflow.
+
+on:
+  push:
+    tags:
+      - 'amo-listing-v*'
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  update-listing:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install --quiet requests
+      - name: Update description, icon, screenshots on AMO
+        env:
+          AMO_JWT_ISSUER: ${{ secrets.AMO_JWT_ISSUER }}
+          AMO_JWT_SECRET: ${{ secrets.AMO_JWT_SECRET }}
+          AMO_ADDON: foxpilot
+        run: python3 store/amo_listing.py
