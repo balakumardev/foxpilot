@@ -638,6 +638,13 @@ export class MessageHandler {
     });
   }
 
+  // Inject a stringified function into a tab and return its first result. Shared
+  // by the synthetic and native executors.
+  private async exec<T>(tabId: number, code: string): Promise<T | undefined> {
+    const r = await browser.tabs.executeScript(tabId, { code });
+    return (r && r[0]) as T | undefined;
+  }
+
   // Builds the real injected-effect deps and runs the pure orchestrator. Each
   // step is one `executeScript`; the background paces them with `sleep`. Every
   // authoritative mutation still goes through `performInputAction`.
@@ -645,10 +652,8 @@ export class MessageHandler {
     tabId: number,
     args: InputActionArgs
   ): Promise<StepResult> {
-    const exec = async <T>(code: string): Promise<T | undefined> => {
-      const r = await browser.tabs.executeScript(tabId, { code });
-      return (r && r[0]) as T | undefined;
-    };
+    const exec = <T>(code: string): Promise<T | undefined> =>
+      this.exec<T>(tabId, code);
 
     const deps: HumanInputDeps = {
       rng: Math.random,
@@ -704,10 +709,8 @@ export class MessageHandler {
     }
 
     const rng = Math.random;
-    const exec = async <T>(code: string): Promise<T | undefined> => {
-      const r = await browser.tabs.executeScript(tabId, { code });
-      return (r && r[0]) as T | undefined;
-    };
+    const exec = <T>(code: string): Promise<T | undefined> =>
+      this.exec<T>(tabId, code);
     const screenRect = (uid: string) =>
       exec<{ screenX: number; screenY: number; width: number; height: number; dpr: number }>(
         `(${readElementScreenRect.toString()})(document, ${JSON.stringify(uid)})`
@@ -775,6 +778,10 @@ export class MessageHandler {
     return { ok: true };
   }
 
+  // Lazily builds the sidecar client, snapshotting the port/secret on first
+  // native use. If the sidecar port changes (or the secret rotates) mid-session,
+  // the cached client keeps dialing the old port and native gestures fall back to
+  // synthetic — restart the extension to pick up the new value.
   private async getNativeClient(): Promise<NativeInputClient> {
     if (!this.nativeClient) {
       const port = await getSidecarPort();
