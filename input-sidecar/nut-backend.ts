@@ -16,6 +16,11 @@ import { mouse, keyboard, Point, Button, Key } from "@nut-tree-fork/nut-js";
 import { InputBackend } from "./input-backend";
 
 export class NutInputBackend implements InputBackend {
+  // Cached once input synthesis is confirmed working (Accessibility granted), so
+  // the move-verify probe twitches the cursor at most once. A false/unknown
+  // result is re-checked each time, so a mid-session permission grant is picked up.
+  private permissionOk: boolean | null = null;
+
   constructor() {
     // We pace movement ourselves (one setPosition per waypoint) and pace typing
     // via the sidecar's per-key sleeps, so disable nut-js' own easing/auto-delay.
@@ -96,13 +101,38 @@ export class NutInputBackend implements InputBackend {
   }
 
   async probe(): Promise<boolean> {
-    // Best-effort signal: getPosition() works on macOS without Accessibility,
-    // but synthesizing input requires it. A throw here (or at gesture time)
-    // surfaces as needsPermission upstream; this is the cheap pre-check.
-    try {
-      await mouse.getPosition();
+    // getPosition() succeeds on macOS even WITHOUT Accessibility, so it cannot
+    // tell whether input synthesis actually works. Instead, move-and-verify:
+    // nudge the cursor a few px and confirm it landed. When Accessibility is
+    // missing, setPosition is silently a no-op (the cursor does not move), so we
+    // report false -> the gate returns needsPermission -> the extension falls
+    // back to synthetic (the action still happens) instead of silently doing
+    // nothing. Cache a positive result so we don't twitch on every gesture.
+    if (this.permissionOk === true) {
       return true;
+    }
+    try {
+      const before = await mouse.getPosition();
+      const tx = Math.round(before.x) + 4;
+      const ty = Math.round(before.y) + 4;
+      await mouse.setPosition(new Point(tx, ty));
+      const after = await mouse.getPosition();
+      const moved = Math.abs(after.x - tx) <= 2 && Math.abs(after.y - ty) <= 2;
+      if (moved) {
+        try {
+          await mouse.setPosition(
+            new Point(Math.round(before.x), Math.round(before.y))
+          );
+        } catch {
+          /* restore is best-effort */
+        }
+        this.permissionOk = true;
+        return true;
+      }
+      this.permissionOk = false;
+      return false;
     } catch {
+      this.permissionOk = false;
       return false;
     }
   }

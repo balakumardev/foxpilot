@@ -161,12 +161,26 @@ describe("NutInputBackend", () => {
     expect(mKeyboard.pressKey).not.toHaveBeenCalled();
   });
 
-  it("probe returns true when getPosition succeeds", async () => {
+  it("probe returns true when setPosition actually moves the cursor", async () => {
+    // Working cursor: getPosition reflects the last setPosition (move took effect).
+    let pos = { x: 100, y: 100 };
+    mMouse.getPosition.mockImplementation(async () => ({ ...pos }));
+    mMouse.setPosition.mockImplementation(async (p: { x: number; y: number }) => {
+      pos = { x: p.x, y: p.y };
+    });
     expect(await new NutInputBackend().probe()).toBe(true);
   });
 
+  it("probe returns false when setPosition is a silent no-op (no Accessibility)", async () => {
+    // Cursor never moves regardless of setPosition -> input synthesis blocked.
+    mMouse.getPosition.mockResolvedValue({ x: 100, y: 100 });
+    mMouse.setPosition.mockResolvedValue(undefined);
+    expect(await new NutInputBackend().probe()).toBe(false);
+  });
+
   it("probe returns false when getPosition throws", async () => {
-    mMouse.getPosition.mockRejectedValueOnce(new Error("no accessibility permission"));
+    mMouse.getPosition.mockReset();
+    mMouse.getPosition.mockRejectedValue(new Error("no accessibility permission"));
     expect(await new NutInputBackend().probe()).toBe(false);
   });
 });
