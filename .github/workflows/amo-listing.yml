@@ -27,4 +27,5 @@ jobs:
           AMO_JWT_ISSUER: ${{ secrets.AMO_JWT_ISSUER }}
           AMO_JWT_SECRET: ${{ secrets.AMO_JWT_SECRET }}
           AMO_ADDON: foxpilot
+          PYTHONUNBUFFERED: '1'
         run: python3 store/amo_listing.py
