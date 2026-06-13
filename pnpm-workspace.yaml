@@ -1,4 +1,5 @@
 packages:
   - 'firefox-extension'
   - 'mcp-server'
+  - 'input-sidecar'
 

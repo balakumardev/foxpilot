@@ -1,0 +1,13 @@
+{
+  "name": "@foxpilot/input-sidecar",
+  "version": "1.0.0",
+  "private": true,
+  "engines": { "node": ">=22.0.0" },
+  "scripts": {
+    "build": "rm -rf dist && esbuild main.ts --bundle --platform=node --format=cjs --outfile=dist/main.js --banner:js='#!/usr/bin/env node' --external:@nut-tree-fork/nut-js",
+    "test": "jest"
+  },
+  "dependencies": { "ws": "^8.18.1", "@foxpilot/common": "../common", "@nut-tree-fork/nut-js": "^4.2.6" },
+  "devDependencies": { "@types/ws": "^8.18.0", "@types/node": "^22.0.0", "@types/jest": "^29.5.14", "esbuild": "0.25.1", "jest": "^30.0.4", "ts-jest": "^29.4.0", "typescript": "^5.8.2" },
+  "nx": {}
+}

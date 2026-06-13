@@ -14,7 +14,7 @@
     "url": "https://github.com/balakumardev/foxpilot/issues"
   },
   "scripts": {
-    "postinstall": "npm install --prefix mcp-server && npm install --prefix firefox-extension",
+    "postinstall": "npm install --prefix mcp-server && npm install --prefix firefox-extension && npm install --prefix input-sidecar",
     "build": "nx run-many --target=build --all --parallel"
   },
   "devDependencies": {
