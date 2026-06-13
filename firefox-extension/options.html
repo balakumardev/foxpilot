@@ -433,6 +433,18 @@
           <option value="longpoll">HTTP long-poll</option>
         </select>
         <div class="status" id="transport-status"></div>
+
+        <h3>Input Realism (Anti-Detection)</h3>
+        <p style="margin: 4px 0 8px; color: #555; font-size: 13px;">
+          Makes automated input look human (curved mouse movement, typing
+          cadence). Does not change what actions do. "Off" reproduces the exact
+          original instant behavior.
+        </p>
+        <select id="input-realism-select" style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; margin-bottom: 10px;">
+          <option value="synthetic">Human-like (recommended)</option>
+          <option value="off">Off (instant)</option>
+        </select>
+        <div class="status" id="input-realism-status"></div>
       </div>
     </div>
 

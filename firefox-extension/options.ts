@@ -17,6 +17,8 @@ import {
   setAutomationModeEnabled,
   getTransport,
   setTransport,
+  getInputRealismMode,
+  setInputRealismMode,
 } from "./extension-config";
 
 const secretDisplay = document.getElementById(
@@ -53,6 +55,12 @@ const transportSelect = document.getElementById(
 ) as HTMLSelectElement;
 const transportStatus = document.getElementById(
   "transport-status"
+) as HTMLDivElement;
+const inputRealismSelect = document.getElementById(
+  "input-realism-select"
+) as HTMLSelectElement;
+const inputRealismStatus = document.getElementById(
+  "input-realism-status"
 ) as HTMLDivElement;
 
 /**
@@ -285,6 +293,43 @@ async function handleTransportChange(event: Event) {
       transportStatus.textContent = "";
       transportStatus.style.color = "";
     }, 3000);
+  }
+}
+
+/**
+ * Loads the current input-realism mode into the selector.
+ */
+async function loadInputRealism() {
+  try {
+    const mode = await getInputRealismMode();
+    // "native" is not offered in the UI yet (Phase 2); show it as human-like.
+    inputRealismSelect.value = mode === "off" ? "off" : "synthetic";
+  } catch (error) {
+    console.error("Error loading input realism mode:", error);
+  }
+}
+
+/**
+ * Persists the input-realism mode. No extension reload needed — the mode is
+ * read fresh on each input action.
+ */
+async function handleInputRealismChange(event: Event) {
+  if (!event.isTrusted) {
+    return;
+  }
+  const value = inputRealismSelect.value === "off" ? "off" : "synthetic";
+  try {
+    await setInputRealismMode(value);
+    inputRealismStatus.textContent = "Saved.";
+    inputRealismStatus.style.color = "#4caf50";
+    setTimeout(() => {
+      inputRealismStatus.textContent = "";
+      inputRealismStatus.style.color = "";
+    }, 2000);
+  } catch (error) {
+    console.error("Error saving input realism mode:", error);
+    inputRealismStatus.textContent = "Failed to save";
+    inputRealismStatus.style.color = "red";
   }
 }
 
@@ -693,6 +738,7 @@ savePortsButton.addEventListener("click", savePorts);
 clearAuditLogButton.addEventListener("click", handleClearAuditLog);
 automationModeToggle.addEventListener("change", handleAutomationModeToggle);
 transportSelect.addEventListener("change", handleTransportChange);
+inputRealismSelect.addEventListener("change", handleInputRealismChange);
 document.addEventListener("DOMContentLoaded", () => {
   loadSecret();
   createToolSettingsUI();
@@ -701,6 +747,7 @@ document.addEventListener("DOMContentLoaded", () => {
   loadAuditLog();
   loadAutomationMode();
   loadTransport();
+  loadInputRealism();
   initializeCollapsibleSections();
 
   // Ensure modal is hidden by default
