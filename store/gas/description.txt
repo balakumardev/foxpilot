@@ -1,0 +1,45 @@
+Scrape Google AI Overviews into clean, structured Markdown — no API keys, no accounts, no data leaving your machine.
+
+Google AI Overview Scraper is a Firefox extension that acts as a local relay between Google Search and a small MCP (Model Context Protocol) server you run yourself. AI coding tools — Claude Code, Claude Desktop, Cursor, and any MCP-compatible client — can search Google AI Overviews and get back well-formed Markdown with source citations, all through your own browser.
+
+No focus stealing. Queries run in background tabs, so the extension never interrupts what you're doing.
+
+How it works
+1. Your AI tool sends a search query through the local MCP server.
+2. The extension opens a background tab on Google Search (no focus stealing).
+3. The AI Overview is extracted from the page and converted to structured Markdown.
+4. Results are sent back to your AI tool together with their source citations.
+
+Features
+- No API keys or accounts — it uses your own Firefox session.
+- Background tabs — never steals focus from your work.
+- Structured Markdown output with source citations.
+- Conversational follow-ups via thread IDs (threads auto-expire when idle).
+- Configurable server URL from the options page.
+- Three simple MCP tools: search, follow_up, and health.
+- Works with Claude Code, Claude Desktop, Cursor, and any MCP client.
+
+Privacy first
+Everything stays on your machine. The extension talks only to a local server on localhost that you run and control — there is no analytics, no tracking, and no third-party data collection. It runs only on Google Search result pages, and the add-on declares "no" data collection to Firefox.
+
+Who it's for
+Developers and power users who want to give an AI assistant clean, citation-backed access to Google AI Overviews — for research, summarization, and automation — without sending anything to a third party.
+
+Setup
+Install the companion MCP server and point the extension's options page at it:
+
+  uvx google-ai-scraper
+
+Then set the server URL on the options page to http://localhost:15551 and add the server to your MCP client:
+
+  {
+    "mcpServers": {
+      "google-ai-scraper": {
+        "command": "uvx",
+        "args": ["google-ai-scraper"]
+      }
+    }
+  }
+
+Full instructions, the HTTP API, and source code:
+https://github.com/balakumardev/google-ai-scraper

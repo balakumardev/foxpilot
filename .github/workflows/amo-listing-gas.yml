@@ -1,0 +1,37 @@
+name: Update AMO listing (Google AI Overview Scraper)
+
+# On-demand: push a tag like "amo-gas-v1" to update the Google AI Overview Scraper
+# AMO listing (description, icon, screenshots) via the AMO API. Reuses this repo's
+# account-level AMO_JWT_* secrets (the same key edits any of the owner's add-ons).
+# Idempotent. Does not touch any signed version or the release workflow.
+
+on:
+  push:
+    tags:
+      - 'amo-gas-v*'
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  update-listing:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install --quiet requests
+      - name: Stage Google AI Overview Scraper assets
+        run: |
+          cp store/gas/description.txt store/description.txt
+          cp store/gas/icon-512.png    store/icon-512.png
+          cp store/gas/shot1.png       store/hero.png
+          cp store/gas/shot2.png       store/caps.png
+          cp store/gas/shot3.png       store/flow.png
+      - name: Update description, icon, screenshots on AMO
+        env:
+          AMO_JWT_ISSUER: ${{ secrets.AMO_JWT_ISSUER }}
+          AMO_JWT_SECRET: ${{ secrets.AMO_JWT_SECRET }}
+          AMO_ADDON: google-ai-overview-scraper
+        run: python3 store/amo_listing.py
