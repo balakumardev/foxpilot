@@ -40,7 +40,11 @@
 
 import { buildSnapshot } from "../injected/snapshot-script";
 import { performInputAction } from "../injected/action-script";
-import { dispatchMouseMoveStep, typeCharStep } from "../injected/humanize-steps";
+import {
+  dispatchMouseMoveStep,
+  typeCharStep,
+  readElementScreenRect,
+} from "../injected/humanize-steps";
 
 // Tokens that must never appear in the stringified source of an injected
 // function. Each one is either a module-system reference (undefined in a raw
@@ -61,6 +65,7 @@ const INJECTED_FUNCTIONS: ReadonlyArray<[string, (...args: any[]) => any]> = [
   ["performInputAction", performInputAction as unknown as (...args: any[]) => any],
   ["dispatchMouseMoveStep", dispatchMouseMoveStep as unknown as (...args: any[]) => any],
   ["typeCharStep", typeCharStep as unknown as (...args: any[]) => any],
+  ["readElementScreenRect", readElementScreenRect as unknown as (...args: any[]) => any],
 ];
 
 describe("injected functions are self-contained (safe to stringify-and-inject)", () => {

@@ -5,6 +5,7 @@
 import { ServerMessageRequest } from "@foxpilot/common/server-messages";
 
 const DEFAULT_WS_PORT = 8089;
+const DEFAULT_SIDECAR_PORT = 8090;
 const AUDIT_LOG_SIZE_LIMIT = 100; // Maximum number of audit log entries to keep
 
 // Define all available tools with their IDs and descriptions
@@ -259,6 +260,7 @@ export interface ExtensionConfig {
   automationMode?: boolean;
   transport?: "websocket" | "longpoll";
   inputRealismMode?: "off" | "synthetic" | "native";
+  sidecarPort?: number;
 }
 
 /**
@@ -484,6 +486,26 @@ export async function setInputRealismMode(
 ): Promise<void> {
   const config = await getConfig();
   config.inputRealismMode = mode;
+  await saveConfig(config);
+}
+
+/**
+ * Returns the port the extension's native-input client connects to (the
+ * sidecar's signed WebSocket). Defaults to 8090 when unset.
+ */
+export async function getSidecarPort(): Promise<number> {
+  const config = await getConfig();
+  return typeof config.sidecarPort === "number"
+    ? config.sidecarPort
+    : DEFAULT_SIDECAR_PORT;
+}
+
+/**
+ * Sets the sidecar port the native-input client connects to.
+ */
+export async function setSidecarPort(port: number): Promise<void> {
+  const config = await getConfig();
+  config.sidecarPort = port;
   await saveConfig(config);
 }
 

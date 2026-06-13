@@ -1,4 +1,8 @@
-import { dispatchMouseMoveStep, typeCharStep } from "../injected/humanize-steps";
+import {
+  dispatchMouseMoveStep,
+  typeCharStep,
+  readElementScreenRect,
+} from "../injected/humanize-steps";
 
 describe("humanize-steps (injected, jsdom)", () => {
   afterEach(() => {
@@ -43,6 +47,19 @@ describe("humanize-steps (injected, jsdom)", () => {
       const res = typeCharStep(document, "x");
       expect(res.ok).toBe(false);
       expect(typeof res.error).toBe("string");
+    });
+  });
+
+  describe("readElementScreenRect", () => {
+    it("returns null for a missing uid", () => {
+      expect(readElementScreenRect(document, "nope")).toBeNull();
+    });
+    it("returns a screen rect for a stamped element (client coords when no mozInnerScreen offset)", () => {
+      document.body.innerHTML = `<button data-bcmcp-uid="e1">x</button>`;
+      const r = readElementScreenRect(document, "e1");
+      expect(r).not.toBeNull();
+      expect(typeof r!.screenX).toBe("number");
+      expect(typeof r!.dpr).toBe("number");
     });
   });
 });

@@ -103,3 +103,46 @@ export function typeCharStep(
     return { ok: false, error: String(e) };
   }
 }
+
+/**
+ * Reads an element's bounding rect in absolute SCREEN coordinates so the native
+ * sidecar can move the real OS cursor to the right pixel. Firefox exposes the
+ * exact viewport->screen offset as `window.mozInnerScreenX/Y`; where that is
+ * unavailable (e.g. jsdom, non-Firefox engines) we fall back to a 0 offset, so
+ * the returned rect degrades to client coordinates. Self-contained: like the
+ * steps above it is stringified and injected, so all logic stays inline.
+ */
+export function readElementScreenRect(
+  doc: Document,
+  uid: string
+): { screenX: number; screenY: number; width: number; height: number; dpr: number } | null {
+  try {
+    const el = doc.querySelector('[data-bcmcp-uid="' + uid + '"]');
+    if (!el) return null;
+    try {
+      (el as { scrollIntoView?: (o?: unknown) => void }).scrollIntoView?.({
+        block: "center",
+        inline: "center",
+      });
+    } catch (e) {}
+    const rect = (el as Element).getBoundingClientRect();
+    const win = doc.defaultView as (Window & typeof globalThis) | null;
+    const w = win as unknown as {
+      mozInnerScreenX?: number;
+      mozInnerScreenY?: number;
+      devicePixelRatio?: number;
+    } | null;
+    const offX = w && typeof w.mozInnerScreenX === "number" ? w.mozInnerScreenX : 0;
+    const offY = w && typeof w.mozInnerScreenY === "number" ? w.mozInnerScreenY : 0;
+    const dpr = w && w.devicePixelRatio ? w.devicePixelRatio : 1;
+    return {
+      screenX: offX + rect.left,
+      screenY: offY + rect.top,
+      width: rect.width,
+      height: rect.height,
+      dpr,
+    };
+  } catch (e) {
+    return null;
+  }
+}

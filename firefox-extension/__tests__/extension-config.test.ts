@@ -127,3 +127,33 @@ describe("inputRealismMode", () => {
     });
   });
 });
+
+describe("sidecarPort", () => {
+  beforeEach(() => {
+    (browser.storage.local.get as jest.Mock).mockResolvedValue({
+      config: { secret: "s", ports: [8089] },
+    });
+    (browser.storage.local.set as jest.Mock).mockResolvedValue(undefined);
+  });
+
+  it("defaults to 8090 when unset", async () => {
+    const { getSidecarPort } = await import("../extension-config");
+    expect(await getSidecarPort()).toBe(8090);
+  });
+
+  it("returns the configured port when set", async () => {
+    (browser.storage.local.get as jest.Mock).mockResolvedValue({
+      config: { secret: "s", ports: [8089], sidecarPort: 9123 },
+    });
+    const { getSidecarPort } = await import("../extension-config");
+    expect(await getSidecarPort()).toBe(9123);
+  });
+
+  it("persists a new port via setSidecarPort", async () => {
+    const { setSidecarPort } = await import("../extension-config");
+    await setSidecarPort(9123);
+    expect(browser.storage.local.set).toHaveBeenCalledWith({
+      config: expect.objectContaining({ sidecarPort: 9123 }),
+    });
+  });
+});
