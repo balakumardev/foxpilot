@@ -3,9 +3,9 @@
 
 Auth uses the same AMO_JWT_ISSUER / AMO_JWT_SECRET secrets as the release pipeline.
 Idempotent: existing screenshots are deleted and re-uploaded, so re-running is safe.
-Intended to run in GitHub Actions (secrets injected as env vars).
+Handles AMO's write throttling (HTTP 429) with backoff. Runs in GitHub Actions.
 """
-import base64, hashlib, hmac, json, os, sys, time
+import base64, hashlib, hmac, json, os, re, sys, time
 from secrets import token_hex
 import requests
 
@@ -14,6 +14,7 @@ ADDON = os.environ.get("AMO_ADDON", "foxpilot")
 ISS = os.environ.get("AMO_JWT_ISSUER", "")
 SEC = os.environ.get("AMO_JWT_SECRET", "")
 HERE = os.path.dirname(os.path.abspath(__file__))
+PACE = 4  # seconds between write calls, to stay under the throttle
 
 if not ISS or not SEC:
     print("ERROR: AMO_JWT_ISSUER / AMO_JWT_SECRET not set in the environment.")
@@ -38,80 +39,91 @@ def jwt_token() -> str:
     return (seg + b"." + _b64(sig)).decode()
 
 
-def auth() -> dict:
-    return {"Authorization": "JWT " + jwt_token()}
+def _wait_seconds(resp) -> int:
+    ra = resp.headers.get("Retry-After")
+    if ra and str(ra).isdigit():
+        return int(ra)
+    try:
+        m = re.search(r"in (\d+) seconds", resp.json().get("detail", ""))
+        if m:
+            return int(m.group(1))
+    except Exception:
+        pass
+    return 60
 
 
-def path(p: str) -> str:
+def req(method, url, *, json_body=None, json_ct=False, filefields=None, data=None):
+    """Request with a fresh JWT each attempt; retry on 429 honoring the throttle.
+
+    filefields: {field: (filename, abspath, content_type)} — reopened per attempt.
+    """
+    resp = None
+    for attempt in range(8):
+        headers = {"Authorization": "JWT " + jwt_token()}
+        if json_ct:
+            headers["Content-Type"] = "application/json"
+        opened, files = [], None
+        if filefields:
+            files = {}
+            for k, (fn, p, ct) in filefields.items():
+                fh = open(p, "rb")
+                opened.append(fh)
+                files[k] = (fn, fh, ct)
+        try:
+            resp = requests.request(method, url, headers=headers, json=json_body,
+                                    files=files, data=data, timeout=120)
+        finally:
+            for fh in opened:
+                fh.close()
+        if resp.status_code != 429:
+            return resp
+        wait = _wait_seconds(resp) + 5
+        print(f"  429 throttled; sleeping {wait}s (attempt {attempt + 1})")
+        time.sleep(wait)
+    return resp
+
+
+def path(p):
     return os.path.join(HERE, p)
 
 
+addon_url = f"{BASE}/addons/addon/{ADDON}/"
+
 # 1) Long description (JSON, localized; AMO renders Markdown) ------------------
 desc = open(path("description.txt"), encoding="utf-8").read().strip()
-r = requests.patch(
-    f"{BASE}/addons/addon/{ADDON}/",
-    headers={**auth(), "Content-Type": "application/json"},
-    json={"description": {"en-US": desc}, "default_locale": "en-US"},
-    timeout=60,
-)
+r = req("PATCH", addon_url, json_body={"description": {"en-US": desc}, "default_locale": "en-US"}, json_ct=True)
 print(f"[description] PATCH -> {r.status_code}")
 if r.status_code >= 400:
-    errors.append("description")
-    print(r.text[:1200])
+    errors.append("description"); print(r.text[:1000])
+time.sleep(PACE)
 
 # 2) Add-on icon (multipart; square PNG, AMO resizes to 32/64/128) ------------
-with open(path("icon-512.png"), "rb") as f:
-    r = requests.patch(
-        f"{BASE}/addons/addon/{ADDON}/",
-        headers=auth(),
-        files={"icon": ("icon.png", f, "image/png")},
-        timeout=120,
-    )
+r = req("PATCH", addon_url, filefields={"icon": ("icon.png", path("icon-512.png"), "image/png")})
 print(f"[icon] PATCH -> {r.status_code}")
 if r.status_code >= 400:
-    errors.append("icon")
-    print(r.text[:1200])
+    errors.append("icon"); print(r.text[:1000])
+time.sleep(PACE)
 
 # 3) Screenshots: delete existing, then upload in order (idempotent) ----------
-det = requests.get(f"{BASE}/addons/addon/{ADDON}/", headers=auth(), timeout=60)
+det = req("GET", addon_url)
 existing = det.json().get("previews", []) if det.ok else []
 print(f"[previews] existing: {len(existing)}")
 for p in existing:
-    dr = requests.delete(
-        f"{BASE}/addons/addon/{ADDON}/previews/{p['id']}/", headers=auth(), timeout=60
-    )
+    dr = req("DELETE", f"{addon_url}previews/{p['id']}/")
     print(f"  delete {p['id']} -> {dr.status_code}")
+    time.sleep(PACE)
 
-shots = [
-    ("hero.png", "Drive Firefox from your AI assistant"),
-    ("caps.png", "29 tools to automate Firefox — Automation Mode is opt-in"),
-    ("flow.png", "How it works — runs locally, private by design"),
-]
-for i, (fname, caption) in enumerate(shots):
-    with open(path(fname), "rb") as f:
-        r = requests.post(
-            f"{BASE}/addons/addon/{ADDON}/previews/",
-            headers=auth(),
-            files={"image": (fname, f, "image/png")},
-            data={"position": i},
-            timeout=120,
-        )
+shots = ["hero.png", "caps.png", "flow.png"]
+for i, fname in enumerate(shots):
+    r = req("POST", f"{addon_url}previews/",
+            filefields={"image": (fname, path(fname), "image/png")}, data={"position": i})
     print(f"[screenshot {i}] {fname} POST -> {r.status_code}")
     if r.status_code >= 400:
-        errors.append(fname)
-        print(r.text[:1200])
-        continue
-    pid = r.json().get("id")
-    cr = requests.patch(
-        f"{BASE}/addons/addon/{ADDON}/previews/{pid}/",
-        headers={**auth(), "Content-Type": "application/json"},
-        json={"caption": {"en-US": caption}, "position": i},
-        timeout=60,
-    )
-    print(f"  caption/position {pid} -> {cr.status_code}")
+        errors.append(fname); print(r.text[:1000])
+    time.sleep(PACE)
 
 # 4) Verify -------------------------------------------------------------------
-v = requests.get(f"{BASE}/addons/addon/{ADDON}/", headers=auth(), timeout=60)
+v = req("GET", addon_url)
 if v.ok:
     d = v.json()
     icons = d.get("icons") or {}
