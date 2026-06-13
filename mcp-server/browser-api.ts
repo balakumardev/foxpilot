@@ -98,6 +98,7 @@ export class BrowserAPI {
 
   private async ensureBrokerAndConnect(): Promise<void> {
     if (await this.tryConnect()) {
+      this.ensureSidecar();
       return;
     }
     // No broker listening — spawn one (detached) and retry connecting.
@@ -106,12 +107,42 @@ export class BrowserAPI {
     while (Date.now() < deadline) {
       await delay(CONNECT_RETRY_INTERVAL_MS);
       if (await this.tryConnect()) {
+        this.ensureSidecar();
         return;
       }
     }
     throw new Error(
       `Could not connect to or start the FoxPilot broker on port ${this.port}.`
     );
+  }
+
+  /**
+   * Opt-in, best-effort auto-spawn of the native-input sidecar. Gated entirely
+   * on the INPUT_SIDECAR_ENTRY env var: when unset (the default), this is a
+   * no-op so server behavior is byte-for-byte unchanged and no sidecar process
+   * is created. When set, spawns the sidecar detached (mirroring spawnBroker's
+   * exact shape) wrapped in try/catch so it NEVER blocks or throws — a failed
+   * spawn just means native input falls back to the synthetic path.
+   */
+  private ensureSidecar(): void {
+    const entry = process.env.INPUT_SIDECAR_ENTRY;
+    if (!entry) {
+      return;
+    }
+    try {
+      const child = spawn(process.execPath, [entry], {
+        detached: true,
+        stdio: "ignore",
+        env: {
+          ...process.env,
+          EXTENSION_SECRET: this.secret ?? "",
+          SIDECAR_PORT: process.env.SIDECAR_PORT ?? "8090",
+        },
+      });
+      child.unref();
+    } catch (err) {
+      console.error("BrowserAPI: failed to auto-spawn input sidecar", err);
+    }
   }
 
   private tryConnect(): Promise<boolean> {

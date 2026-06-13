@@ -19,7 +19,9 @@ import {
   setTransport,
   getInputRealismMode,
   setInputRealismMode,
+  getSidecarPort,
 } from "./extension-config";
+import { NativeInputClient } from "./native-input-client";
 
 const secretDisplay = document.getElementById(
   "secret-display"
@@ -302,8 +304,9 @@ async function handleTransportChange(event: Event) {
 async function loadInputRealism() {
   try {
     const mode = await getInputRealismMode();
-    // "native" is not offered in the UI yet (Phase 2); show it as human-like.
-    inputRealismSelect.value = mode === "off" ? "off" : "synthetic";
+    // Reflect the stored mode directly, including "native".
+    inputRealismSelect.value =
+      mode === "off" ? "off" : mode === "native" ? "native" : "synthetic";
   } catch (error) {
     console.error("Error loading input realism mode:", error);
   }
@@ -317,9 +320,19 @@ async function handleInputRealismChange(event: Event) {
   if (!event.isTrusted) {
     return;
   }
-  const value = inputRealismSelect.value === "off" ? "off" : "synthetic";
+  const raw = inputRealismSelect.value;
+  const value: "off" | "synthetic" | "native" =
+    raw === "off" ? "off" : raw === "native" ? "native" : "synthetic";
   try {
     await setInputRealismMode(value);
+    if (value === "native") {
+      // Probe the sidecar so the user learns immediately whether native input
+      // is actually available (reachable + OS-permitted) or will fall back.
+      inputRealismStatus.textContent = "Saved. Checking sidecar...";
+      inputRealismStatus.style.color = "#4caf50";
+      await probeSidecar();
+      return;
+    }
     inputRealismStatus.textContent = "Saved.";
     inputRealismStatus.style.color = "#4caf50";
     setTimeout(() => {
@@ -329,6 +342,38 @@ async function handleInputRealismChange(event: Event) {
   } catch (error) {
     console.error("Error saving input realism mode:", error);
     inputRealismStatus.textContent = "Failed to save";
+    inputRealismStatus.style.color = "red";
+  }
+}
+
+/**
+ * Probes the native-input sidecar and reports readiness in the status line.
+ * Never throws — NativeInputClient.sendGesture resolves { ok: false } on any
+ * failure (unreachable, timeout), so each branch maps to concise guidance.
+ */
+async function probeSidecar() {
+  try {
+    const client = new NativeInputClient(
+      await getSidecarPort(),
+      await getSecret()
+    );
+    const result = await client.sendGesture({ kind: "probe" });
+    if (result.ok) {
+      inputRealismStatus.textContent = "Native ready — sidecar reachable.";
+      inputRealismStatus.style.color = "#4caf50";
+    } else if (result.needsPermission) {
+      inputRealismStatus.textContent =
+        "Sidecar reachable but lacks OS input permission. Grant Accessibility (System Settings → Privacy & Security → Accessibility) to the process running the sidecar.";
+      inputRealismStatus.style.color = "red";
+    } else {
+      inputRealismStatus.textContent =
+        "Sidecar not running — native input falls back to human-like. Start the input-sidecar (see docs).";
+      inputRealismStatus.style.color = "red";
+    }
+  } catch (error) {
+    console.error("Error probing sidecar:", error);
+    inputRealismStatus.textContent =
+      "Sidecar not running — native input falls back to human-like. Start the input-sidecar (see docs).";
     inputRealismStatus.style.color = "red";
   }
 }
