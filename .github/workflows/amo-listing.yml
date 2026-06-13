@@ -28,4 +28,5 @@ jobs:
           AMO_JWT_SECRET: ${{ secrets.AMO_JWT_SECRET }}
           AMO_ADDON: foxpilot
           PYTHONUNBUFFERED: '1'
+          SKIP_META: '1'   # description + icon already live; only (re)upload screenshots
         run: python3 store/amo_listing.py

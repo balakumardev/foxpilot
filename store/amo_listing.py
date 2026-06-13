@@ -25,6 +25,7 @@ SEC = os.environ.get("AMO_JWT_SECRET", "")
 HERE = os.environ.get("AMO_DIR") or os.path.dirname(os.path.abspath(__file__))
 SHOTS = [s.strip() for s in os.environ.get("AMO_SHOTS", "hero.png,caps.png,flow.png").split(",") if s.strip()]
 VERIFY_ONLY = bool(os.environ.get("VERIFY_ONLY"))
+SKIP_META = bool(os.environ.get("SKIP_META"))  # leave description + icon unchanged
 PACE = 10           # seconds between write calls
 MAX_RETRIES = 2     # retries per call on 429
 WAIT_CAP = 70       # cap each backoff sleep (never honor huge server waits)
@@ -106,20 +107,23 @@ state0 = verify("initial")
 if VERIFY_ONLY:
     sys.exit(0)
 
-desc = open(asset("description.txt"), encoding="utf-8").read().strip()
-r = req("PATCH", addon_url, json_body={"description": {"en-US": desc}, "default_locale": "en-US"}, json_ct=True, label="description")
-print(f"[description] -> {r.status_code}")
-if r.status_code == 429:
-    print("WRITES THROTTLED on first call — quota likely exhausted. Re-run later."); sys.exit(2)
-if r.status_code >= 400:
-    errors.append("description"); print(r.text[:600])
-time.sleep(PACE)
+if SKIP_META:
+    print("SKIP_META set — leaving description & icon unchanged")
+else:
+    desc = open(asset("description.txt"), encoding="utf-8").read().strip()
+    r = req("PATCH", addon_url, json_body={"description": {"en-US": desc}, "default_locale": "en-US"}, json_ct=True, label="description")
+    print(f"[description] -> {r.status_code}")
+    if r.status_code == 429:
+        print("WRITES THROTTLED on first call — quota likely exhausted. Re-run later."); sys.exit(2)
+    if r.status_code >= 400:
+        errors.append("description"); print(r.text[:600])
+    time.sleep(PACE)
 
-r = req("PATCH", addon_url, filefields={"icon": ("icon.png", asset("icon-512.png"), "image/png")}, label="icon")
-print(f"[icon] -> {r.status_code}")
-if r.status_code >= 400:
-    errors.append("icon"); print(r.text[:600])
-time.sleep(PACE)
+    r = req("PATCH", addon_url, filefields={"icon": ("icon.png", asset("icon-512.png"), "image/png")}, label="icon")
+    print(f"[icon] -> {r.status_code}")
+    if r.status_code >= 400:
+        errors.append("icon"); print(r.text[:600])
+    time.sleep(PACE)
 
 # Screenshots: upload NEW first, then delete OLD (no empty gap).
 old_ids = [p["id"] for p in state0.get("previews", [])]
@@ -130,6 +134,8 @@ for i, fname in enumerate(SHOTS):
     if r.ok:
         new_ids.append(r.json().get("id"))
     else:
+        if r.status_code == 429 and not new_ids and i == 0:
+            print("WRITES THROTTLED on first screenshot — quota exhausted. Re-run later."); sys.exit(2)
         errors.append(fname); print(r.text[:400])
     time.sleep(PACE)
 
