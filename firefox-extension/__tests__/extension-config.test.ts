@@ -97,3 +97,33 @@ describe("automation command predicates", () => {
     expect(shouldBlockForAutomationMode("open-tab", false)).toBe(false);
   });
 });
+
+describe("inputRealismMode", () => {
+  beforeEach(() => {
+    (browser.storage.local.get as jest.Mock).mockResolvedValue({
+      config: { secret: "s", ports: [8089] },
+    });
+    (browser.storage.local.set as jest.Mock).mockResolvedValue(undefined);
+  });
+
+  it("defaults to 'synthetic' when unset", async () => {
+    const { getInputRealismMode } = await import("../extension-config");
+    expect(await getInputRealismMode()).toBe("synthetic");
+  });
+
+  it("returns 'off' when explicitly set", async () => {
+    (browser.storage.local.get as jest.Mock).mockResolvedValue({
+      config: { secret: "s", ports: [8089], inputRealismMode: "off" },
+    });
+    const { getInputRealismMode } = await import("../extension-config");
+    expect(await getInputRealismMode()).toBe("off");
+  });
+
+  it("persists a new mode via setInputRealismMode", async () => {
+    const { setInputRealismMode } = await import("../extension-config");
+    await setInputRealismMode("off");
+    expect(browser.storage.local.set).toHaveBeenCalledWith({
+      config: expect.objectContaining({ inputRealismMode: "off" }),
+    });
+  });
+});

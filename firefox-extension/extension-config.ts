@@ -258,6 +258,7 @@ export interface ExtensionConfig {
   auditLog?: AuditLogEntry[];
   automationMode?: boolean;
   transport?: "websocket" | "longpoll";
+  inputRealismMode?: "off" | "synthetic" | "native";
 }
 
 /**
@@ -456,6 +457,33 @@ export async function getTransport(): Promise<"websocket" | "longpoll"> {
 export async function setTransport(transport: "websocket" | "longpoll"): Promise<void> {
   const config = await getConfig();
   config.transport = transport;
+  await saveConfig(config);
+}
+
+/**
+ * Returns the input-realism mode. Defaults to "synthetic" (human-like input on,
+ * synthetic in-page events). "off" reproduces the exact instant behavior;
+ * "native" is wired in Phase 2 and treated as "synthetic" until then.
+ */
+export async function getInputRealismMode(): Promise<
+  "off" | "synthetic" | "native"
+> {
+  const config = await getConfig();
+  const mode = config.inputRealismMode;
+  if (mode === "off" || mode === "native") {
+    return mode;
+  }
+  return "synthetic";
+}
+
+/**
+ * Sets the input-realism mode.
+ */
+export async function setInputRealismMode(
+  mode: "off" | "synthetic" | "native"
+): Promise<void> {
+  const config = await getConfig();
+  config.inputRealismMode = mode;
   await saveConfig(config);
 }
 
