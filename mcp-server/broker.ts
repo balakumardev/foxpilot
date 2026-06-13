@@ -17,7 +17,7 @@
  * long-poll fallback transport (see `broker-longpoll.ts`) attaches to it.
  */
 
-import WebSocket from "ws";
+import { WebSocket, WebSocketServer } from "ws";
 import * as http from "http";
 import type {
   ExtensionError,
@@ -58,7 +58,7 @@ export class BrokerServer {
   private readonly idleTimeoutMs: number;
 
   private readonly httpServer: http.Server;
-  private readonly wss: WebSocket.Server;
+  private readonly wss: WebSocketServer;
   private readonly core: BrokerCore;
 
   private extensionWs: WebSocket | null = null;
@@ -83,7 +83,7 @@ export class BrokerServer {
     });
 
     this.httpServer = http.createServer((req, res) => this.handleHttp(req, res));
-    this.wss = new WebSocket.Server({ server: this.httpServer });
+    this.wss = new WebSocketServer({ server: this.httpServer });
     this.wss.on("connection", (ws, req) => this.onConnection(ws, req));
   }
 

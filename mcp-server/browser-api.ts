@@ -12,7 +12,7 @@
  * single connection to the browser extension.
  */
 
-import WebSocket from "ws";
+import { WebSocket } from "ws";
 import { spawn } from "child_process";
 import * as path from "path";
 import type {
