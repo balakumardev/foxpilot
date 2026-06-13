@@ -1,11 +1,13 @@
 import type { ServerMessageRequest } from "@foxpilot/common";
 import { ExtensionTransport } from "./transport";
-import { isCommandAllowed, isDomainInDenyList, COMMAND_TO_TOOL_ID, addAuditLogEntry, requiresAutomationMode, isAutomationModeEnabled, getInputRealismMode } from "./extension-config";
+import { isCommandAllowed, isDomainInDenyList, COMMAND_TO_TOOL_ID, addAuditLogEntry, requiresAutomationMode, isAutomationModeEnabled, getInputRealismMode, getSidecarPort, getSecret } from "./extension-config";
 import { buildSnapshot } from "./injected/snapshot-script";
 import { performInputAction } from "./injected/action-script";
-import { dispatchMouseMoveStep, typeCharStep } from "./injected/humanize-steps";
+import { dispatchMouseMoveStep, typeCharStep, readElementScreenRect } from "./injected/humanize-steps";
 import { runHumanInput, HumanInputDeps, StepResult } from "./humanize/run-human-input";
-import type { Point } from "./humanize/motion-model";
+import { mousePath, typingPlan, Point } from "./humanize/motion-model";
+import { NativeInputClient } from "./native-input-client";
+import { NativeGesture, NativeWaypoint, NativeInputResponse } from "@foxpilot/common";
 import {
   buildEvalPageScript,
   buildUploadPageScript,
@@ -172,6 +174,13 @@ export class MessageHandler {
 
   // Per-tab virtual cursor position for continuous human-like mouse paths.
   private cursorByTab: Map<number, Point> = new Map();
+
+  // Per-tab REAL (screen-coordinate) cursor position for the native executor, so
+  // successive native gestures start from where the OS cursor last landed.
+  private nativeCursorByTab: Map<number, Point> = new Map();
+
+  // Lazily-built native-input sidecar client (built on first native use).
+  private nativeClient: NativeInputClient | null = null;
 
   constructor(client: ExtensionTransport) {
     this.client = client;
@@ -615,8 +624,9 @@ export class MessageHandler {
         )})`,
       });
       result = results[0] as StepResult;
+    } else if (mode === "native") {
+      result = await this.runNativeInputAction(tabId, args);
     } else {
-      // "synthetic" (and, until Phase 2, "native") use the humanized executor.
       result = await this.runHumanInputAction(tabId, args);
     }
 
@@ -675,6 +685,103 @@ export class MessageHandler {
     };
 
     return runHumanInput(args, deps);
+  }
+
+  // Native (Tier 2) executor: composes a screen-coordinate gesture and sends it
+  // to the sidecar for REAL OS input. On any sidecar miss it falls back to the
+  // synthetic executor (which falls back to instant), so outcomes stay safe.
+  // Residual limitation: a rare mid-gesture throw in the sidecar AFTER partial
+  // native typing could, on fallback, re-type; pre-input failures (unreachable /
+  // no OS permission, the common cases) fall back cleanly with nothing typed.
+  private async runNativeInputAction(
+    tabId: number,
+    args: InputActionArgs
+  ): Promise<StepResult> {
+    // Native typed-fill lacks a reliable transactional clear; use the synthetic
+    // value-set path for fill/fill-form even in native mode.
+    if (args.action === "fill" || args.action === "fill-form") {
+      return this.runHumanInputAction(tabId, args);
+    }
+
+    const rng = Math.random;
+    const exec = async <T>(code: string): Promise<T | undefined> => {
+      const r = await browser.tabs.executeScript(tabId, { code });
+      return (r && r[0]) as T | undefined;
+    };
+    const screenRect = (uid: string) =>
+      exec<{ screenX: number; screenY: number; width: number; height: number; dpr: number }>(
+        `(${readElementScreenRect.toString()})(document, ${JSON.stringify(uid)})`
+      );
+    const getCursor = (): Point => this.nativeCursorByTab.get(tabId) || { x: 200, y: 200 };
+    const pathFrom = (from: Point, to: Point): NativeWaypoint[] =>
+      mousePath(from, to, rng).map((s) => ({ x: s.x, y: s.y, delayMs: s.delayMs }));
+
+    let gesture: NativeGesture;
+    let landing: Point | null = null;
+
+    if (args.action === "click" || args.action === "hover") {
+      const info = await screenRect(args.uid);
+      if (!info) return this.runHumanInputAction(tabId, args);
+      const center: Point = { x: info.screenX + info.width / 2, y: info.screenY + info.height / 2 };
+      const waypoints = pathFrom(getCursor(), center);
+      landing = center;
+      gesture = args.action === "click"
+        ? { kind: "move-click", waypoints, button: "left", doubleClick: args.doubleClick }
+        : { kind: "move", waypoints };
+    } else if (args.action === "drag") {
+      const fromInfo = await screenRect(args.fromUid);
+      const toInfo = await screenRect(args.toUid);
+      if (!fromInfo || !toInfo) return this.runHumanInputAction(tabId, args);
+      const fromC: Point = { x: fromInfo.screenX + fromInfo.width / 2, y: fromInfo.screenY + fromInfo.height / 2 };
+      const toC: Point = { x: toInfo.screenX + toInfo.width / 2, y: toInfo.screenY + toInfo.height / 2 };
+      const from = pathFrom(getCursor(), fromC);
+      const to = pathFrom(fromC, toC);
+      landing = toC;
+      gesture = { kind: "drag", from, to };
+    } else if (args.action === "type") {
+      const keys = typingPlan(args.text, rng).map((k) => ({ char: k.char, delayMs: k.delayMs }));
+      gesture = { kind: "type", keys };
+    } else if (args.action === "press-key") {
+      gesture = { kind: "key", key: args.key, modifiers: args.modifiers };
+    } else {
+      return this.runHumanInputAction(tabId, args);
+    }
+
+    let res: NativeInputResponse;
+    try {
+      const client = await this.getNativeClient();
+      res = await client.sendGesture(gesture);
+    } catch (e) {
+      res = { id: "", ok: false, error: String(e) };
+    }
+
+    if (!res.ok) {
+      // Sidecar unreachable / no OS permission / error -> synthetic (then instant).
+      return this.runHumanInputAction(tabId, args);
+    }
+
+    if (landing) this.nativeCursorByTab.set(tabId, landing);
+
+    // type+submit: trailing Enter is best-effort (value already landed natively).
+    if (args.action === "type" && args.submit) {
+      try {
+        const client = await this.getNativeClient();
+        await client.sendGesture({ kind: "key", key: "Enter" });
+      } catch (e) {
+        /* submit best-effort */
+      }
+    }
+
+    return { ok: true };
+  }
+
+  private async getNativeClient(): Promise<NativeInputClient> {
+    if (!this.nativeClient) {
+      const port = await getSidecarPort();
+      const secret = await getSecret();
+      this.nativeClient = new NativeInputClient(port, secret);
+    }
+    return this.nativeClient;
   }
 
   // Runs a JS function expression in the page's REAL world and returns its

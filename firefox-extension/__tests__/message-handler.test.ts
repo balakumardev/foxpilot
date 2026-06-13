@@ -22,6 +22,15 @@ jest.mock("../client", () => {
   };
 });
 
+// Mock the native-input client so no real socket or OS input is ever used. Each
+// test drives what `sendGesture` resolves via the `__mockSendGesture` global,
+// letting us exercise the native success path and the native-miss fallback.
+jest.mock("../native-input-client", () => ({
+  NativeInputClient: jest.fn().mockImplementation(() => ({
+    sendGesture: (global as any).__mockSendGesture,
+  })),
+}));
+
 describe("MessageHandler", () => {
   let messageHandler: MessageHandler;
   let mockClient: jest.Mocked<WebsocketClient>;
@@ -794,6 +803,89 @@ describe("MessageHandler", () => {
       expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
         resource: "action-result",
         correlationId: "c1",
+        ok: true,
+        error: undefined,
+      });
+    });
+  });
+
+  describe("input realism — native mode", () => {
+    beforeEach(() => {
+      (browser.storage.local.get as jest.Mock).mockResolvedValue({
+        config: {
+          secret: "test-secret",
+          domainDenyList: [],
+          ports: [8089],
+          automationMode: true,
+          inputRealismMode: "native",
+        },
+      });
+      (browser.tabs.get as jest.Mock).mockResolvedValue({
+        id: 123,
+        url: "https://example.com",
+      });
+      (browser.permissions.contains as jest.Mock).mockResolvedValue(true);
+      // Every injected read goes through executeScript and reads results[0]. The
+      // native rect reader needs screenX/screenY; the synthetic rect reader (used
+      // on fallback) needs x/y; the instant/type steps return {ok}. Provide all
+      // keys so whichever path runs gets a well-formed result.
+      (browser.tabs.executeScript as jest.Mock).mockResolvedValue([
+        { ok: true, x: 0, y: 0, screenX: 0, screenY: 0, width: 20, height: 10, dpr: 1 },
+      ]);
+    });
+
+    afterEach(() => {
+      delete (global as any).__mockSendGesture;
+    });
+
+    it("native success sends a move-click gesture and replies ok:true", async () => {
+      const sendGesture = jest.fn().mockResolvedValue({ id: "x", ok: true });
+      (global as any).__mockSendGesture = sendGesture;
+
+      await messageHandler.handleDecodedMessage({
+        cmd: "click-element",
+        tabId: 123,
+        uid: "e1",
+        correlationId: "c-native-ok",
+      } as ServerMessageRequest);
+
+      // The native client was asked to perform a move-click gesture.
+      expect(sendGesture).toHaveBeenCalledTimes(1);
+      const gesture = sendGesture.mock.calls[0][0];
+      expect(gesture.kind).toBe("move-click");
+      expect(Array.isArray(gesture.waypoints)).toBe(true);
+      expect(gesture.waypoints.length).toBeGreaterThan(0);
+
+      expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+        resource: "action-result",
+        correlationId: "c-native-ok",
+        ok: true,
+        error: undefined,
+      });
+    });
+
+    it("native failure falls back to the synthetic path and still replies ok:true", async () => {
+      const sendGesture = jest.fn().mockResolvedValue({ id: "x", ok: false });
+      (global as any).__mockSendGesture = sendGesture;
+
+      await messageHandler.handleDecodedMessage({
+        cmd: "click-element",
+        tabId: 123,
+        uid: "e1",
+        correlationId: "c-native-miss",
+      } as ServerMessageRequest);
+
+      // Native was attempted, missed...
+      expect(sendGesture).toHaveBeenCalledTimes(1);
+      // ...and the synthetic executor ran (it injects rect + performInputAction
+      // via executeScript, which the native rect read also uses — so a fallback
+      // produces strictly MORE executeScript calls than the single rect read).
+      expect(
+        (browser.tabs.executeScript as jest.Mock).mock.calls.length
+      ).toBeGreaterThan(1);
+      expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+        resource: "action-result",
+        correlationId: "c-native-miss",
         ok: true,
         error: undefined,
       });
