@@ -45,7 +45,7 @@ interface ExtensionConn {
   transport: "ws" | "longpoll";
   type: "chrome" | "firefox";
   label: string;
-  /** Reserved for the Task 4 `list-browsers` and Task 6 liveness consumers (written now, read later). */
+  /** Timestamp of the last frame from this browser; informational (not yet consumed by routing or health). */
   lastSeen: number;
 }
 
@@ -442,11 +442,10 @@ export class BrokerServer {
         return true;
       }
     }
-    // A pure long-poll deployment still routes tools via the sink in
-    // sendToExtension()/onClientMessage(); the `extensions.size > 0` clause is
-    // intentional — the long-poll leg gets its hello/registry entry in Task 5,
-    // so until then a sink alone (size 0) reports not-connected here. Do not
-    // "simplify" this to `!!this.longPollSink`.
+    // A pure long-poll deployment registers an ExtensionConn (ws null) from its
+    // signed hello and routes tools via the sink. The `extensions.size > 0`
+    // clause requires a registered browser, so a sink armed before any hello has
+    // arrived does not report connected. Do not "simplify" to `!!this.longPollSink`.
     return !!this.longPollSink && this.extensions.size > 0;
   }
 
@@ -458,11 +457,10 @@ export class BrokerServer {
       target.ws.send(JSON.stringify({ payload: req, signature }));
       return;
     }
-    // Long-poll target (no live ws) or no registered ws target at all: fall
-    // back to the long-poll sink if one is registered. The long-poll leg has no
-    // ExtensionConn in the registry until it sends a hello (Task 5), so a target
-    // is not required here; the sink itself is the routable transport. Else the
-    // core's timeout fails the request.
+    // Long-poll target (an ExtensionConn whose ws is null) or no resolvable ws
+    // target: fall back to the long-poll sink if one is registered — the sink
+    // itself is the routable transport for the long-poll leg. Else the core's
+    // timeout fails the request.
     if (this.longPollSink && this.longPollSink(req)) {
       return;
     }
