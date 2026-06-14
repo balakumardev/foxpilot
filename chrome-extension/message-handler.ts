@@ -84,8 +84,9 @@ async function sendMessageToTab(tabId: number, message: any): Promise<any> {
 //
 // MV3 service workers have no DOM, so canvas/Image compositing is delegated to
 // an offscreen document. We gate creation on chrome.offscreen.hasDocument()
-// (the supported way to avoid the "Only one document may be created" error) and
-// close it on teardown so a crashed/recycled SW can recreate it cleanly.
+// (the supported way to avoid the "Only one document may be created" error).
+// After a service-worker restart the document may be gone; recreation is handled
+// transparently by the hasDocument() gate in ensureOffscreen() on the next call.
 let creatingOffscreen: Promise<void> | null = null;
 
 const OFFSCREEN_BLOBS_REASON: string =
@@ -114,6 +115,10 @@ export async function ensureOffscreen(): Promise<void> {
   }
 }
 
+// Exported teardown helper. Safe to call at any time; it is a no-op when no
+// offscreen document exists. This is NOT invoked automatically (MV3 service
+// workers do not reliably fire onSuspend) — it is provided for callers that
+// want to explicitly tear the document down, e.g. when automation is turned off.
 export async function closeOffscreen(): Promise<void> {
   if (await (chrome as any).offscreen.hasDocument()) {
     await (chrome as any).offscreen.closeDocument();
