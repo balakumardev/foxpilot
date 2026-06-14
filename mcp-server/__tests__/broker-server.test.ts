@@ -42,6 +42,16 @@ describe("BrokerServer integration", () => {
   it("round-trips a tool request from client through extension and back", async () => {
     const ext = new WebSocket(`ws://127.0.0.1:${port}/extension`);
     await waitOpen(ext);
+    // The registry now requires a signed hello as the extension's first frame
+    // before it will admit and route to the connection.
+    ext.send(
+      envelope({
+        type: "hello",
+        browserId: "ext-1",
+        browserType: "firefox",
+        label: "Firefox",
+      })
+    );
     const client = new WebSocket(`ws://127.0.0.1:${port}/mcp`);
     await waitOpen(client);
 
@@ -129,6 +139,76 @@ describe("BrokerServer integration", () => {
     expect(got).toBe("silent");
 
     client.close();
+  }, 10000);
+
+  it("accepts an extension keepalive ping without logging it as malformed", async () => {
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const ext = new WebSocket(`ws://127.0.0.1:${port}/extension`);
+      await waitOpen(ext);
+      // Register first: the broker admits the connection only after a valid
+      // signed hello (the real extension sends this on connect). The keepalive
+      // ping is exercised afterwards, on the now-registered socket.
+      ext.send(
+        envelope({
+          type: "hello",
+          browserId: "ext-ping-1",
+          browserType: "firefox",
+          label: "Firefox",
+        })
+      );
+
+      // The keepalive frame the extension sends on each SW alarm wake.
+      ext.send(JSON.stringify({ type: "ping" }));
+      // Give the broker a tick to process the frame.
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      expect(errorSpy).not.toHaveBeenCalledWith(
+        expect.stringContaining("malformed")
+      );
+
+      // A normal signed tool round-trip still works after the ping, proving the
+      // ping branch didn't break the parser.
+      const client = new WebSocket(`ws://127.0.0.1:${port}/mcp`);
+      await waitOpen(client);
+
+      const extHandled = new Promise<void>((resolve) => {
+        ext.once("message", (data) => {
+          const env = JSON.parse(data.toString());
+          const req = env.payload;
+          ext.send(
+            envelope({
+              resource: "opened-tab-id",
+              correlationId: req.correlationId,
+              tabId: 7,
+            })
+          );
+          resolve();
+        });
+      });
+
+      const resultPromise = nextMessage(client);
+      client.send(
+        envelope({
+          kind: "tool",
+          requestId: "ping-r1",
+          message: { cmd: "open-tab", url: "https://y.com" },
+        })
+      );
+
+      await extHandled;
+      const result = await resultPromise;
+      expect(result.payload).toMatchObject({
+        kind: "tool-result",
+        requestId: "ping-r1",
+        message: { resource: "opened-tab-id", tabId: 7 },
+      });
+
+      ext.close();
+      client.close();
+    } finally {
+      errorSpy.mockRestore();
+    }
   }, 10000);
 
   it("serves a health endpoint over HTTP", async () => {

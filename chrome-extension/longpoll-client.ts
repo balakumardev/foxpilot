@@ -183,4 +183,21 @@ export class LongPollClient implements ExtensionTransport {
     }
     this.onStatusChange?.(false);
   }
+
+  /**
+   * Long-poll is reconnect-driven by its own internal `pollLoop`, which retries
+   * indefinitely until `disconnect()`. From the keepalive's perspective it is
+   * therefore never "closed", so we report `false` and let the poll loop own
+   * reconnection. (Reporting `true` would make the keepalive call `connect()`
+   * and spawn a duplicate poll loop.)
+   */
+  isClosed(): boolean {
+    return false;
+  }
+
+  /**
+   * No-op: a long-poll request is itself the liveness signal the broker sees,
+   * so there is nothing extra to ping. Kept to satisfy `ExtensionTransport`.
+   */
+  ping(): void {}
 }

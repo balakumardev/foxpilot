@@ -278,6 +278,61 @@ mcpServer.tool(
 );
 
 mcpServer.tool(
+  "list-browsers",
+  "List the browser extensions currently connected to the FoxPilot broker (Chrome and/or Firefox) and which one is the active driver. Use this when more than one browser is connected and a tool fails asking you to choose; then call select-browser with the browserId you want.",
+  {},
+  async () => {
+    const browsers = await browserApi.listBrowsers();
+    if (browsers.length === 0) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: "No browsers connected. Open Chrome or Firefox with the FoxPilot extension installed and connected (same secret).",
+          },
+        ],
+      };
+    }
+    return {
+      content: browsers.map((b) => ({
+        type: "text",
+        text: `${b.label} (${b.type}) id=${b.browserId}${
+          b.active ? " [active]" : ""
+        }${b.connected ? "" : " [disconnected]"}`,
+      })),
+    };
+  }
+);
+
+mcpServer.tool(
+  "select-browser",
+  "Choose which connected browser is the single active driver for all subsequent tools. Pass the browserId from list-browsers. Required when two or more browsers are connected; with only one connected it is implicitly active.",
+  { browserId: z.string() },
+  async ({ browserId }) => {
+    const result = await browserApi.selectBrowser(browserId);
+    if (!result.ok) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Could not select browser: ${result.error ?? "unknown error"}`,
+          },
+        ],
+        isError: true,
+      };
+    }
+    return {
+      content: [
+        {
+          type: "text",
+          text: `Active browser is now ${result.activeBrowserId}.`,
+        },
+      ],
+    };
+  }
+);
+
+mcpServer.tool(
   "wait-for-text",
   "Wait until the given text appears on a tab's page, polling until found or the timeout elapses (default 30000ms).",
   { tabId: z.number(), text: z.string(), timeoutMs: z.number().optional() },
@@ -590,7 +645,7 @@ mcpServer.tool(
 
 mcpServer.tool(
   "get-network-requests",
-  "Get the network requests captured for a browser tab (URL, method, status, resource type, timing, sizes). Requires Automation Mode, and only captures requests made AFTER Automation Mode was enabled (reload the page if you see nothing). Pass 'filter' to keep only requests whose URL contains it (case-insensitive) or whose resource type matches it exactly, 'limit' to return only the most recent N, and 'includeBody' to enable best-effort response-body snippets for FUTURE requests (Firefox-specific).",
+  "Get the network requests captured for a browser tab (URL, method, status, resource type, timing, sizes). Requires Automation Mode, and only captures requests made AFTER Automation Mode was enabled (reload the page if you see nothing). Pass 'filter' to keep only requests whose URL contains it (case-insensitive) or whose resource type matches it exactly, 'limit' to return only the most recent N, and 'includeBody' to request best-effort response-body snippets for FUTURE requests (browser-dependent: captured on Firefox; Chrome MV3 cannot capture bodies and returns metadata only).",
   {
     tabId: z.number(),
     filter: z.string().optional(),
@@ -598,11 +653,12 @@ mcpServer.tool(
     includeBody: z.boolean().optional(),
   },
   async ({ tabId, filter, limit, includeBody }) => {
-    const requests = await browserApi.getNetworkRequests(tabId, {
-      filter,
-      limit,
-      includeBody,
-    });
+    const { requests, bodyCaptureSupported } =
+      await browserApi.getNetworkRequests(tabId, {
+        filter,
+        limit,
+        includeBody,
+      });
     if (requests.length === 0) {
       return {
         content: [
@@ -613,25 +669,34 @@ mcpServer.tool(
         ],
       };
     }
-    return {
-      content: requests.map((req) => {
-        const status = req.error
-          ? `ERR ${req.error}`
-          : req.statusCode !== undefined
-          ? String(req.statusCode)
-          : "?";
-        const duration =
-          req.durationMs !== undefined ? `, ${req.durationMs} ms` : "";
-        let text = `${req.method} ${req.url} -> ${status} (${req.type}${duration})`;
-        if (req.body) {
-          // Keep the snippet bounded in the text output.
-          const snippet =
-            req.body.length > 2000 ? `${req.body.slice(0, 2000)}…` : req.body;
-          text += `\n  body: ${snippet}`;
-        }
-        return { type: "text", text };
-      }),
-    };
+    const content = requests.map((req) => {
+      const status = req.error
+        ? `ERR ${req.error}`
+        : req.statusCode !== undefined
+        ? String(req.statusCode)
+        : "?";
+      const duration =
+        req.durationMs !== undefined ? `, ${req.durationMs} ms` : "";
+      let text = `${req.method} ${req.url} -> ${status} (${req.type}${duration})`;
+      if (req.body) {
+        // Keep the snippet bounded in the text output.
+        const snippet =
+          req.body.length > 2000 ? `${req.body.slice(0, 2000)}…` : req.body;
+        text += `\n  body: ${snippet}`;
+      }
+      return { type: "text" as const, text };
+    });
+    // Only the Chrome MV3 extension sets bodyCaptureSupported (to false); the
+    // Firefox extension leaves it undefined (it does capture bodies). Surface the
+    // limitation only when bodies were requested AND the browser cannot capture
+    // them, so the agent knows metadata-only is expected, not a failure.
+    if (includeBody && bodyCaptureSupported === false) {
+      content.push({
+        type: "text" as const,
+        text: "Note: the connected browser (Chrome MV3) cannot capture response bodies; returning request metadata only.",
+      });
+    }
+    return { content };
   }
 );
 

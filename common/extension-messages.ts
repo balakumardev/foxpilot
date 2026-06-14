@@ -170,6 +170,10 @@ export interface NetworkRecord {
 export interface NetworkRequestsExtensionMessage extends ExtensionMessageBase {
   resource: "network-requests";
   requests: NetworkRecord[];
+  // Chrome MV3 cannot capture response bodies (no chrome.debugger). When the
+  // caller requested includeBody, the extension sets this to false so the tool
+  // reports the limitation honestly instead of silently dropping bodies.
+  bodyCaptureSupported?: boolean;
 }
 
 export type ExtensionMessage =

@@ -1,3 +1,4 @@
+import "./globals";
 import { WebsocketClient } from "./client";
 import { LongPollClient } from "./longpoll-client";
 import { ExtensionTransport } from "./transport";
@@ -11,6 +12,11 @@ import {
 import { initConsoleCapture } from "./console-capture";
 import { initNetworkCapture } from "./network-capture";
 import { initEmulate } from "./emulate";
+import { initKeepalive } from "./keepalive";
+
+// Per-port client registry so a service-worker respawn that re-runs the
+// bootstrap does not create duplicate clients for the same port.
+const clientsByPort = new Map<number, ExtensionTransport>();
 
 // The transport the "Make this browser active" button forwards its request
 // through. Points at the most recently initialized client (in the common
@@ -41,7 +47,15 @@ function updateBrokerConnected(port: number, connected: boolean): void {
   }
 }
 
-function initClient(port: number, secret: string, transport: "websocket" | "longpoll") {
+function initClient(
+  port: number,
+  secret: string,
+  transport: "websocket" | "longpoll"
+): ExtensionTransport {
+  const existing = clientsByPort.get(port);
+  if (existing) {
+    return existing;
+  }
   const onStatusChange = (connected: boolean) =>
     updateBrokerConnected(port, connected);
   const client: ExtensionTransport =
@@ -59,10 +73,10 @@ function initClient(port: number, secret: string, transport: "websocket" | "long
       // Cache the latest state so the options page can read it on open.
       lastActiveStatus = active;
       try {
-        browser.browserAction?.setBadgeText({ text: active ? "ON" : "" });
-        browser.browserAction?.setBadgeBackgroundColor?.({ color: "#4caf50" });
+        (chrome as any).action?.setBadgeText({ text: active ? "ON" : "" });
+        (chrome as any).action?.setBadgeBackgroundColor?.({ color: "#4caf50" });
       } catch {
-        /* browserAction may be unavailable in some contexts */
+        /* action API may be unavailable in some contexts */
       }
       // Relay to any open options page (best-effort; ignore "no receiver").
       browser.runtime.sendMessage({ type: "active-status", active }).catch(() => {});
@@ -82,13 +96,20 @@ function initClient(port: number, secret: string, transport: "websocket" | "long
       }
     }
   });
+
+  clientsByPort.set(port, client);
+  return client;
 }
 
 // Forward the options page's "Make this browser active" request to the broker
 // via the live client (it sends the signed select-active frame). Also answers
 // the options page's `get-active-status` probe with the cached ACTIVE/STANDBY
 // value so its badge is correct immediately on open.
-browser.runtime.onMessage.addListener(
+// `chrome.runtime.onMessage` (typed in browser-global.d.ts to accept
+// `boolean | void`) is used here rather than the polyfill's stricter
+// `browser.runtime.onMessage`, so the handler can both fall through (void) for
+// `select-this-browser` and `return true` for the `get-active-status` reply.
+chrome.runtime.onMessage.addListener(
   (msg: any, _sender: any, sendResponse: (response?: any) => void) => {
     if (
       msg?.type === "select-this-browser" &&
@@ -135,18 +156,11 @@ initExtension()
       console.error("No ports configured in extension config");
       return;
     }
-    // Start background console capture once (browser-wide, not per-port). It
-    // registers its runtime/tabs/storage listeners and, if Automation Mode is
-    // on, the document_start page-console capture script.
+    // Start background console capture once (browser-wide, not per-port).
     initConsoleCapture();
-    // Start background network capture once (browser-wide). It registers its
-    // tabs/storage listeners and, if Automation Mode is on, the webRequest
-    // listeners that feed the per-tab network ring buffer.
+    // Start background network capture once (browser-wide).
     initNetworkCapture();
-    // Start background UA emulation once (browser-wide). It registers its
-    // tabs/storage listeners and, if Automation Mode is on, the blocking
-    // onBeforeSendHeaders listener that rewrites the User-Agent header for tabs
-    // with an active override (set by the `emulate` tool).
+    // Start background UA emulation once (browser-wide).
     initEmulate();
 
     const transport = await getTransport();
@@ -156,6 +170,13 @@ initExtension()
     for (const port of portList) {
       initClient(port, secret, transport);
     }
+
+    // Keep the service worker's transports alive across MV3 idle timeouts. The
+    // client list is read fresh each tick from the per-port registry.
+    // `ExtensionTransport` structurally satisfies `KeepaliveClient`, so the
+    // compiler enforces every transport implements `isClosed`/`connect`/`ping`.
+    initKeepalive(() => Array.from(clientsByPort.values()));
+
     console.log("Browser extension initialized");
   })
   .catch((error) => {

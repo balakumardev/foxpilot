@@ -148,4 +148,105 @@ describe("BrokerLongPoll", () => {
     );
     expect(res.status).toBe(401);
   });
+
+  it("registers a long-poll browser from a signed hello posted to /respond", async () => {
+    const auth = createSignature(SECRET, "extension-poll");
+    const hello = {
+      type: "hello",
+      browserId: "lp-browser-1",
+      browserType: "chrome",
+      label: "Chrome (long-poll)",
+    };
+
+    // The long-poll client's identity step: POST the signed hello to /respond.
+    // The broker ingests it like a WS first frame and registers the browser.
+    await httpPost(
+      `http://127.0.0.1:${port}/extension/respond?auth=${auth}`,
+      envelope(hello)
+    );
+
+    // /health should now report the registered browser.
+    const health = JSON.parse(
+      (await httpGet(`http://127.0.0.1:${port}/health`)).body
+    );
+    expect(health.browsers).toBe(1);
+
+    // A client list-browsers control round-trip should surface the browser.
+    const client = new WebSocket(`ws://127.0.0.1:${port}/mcp`);
+    await waitOpen(client);
+    const listResult = nextMessage(client);
+    client.send(
+      envelope({
+        kind: "control",
+        requestId: "ctl-1",
+        control: { control: "list-browsers" },
+      })
+    );
+    const listed = await listResult;
+    expect(listed.payload).toMatchObject({
+      kind: "control-result",
+      requestId: "ctl-1",
+    });
+    expect(listed.payload.result.ok).toBe(true);
+    expect(listed.payload.result.browsers).toHaveLength(1);
+    expect(listed.payload.result.browsers[0]).toMatchObject({
+      browserId: "lp-browser-1",
+      label: "Chrome (long-poll)",
+      type: "chrome",
+    });
+
+    client.close();
+  }, 10000);
+
+  it("re-registers a long-poll browser after a stale-drop clears it", async () => {
+    // A dedicated broker so the stale timer can fire without racing the shared
+    // poll above. pollTimeoutMs * 2 is the stale window — keep it short.
+    const localServer = new BrokerServer({
+      port: 0,
+      host: "127.0.0.1",
+      secret: SECRET,
+    });
+    new BrokerLongPoll(localServer, SECRET, { pollTimeoutMs: 50 });
+    await localServer.listen();
+    const localPort = localServer.getPort();
+    const auth = createSignature(SECRET, "extension-poll");
+    const hello = {
+      type: "hello",
+      browserId: "lp-browser-2",
+      browserType: "firefox",
+      label: "Firefox (long-poll)",
+    };
+
+    // First hello registers the browser.
+    await httpPost(
+      `http://127.0.0.1:${localPort}/extension/respond?auth=${auth}`,
+      envelope(hello)
+    );
+    let health = JSON.parse(
+      (await httpGet(`http://127.0.0.1:${localPort}/health`)).body
+    );
+    expect(health.browsers).toBe(1);
+
+    // Open a poll so the long-poll sink activates and arms the stale timer,
+    // then let the stale timer (pollTimeoutMs * 2) fire with no further
+    // activity. onLongPollExtensionGone() drops the registry entry.
+    await httpGet(`http://127.0.0.1:${localPort}/extension/poll?auth=${auth}`);
+    await delay(200);
+    health = JSON.parse(
+      (await httpGet(`http://127.0.0.1:${localPort}/health`)).body
+    );
+    expect(health.browsers).toBe(0);
+
+    // A subsequent hello (what the re-armed client re-POSTs) re-registers it.
+    await httpPost(
+      `http://127.0.0.1:${localPort}/extension/respond?auth=${auth}`,
+      envelope(hello)
+    );
+    health = JSON.parse(
+      (await httpGet(`http://127.0.0.1:${localPort}/health`)).body
+    );
+    expect(health.browsers).toBe(1);
+
+    localServer.close();
+  }, 10000);
 });

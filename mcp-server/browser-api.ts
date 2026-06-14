@@ -40,7 +40,13 @@ import type {
   NetworkRecord,
   NetworkRequestsExtensionMessage,
 } from "@foxpilot/common";
-import { BrokerClientFrame, BrokerServerFrame } from "./broker-protocol";
+import {
+  BrokerClientFrame,
+  BrokerServerFrame,
+  BrokerControlRequest,
+  BrokerControlResult,
+  BrowserInfo,
+} from "./broker-protocol";
 import { createSignature, verifySignature } from "./signing";
 
 const WS_DEFAULT_PORT = 8089;
@@ -55,6 +61,12 @@ interface RequestResolver {
   timer: ReturnType<typeof setTimeout>;
 }
 
+interface ControlResolver {
+  resolve: (result: BrokerControlResult) => void;
+  reject: (err: Error) => void;
+  timer: ReturnType<typeof setTimeout>;
+}
+
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -65,6 +77,7 @@ export class BrowserAPI {
   private port: number = WS_DEFAULT_PORT;
   private requestCounter = 0;
   private readonly requestMap = new Map<string, RequestResolver>();
+  private readonly controlMap = new Map<string, ControlResolver>();
 
   async init() {
     const { secret, port } = readConfig();
@@ -232,8 +245,15 @@ export class BrowserAPI {
       clearTimeout(resolver.timer);
       this.requestMap.delete(frame.requestId);
       resolver.reject(new Error(frame.errorMessage));
+    } else if (frame.kind === "control-result") {
+      const resolver = this.controlMap.get(frame.requestId);
+      if (!resolver) {
+        return;
+      }
+      clearTimeout(resolver.timer);
+      this.controlMap.delete(frame.requestId);
+      resolver.resolve(frame.result);
     }
-    // control-result frames are handled by control-specific waiters (none yet).
   }
 
   private rejectAllPending(reason: string): void {
@@ -241,6 +261,11 @@ export class BrowserAPI {
       clearTimeout(resolver.timer);
       resolver.reject(new Error(reason));
       this.requestMap.delete(requestId);
+    }
+    for (const [requestId, resolver] of this.controlMap) {
+      clearTimeout(resolver.timer);
+      resolver.reject(new Error(reason));
+      this.controlMap.delete(requestId);
     }
   }
 
@@ -267,6 +292,31 @@ export class BrowserAPI {
       });
 
       const frame: BrokerClientFrame = { kind: "tool", requestId, message };
+      const payload = JSON.stringify(frame);
+      const signature = createSignature(this.secret!, payload);
+      this.ws.send(JSON.stringify({ payload: frame, signature }));
+    });
+  }
+
+  private sendControl(
+    control: BrokerControlRequest
+  ): Promise<BrokerControlResult> {
+    return new Promise<BrokerControlResult>((resolve, reject) => {
+      if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+        reject(new Error("Not connected to the broker"));
+        return;
+      }
+      const requestId = `${process.pid}-${++this.requestCounter}`;
+      const timer = setTimeout(() => {
+        if (this.controlMap.has(requestId)) {
+          this.controlMap.delete(requestId);
+          reject(new Error("Timed out waiting for broker control response"));
+        }
+      }, REQUEST_TIMEOUT_MS);
+      (timer as { unref?: () => void }).unref?.();
+      this.controlMap.set(requestId, { resolve, reject, timer });
+
+      const frame: BrokerClientFrame = { kind: "control", requestId, control };
       const payload = JSON.stringify(frame);
       const signature = createSignature(this.secret!, payload);
       this.ws.send(JSON.stringify({ payload: frame, signature }));
@@ -621,7 +671,7 @@ export class BrowserAPI {
   async getNetworkRequests(
     tabId: number,
     opts?: { filter?: string; limit?: number; includeBody?: boolean }
-  ): Promise<NetworkRecord[]> {
+  ): Promise<{ requests: NetworkRecord[]; bodyCaptureSupported?: boolean }> {
     const message = await this.sendTool<NetworkRequestsExtensionMessage>({
       cmd: "get-network-requests",
       tabId,
@@ -629,7 +679,19 @@ export class BrowserAPI {
       limit: opts?.limit,
       includeBody: opts?.includeBody,
     });
-    return message.requests;
+    return {
+      requests: message.requests,
+      bodyCaptureSupported: message.bodyCaptureSupported,
+    };
+  }
+
+  async listBrowsers(): Promise<BrowserInfo[]> {
+    const result = await this.sendControl({ control: "list-browsers" });
+    return result.browsers ?? [];
+  }
+
+  async selectBrowser(browserId: string): Promise<BrokerControlResult> {
+    return await this.sendControl({ control: "select-browser", browserId });
   }
 }
 

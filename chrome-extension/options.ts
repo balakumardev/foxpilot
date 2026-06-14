@@ -1056,7 +1056,7 @@ function showGlobalPermissionRequest(permissions: string[]) {
   const handleGrant = async () => {
     try {
       const granted = await browser.permissions.request({
-        permissions: permissions as browser.permissions.Permissions["permissions"],
+        permissions: permissions as any,
       });
 
       if (granted) {

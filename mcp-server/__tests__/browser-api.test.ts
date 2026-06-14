@@ -29,7 +29,24 @@ function startMockExtension(
 ): Promise<WebSocket> {
   return new Promise((resolve) => {
     const ws = new WebSocket(`ws://127.0.0.1:${port}/extension`);
-    ws.on("open", () => resolve(ws));
+    ws.on("open", () => {
+      // The broker registry admits the connection only after a signed hello
+      // (the extension's first frame on connect). Send it before resolving so
+      // the mock is registered and routable for the tool round-trips below.
+      const helloPayload = {
+        type: "hello",
+        browserId: "browser-api-ext",
+        browserType: "firefox",
+        label: "Firefox",
+      };
+      ws.send(
+        JSON.stringify({
+          payload: helloPayload,
+          signature: createSignature(secret, JSON.stringify(helloPayload)),
+        })
+      );
+      resolve(ws);
+    });
     ws.on("message", (data) => {
       const env = JSON.parse(data.toString());
       const req = env.payload as ServerMessageRequest;
@@ -94,6 +111,26 @@ describe("BrowserAPI over the broker", () => {
               ],
             },
           };
+        case "get-network-requests":
+          return {
+            payload: {
+              resource: "network-requests",
+              correlationId: req.correlationId,
+              requests: [
+                {
+                  requestId: "r1",
+                  url: "https://a.com/api",
+                  method: "GET",
+                  type: "xmlhttprequest",
+                  timeStamp: 1,
+                  statusCode: 200,
+                },
+              ],
+              // Mirror the Chrome MV3 extension, which sets this to false when
+              // bodies were requested but cannot be captured.
+              bodyCaptureSupported: false,
+            },
+          };
         case "find-highlight":
           return { error: "boom" };
         default:
@@ -132,6 +169,17 @@ describe("BrowserAPI over the broker", () => {
       { level: "log", text: "hello", timestamp: 1 },
       { level: "error", text: "boom", timestamp: 2 },
     ]);
+  });
+
+  it("surfaces bodyCaptureSupported from the network-requests reply", async () => {
+    const result = await api.getNetworkRequests(1, { includeBody: true });
+    expect(result.bodyCaptureSupported).toBe(false);
+    expect(result.requests).toHaveLength(1);
+    expect(result.requests[0]).toMatchObject({
+      url: "https://a.com/api",
+      method: "GET",
+      statusCode: 200,
+    });
   });
 
   it("propagates an extension error as a rejection", async () => {

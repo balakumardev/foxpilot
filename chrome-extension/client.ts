@@ -130,7 +130,7 @@ export class WebsocketClient implements ExtensionTransport {
   }
 
   private startReconnectTimer(): void {
-    this.reconnectTimer = window.setInterval(() => {
+    this.reconnectTimer = self.setInterval(() => {
       if (this.socket && this.socket.readyState === WebSocket.CONNECTING) {
         this.connectionAttempts++;
 
@@ -178,7 +178,7 @@ export class WebsocketClient implements ExtensionTransport {
 
   public disconnect(): void {
     if (this.reconnectTimer !== null) {
-      window.clearInterval(this.reconnectTimer);
+      self.clearInterval(this.reconnectTimer);
       this.reconnectTimer = null;
     }
 
@@ -188,5 +188,28 @@ export class WebsocketClient implements ExtensionTransport {
     }
 
     this.onStatusChange?.(false);
+  }
+
+  /**
+   * True when there is no socket or the socket has fully closed. Used by the
+   * keepalive alarm to decide whether to reconnect on SW wake.
+   */
+  public isClosed(): boolean {
+    return !this.socket || this.socket.readyState === WebSocket.CLOSED;
+  }
+
+  /**
+   * Sends a lightweight keepalive frame on each alarm wake so the socket stays
+   * warm. The broker recognizes and silently ignores this frame (it does not
+   * track liveness from it). Silent no-op if the socket is not open.
+   */
+  public ping(): void {
+    if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+      try {
+        this.socket.send(JSON.stringify({ type: "ping" }));
+      } catch {
+        /* ignore — next alarm reconnects if the socket actually died */
+      }
+    }
   }
 }

@@ -10,7 +10,8 @@ const AUDIT_LOG_SIZE_LIMIT = 100; // Maximum number of audit log entries to keep
 
 // Storage key for the live broker connection status. Kept separate from the
 // persisted `config` object so it never pollutes saved settings — it is a
-// transient runtime flag the background script mirrors for the options page.
+// transient runtime flag the background service worker mirrors for the options
+// page.
 export const BROKER_STATUS_STORAGE_KEY = "brokerStatus";
 
 // Define all available tools with their IDs and descriptions
@@ -289,7 +290,7 @@ export function getDefaultToolSettings(): ToolSettings {
  */
 export async function getConfig(): Promise<ExtensionConfig> {
   const configObj = await browser.storage.local.get("config");
-  const config: ExtensionConfig = configObj.config || { secret: "" };
+  const config: ExtensionConfig = (configObj.config as ExtensionConfig | undefined) || { secret: "", ports: [DEFAULT_WS_PORT] };
   
   // Initialize toolSettings if it doesn't exist
   if (!config.toolSettings) {
@@ -647,7 +648,7 @@ export function getToolNameById(toolId: string): string {
 
 /**
  * Returns whether the extension is currently connected to the local broker.
- * Mirrored into storage by the background script (see setBrokerConnected);
+ * Mirrored into storage by the background service worker (see setBrokerConnected);
  * defaults to false when unknown.
  */
 export async function getBrokerConnected(): Promise<boolean> {

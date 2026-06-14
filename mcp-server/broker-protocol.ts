@@ -24,6 +24,21 @@ export interface SignedEnvelope<T> {
   signature: string;
 }
 
+/**
+ * The extension's first frame on connect (WS) / first poll identity
+ * (long-poll). Sent as a `SignedEnvelope<HelloPayload>`: the broker verifies
+ * the signature with the shared secret BEFORE admitting the connection.
+ * The `type: "hello"` discriminant is new and disjoint from `ExtensionMessage`
+ * (which is keyed on `resource`/`correlationId`), so it is unambiguous on the
+ * extension leg.
+ */
+export interface HelloPayload {
+  type: "hello";
+  browserId: string;
+  browserType: "chrome" | "firefox";
+  label: string;
+}
+
 // ===== Broker control protocol (client -> broker) =====
 
 /** Acquire an exclusive soft lease on a tab. */
@@ -38,11 +53,39 @@ export interface ReleaseLeaseControl {
   tabId: number;
 }
 
-export type BrokerControlRequest = AcquireLeaseControl | ReleaseLeaseControl;
+/** Enumerate the connected browsers and which one is active. */
+export interface ListBrowsersControl {
+  control: "list-browsers";
+}
+
+/** Set the global active driver to the given browser. */
+export interface SelectBrowserControl {
+  control: "select-browser";
+  browserId: string;
+}
+
+export type BrokerControlRequest =
+  | AcquireLeaseControl
+  | ReleaseLeaseControl
+  | ListBrowsersControl
+  | SelectBrowserControl;
+
+/** A connected (or known) browser as reported by `list-browsers`. */
+export interface BrowserInfo {
+  browserId: string;
+  label: string;
+  type: "chrome" | "firefox";
+  connected: boolean;
+  active: boolean;
+}
 
 export interface BrokerControlResult {
   ok: boolean;
   error?: string;
+  /** Present for `list-browsers` (and echoed by `select-browser`). */
+  browsers?: BrowserInfo[];
+  /** The active browser id after the control was applied, if any. */
+  activeBrowserId?: string;
 }
 
 // ===== Client -> broker frames =====
