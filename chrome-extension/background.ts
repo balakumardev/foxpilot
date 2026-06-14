@@ -7,8 +7,21 @@ import { getConfig, generateSecret, getTransport } from "./extension-config";
 import { initConsoleCapture } from "./console-capture";
 import { initNetworkCapture } from "./network-capture";
 import { initEmulate } from "./emulate";
+import { initKeepalive, KeepaliveClient } from "./keepalive";
 
-function initClient(port: number, secret: string, transport: "websocket" | "longpoll") {
+// Per-port client registry so a service-worker respawn that re-runs the
+// bootstrap does not create duplicate clients for the same port.
+const clientsByPort = new Map<number, ExtensionTransport>();
+
+function initClient(
+  port: number,
+  secret: string,
+  transport: "websocket" | "longpoll"
+): ExtensionTransport {
+  const existing = clientsByPort.get(port);
+  if (existing) {
+    return existing;
+  }
   const client: ExtensionTransport =
     transport === "longpoll"
       ? new LongPollClient(port, secret)
@@ -29,6 +42,9 @@ function initClient(port: number, secret: string, transport: "websocket" | "long
       }
     }
   });
+
+  clientsByPort.set(port, client);
+  return client;
 }
 
 async function initExtension() {
@@ -67,6 +83,13 @@ initExtension()
     for (const port of portList) {
       initClient(port, secret, transport);
     }
+
+    // Keep the service worker's transports alive across MV3 idle timeouts. The
+    // client list is read fresh each tick from the per-port registry.
+    initKeepalive(() =>
+      Array.from(clientsByPort.values()) as unknown as KeepaliveClient[]
+    );
+
     console.log("Browser extension initialized");
   })
   .catch((error) => {

@@ -136,4 +136,26 @@ export class WebsocketClient implements ExtensionTransport {
       this.socket = null;
     }
   }
+
+  /**
+   * True when there is no socket or the socket has fully closed. Used by the
+   * keepalive alarm to decide whether to reconnect on SW wake.
+   */
+  public isClosed(): boolean {
+    return !this.socket || this.socket.readyState === WebSocket.CLOSED;
+  }
+
+  /**
+   * Best-effort liveness ping so the broker observes the connection on each
+   * alarm wake. Silent no-op if the socket is not open.
+   */
+  public ping(): void {
+    if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+      try {
+        this.socket.send(JSON.stringify({ type: "ping" }));
+      } catch {
+        /* ignore — next alarm reconnects if the socket actually died */
+      }
+    }
+  }
 }

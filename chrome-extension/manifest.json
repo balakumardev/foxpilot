@@ -13,7 +13,8 @@
     "scripting",
     "tabGroups",
     "activeTab",
-    "offscreen"
+    "offscreen",
+    "alarms"
   ],
   "host_permissions": [
     "http://localhost/*",
