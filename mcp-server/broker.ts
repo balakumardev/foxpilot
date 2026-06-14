@@ -30,10 +30,21 @@ import {
   BrokerControlResult,
   BrokerServerFrame,
 } from "./broker-protocol";
+import type { HelloPayload } from "./broker-protocol";
 import { createSignature, verifySignature } from "./signing";
 import { getCommandTimeout } from "./timeouts";
 
 const DEFAULT_IDLE_TIMEOUT_MS = 5 * 60 * 1000;
+
+/** A connected browser extension and the transport it arrived on. */
+interface ExtensionConn {
+  browserId: string;
+  ws: WebSocket | null;
+  transport: "ws" | "longpoll";
+  type: "chrome" | "firefox";
+  label: string;
+  lastSeen: number;
+}
 
 export interface BrokerServerOptions {
   port: number;
@@ -65,7 +76,8 @@ export class BrokerServer {
   private readonly wss: WebSocketServer;
   private readonly core: BrokerCore;
 
-  private extensionWs: WebSocket | null = null;
+  private readonly extensions = new Map<string, ExtensionConn>();
+  private activeBrowserId: string | null = null;
   private readonly clients = new Map<string, WebSocket>();
   private clientCounter = 0;
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
@@ -114,13 +126,16 @@ export class BrokerServer {
         /* ignore */
       }
     }
-    if (this.extensionWs) {
-      try {
-        this.extensionWs.terminate();
-      } catch {
-        /* ignore */
+    for (const conn of this.extensions.values()) {
+      if (conn.ws) {
+        try {
+          conn.ws.terminate();
+        } catch {
+          /* ignore */
+        }
       }
     }
+    this.extensions.clear();
     this.wss.close();
     this.httpServer.close();
   }
@@ -146,31 +161,109 @@ export class BrokerServer {
   }
 
   private onExtensionConnection(ws: WebSocket): void {
-    // Single extension; a new connection supersedes any previous one.
-    if (this.extensionWs && this.extensionWs !== ws) {
-      const old = this.extensionWs;
-      this.extensionWs = null;
-      this.core.onExtensionDisconnect();
-      try {
-        old.terminate();
-      } catch {
-        /* ignore */
-      }
-    }
-    this.extensionWs = ws;
     this.clearIdleTimer();
+    let conn: ExtensionConn | null = null;
 
-    ws.on("message", (data) => this.onExtensionMessage(data.toString()));
-    ws.on("close", () => {
-      if (this.extensionWs === ws) {
-        this.extensionWs = null;
-        this.core.onExtensionDisconnect();
-        this.maybeScheduleIdle();
+    ws.on("message", (data) => {
+      const raw = data.toString();
+      if (!conn) {
+        conn = this.tryRegisterHello(raw, ws);
+        if (!conn) {
+          // Invalid/absent hello — never admit; close without echoing.
+          try {
+            ws.close();
+          } catch {
+            /* ignore */
+          }
+        }
+        return;
       }
+      conn.lastSeen = Date.now();
+      this.onExtensionMessage(raw);
+    });
+
+    ws.on("close", () => {
+      if (conn) {
+        this.removeExtension(conn.browserId, ws);
+      }
+      this.maybeScheduleIdle();
     });
     ws.on("error", () => {
       /* close handler will run */
     });
+  }
+
+  /**
+   * Verify a signed `hello` and register the connection. Returns the new
+   * ExtensionConn on success, or null if the frame is not a valid signed hello
+   * (caller closes the socket without admitting it).
+   */
+  private tryRegisterHello(raw: string, ws: WebSocket): ExtensionConn | null {
+    let decoded: { payload?: HelloPayload; signature?: string };
+    try {
+      decoded = JSON.parse(raw);
+    } catch {
+      return null;
+    }
+    const payload = decoded?.payload;
+    if (
+      !payload ||
+      payload.type !== "hello" ||
+      typeof payload.browserId !== "string" ||
+      typeof decoded.signature !== "string"
+    ) {
+      return null;
+    }
+    if (
+      !verifySignature(
+        this.secret,
+        JSON.stringify(payload),
+        decoded.signature
+      )
+    ) {
+      return null;
+    }
+    return this.registerExtension({
+      browserId: payload.browserId,
+      ws,
+      transport: "ws",
+      type: payload.browserType === "firefox" ? "firefox" : "chrome",
+      label: payload.label || payload.browserType,
+      lastSeen: Date.now(),
+    });
+  }
+
+  /**
+   * Register (or re-attach) a browser by browserId. A reconnect under the same
+   * id replaces the stale socket without disturbing other browsers. Pushes the
+   * active-status to every browser whenever the set changes.
+   */
+  private registerExtension(conn: ExtensionConn): ExtensionConn {
+    const prev = this.extensions.get(conn.browserId);
+    if (prev && prev.ws && prev.ws !== conn.ws) {
+      try {
+        prev.ws.terminate();
+      } catch {
+        /* ignore */
+      }
+    }
+    this.extensions.set(conn.browserId, conn);
+    this.clearIdleTimer();
+    this.broadcastActiveStatus();
+    return conn;
+  }
+
+  private removeExtension(browserId: string, ws: WebSocket): void {
+    const conn = this.extensions.get(browserId);
+    if (!conn || conn.ws !== ws) {
+      return; // a newer socket already replaced this one
+    }
+    this.extensions.delete(browserId);
+    if (this.activeBrowserId === browserId) {
+      this.activeBrowserId = null;
+    }
+    this.core.onExtensionDisconnect();
+    this.broadcastActiveStatus();
   }
 
   private onClientConnection(ws: WebSocket): void {
@@ -236,23 +329,54 @@ export class BrokerServer {
   }
 
   private extensionConnected(): boolean {
-    return (
-      !!this.extensionWs && this.extensionWs.readyState === WebSocket.OPEN
-    );
+    for (const conn of this.extensions.values()) {
+      if (conn.ws && conn.ws.readyState === WebSocket.OPEN) {
+        return true;
+      }
+    }
+    return !!this.longPollSink && this.extensions.size > 0;
   }
 
   private sendToExtension(req: ServerMessageRequest): void {
-    // Prefer the live WebSocket; fall back to the long-poll sink if registered.
-    if (this.extensionConnected()) {
+    const target = this.resolveTarget();
+    if (target && target.ws && target.ws.readyState === WebSocket.OPEN) {
       const payload = JSON.stringify(req);
       const signature = createSignature(this.secret, payload);
-      this.extensionWs!.send(JSON.stringify({ payload: req, signature }));
+      target.ws.send(JSON.stringify({ payload: req, signature }));
       return;
     }
+    // Long-poll target (no live ws) or no registered ws target at all: fall
+    // back to the long-poll sink if one is registered. The long-poll leg has no
+    // ExtensionConn in the registry until it sends a hello (Task 5), so a target
+    // is not required here; the sink itself is the routable transport. Else the
+    // core's timeout fails the request.
     if (this.longPollSink && this.longPollSink(req)) {
       return;
     }
-    // No transport available; the core's timeout will fail the request.
+    // No resolvable transport; the core's timeout will fail the request.
+  }
+
+  /**
+   * Resolve the single active driver. Task 2 ships a minimal version; Task 3
+   * replaces this with the full resolution + DEFAULT_BROWSER rule.
+   */
+  private resolveTarget(): ExtensionConn | null {
+    const conns = [...this.extensions.values()];
+    if (conns.length === 0) {
+      return null;
+    }
+    if (conns.length === 1) {
+      return conns[0];
+    }
+    if (this.activeBrowserId) {
+      return this.extensions.get(this.activeBrowserId) ?? null;
+    }
+    return null;
+  }
+
+  /** Placeholder; the real implementation lands in Task 6. */
+  private broadcastActiveStatus(): void {
+    /* implemented in Task 6 */
   }
 
   // ---- client leg ----
@@ -338,6 +462,7 @@ export class BrokerServer {
         JSON.stringify({
           status: "ok",
           extensionConnected: this.extensionConnected(),
+          browsers: this.extensions.size,
           clients: this.clients.size,
         })
       );
@@ -411,7 +536,7 @@ export class BrokerServer {
   }
 
   private maybeScheduleIdle(): void {
-    if (this.clients.size === 0 && !this.extensionConnected() && !this.longPollSink) {
+    if (this.clients.size === 0 && this.extensions.size === 0 && !this.longPollSink) {
       if (!this.idleTimer && this.onIdle) {
         this.idleTimer = setTimeout(() => {
           this.idleTimer = null;

@@ -42,6 +42,16 @@ describe("BrokerServer integration", () => {
   it("round-trips a tool request from client through extension and back", async () => {
     const ext = new WebSocket(`ws://127.0.0.1:${port}/extension`);
     await waitOpen(ext);
+    // The registry now requires a signed hello as the extension's first frame
+    // before it will admit and route to the connection.
+    ext.send(
+      envelope({
+        type: "hello",
+        browserId: "ext-1",
+        browserType: "firefox",
+        label: "Firefox",
+      })
+    );
     const client = new WebSocket(`ws://127.0.0.1:${port}/mcp`);
     await waitOpen(client);
 
@@ -136,6 +146,17 @@ describe("BrokerServer integration", () => {
     try {
       const ext = new WebSocket(`ws://127.0.0.1:${port}/extension`);
       await waitOpen(ext);
+      // Register first: the broker admits the connection only after a valid
+      // signed hello (the real extension sends this on connect). The keepalive
+      // ping is exercised afterwards, on the now-registered socket.
+      ext.send(
+        envelope({
+          type: "hello",
+          browserId: "ext-ping-1",
+          browserType: "firefox",
+          label: "Firefox",
+        })
+      );
 
       // The keepalive frame the extension sends on each SW alarm wake.
       ext.send(JSON.stringify({ type: "ping" }));

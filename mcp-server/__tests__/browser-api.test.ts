@@ -29,7 +29,24 @@ function startMockExtension(
 ): Promise<WebSocket> {
   return new Promise((resolve) => {
     const ws = new WebSocket(`ws://127.0.0.1:${port}/extension`);
-    ws.on("open", () => resolve(ws));
+    ws.on("open", () => {
+      // The broker registry admits the connection only after a signed hello
+      // (the extension's first frame on connect). Send it before resolving so
+      // the mock is registered and routable for the tool round-trips below.
+      const helloPayload = {
+        type: "hello",
+        browserId: "browser-api-ext",
+        browserType: "firefox",
+        label: "Firefox",
+      };
+      ws.send(
+        JSON.stringify({
+          payload: helloPayload,
+          signature: createSignature(secret, JSON.stringify(helloPayload)),
+        })
+      );
+      resolve(ws);
+    });
     ws.on("message", (data) => {
       const env = JSON.parse(data.toString());
       const req = env.payload as ServerMessageRequest;
