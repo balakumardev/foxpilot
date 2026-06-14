@@ -12,11 +12,14 @@
     "webRequest",
     "scripting",
     "tabGroups",
-    "activeTab"
+    "activeTab",
+    "offscreen"
   ],
   "host_permissions": [
     "http://localhost/*",
-    "http://127.0.0.1/*",
+    "http://127.0.0.1/*"
+  ],
+  "optional_host_permissions": [
     "<all_urls>"
   ],
   "background": {
@@ -28,9 +31,5 @@
   },
   "action": {
     "default_title": "FoxPilot"
-  },
-  "offscreen": {
-    "reasons": ["DOM_PARSER", "LOCAL_STORAGE", "WORKERS"],
-    "justification": "Screenshot compositing requires canvas and Image DOM APIs not available in a service worker."
   }
 }

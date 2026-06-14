@@ -81,33 +81,42 @@ async function sendMessageToTab(tabId: number, message: any): Promise<any> {
 }
 
 // Offscreen document for screenshot canvas operations.
-let offscreenReady = false;
-let creatingOffscreen = false;
+//
+// MV3 service workers have no DOM, so canvas/Image compositing is delegated to
+// an offscreen document. We gate creation on chrome.offscreen.hasDocument()
+// (the supported way to avoid the "Only one document may be created" error) and
+// close it on teardown so a crashed/recycled SW can recreate it cleanly.
+let creatingOffscreen: Promise<void> | null = null;
 
-async function ensureOffscreen(): Promise<void> {
-  if (offscreenReady) return;
+const OFFSCREEN_BLOBS_REASON: string =
+  (chrome as any).offscreen?.Reason?.BLOBS ?? "BLOBS";
+
+export async function ensureOffscreen(): Promise<void> {
   if (creatingOffscreen) {
-    while (creatingOffscreen) {
-      await sleep(100);
-    }
+    await creatingOffscreen;
     return;
   }
-  creatingOffscreen = true;
-  try {
+  creatingOffscreen = (async () => {
+    if (await (chrome as any).offscreen.hasDocument()) {
+      return;
+    }
     await (chrome as any).offscreen.createDocument({
       url: browser.runtime.getURL("offscreen.html"),
-      reasons: ["DOM_PARSER", "LOCAL_STORAGE", "WORKERS"],
-      justification: "Screenshot compositing requires canvas and Image DOM APIs.",
+      reasons: [OFFSCREEN_BLOBS_REASON],
+      justification:
+        "Screenshot compositing requires canvas and Image DOM APIs not available in a service worker.",
     });
-    offscreenReady = true;
-  } catch (e: any) {
-    if (e.message && e.message.includes("Only one")) {
-      offscreenReady = true;
-    } else {
-      throw e;
-    }
+  })();
+  try {
+    await creatingOffscreen;
   } finally {
-    creatingOffscreen = false;
+    creatingOffscreen = null;
+  }
+}
+
+export async function closeOffscreen(): Promise<void> {
+  if (await (chrome as any).offscreen.hasDocument()) {
+    await (chrome as any).offscreen.closeDocument();
   }
 }
 
