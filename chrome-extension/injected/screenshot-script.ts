@@ -9,10 +9,12 @@
  * canvas compositing is exercised only in a real browser. Every canvas access is
  * guarded so importing this module never throws in a headless/jsdom environment.
  *
- * Unlike the snapshot/action injected scripts, the functions here are NOT
- * stringified into the page world: `captureVisibleTab` and canvas work happen in
- * the privileged background page, while the small per-page measurement reads are
- * injected separately as code strings by the message handler.
+ * Unlike the snapshot/action injected scripts, the functions here do NOT run in
+ * the page world: this module is bundled into the offscreen document, where
+ * `captureVisibleTab` data URLs and the canvas compositing are handled in that
+ * privileged DOM context. The small per-page measurement reads (scrollHeight,
+ * devicePixelRatio, element rects) are gathered separately via
+ * `chrome.scripting.executeScript` by the message handler.
  */
 
 export type ImageFormat = "png" | "jpeg";

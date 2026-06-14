@@ -1,20 +1,19 @@
 /**
  * Background-side console capture for Chrome MV3.
  *
- * Uses chrome.scripting.registerContentScripts to inject a document_start
- * content script that wraps console.* in the page world. The content script
- * sends messages back to the background via chrome.runtime.sendMessage.
+ * Uses chrome.scripting.registerContentScripts to inject two document_start
+ * scripts: a MAIN-world wrapper (console-capture-main.js) that overrides
+ * console.* and posts entries to the page via window.postMessage, and an
+ * isolated-world bridge (console-capture-bridge.js) that relays those entries to
+ * the background via chrome.runtime.sendMessage. The MAIN/bridge split is needed
+ * because only a MAIN-world script can see the page's real console, while only an
+ * isolated-world script can reach chrome.runtime.
  */
 
 import type { ConsoleEntry } from "@foxpilot/common";
 import { isAutomationModeEnabled } from "./extension-config";
 
 export type { ConsoleEntry };
-
-// Legacy export for backward compatibility with tests. In Chrome MV3, the
-// capture script is a separate file (console-capture-content.ts) registered via
-// chrome.scripting.registerContentScripts.
-export const CAPTURE_CONTENT_SCRIPT = "";
 
 export const CONSOLE_BUFFER_CAP = 200;
 const MAX_ENTRY_TEXT = 2000;

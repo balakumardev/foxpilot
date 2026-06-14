@@ -110,7 +110,8 @@ export function typeCharStep(
  * exact viewport->screen offset as `window.mozInnerScreenX/Y`; where that is
  * unavailable (e.g. jsdom, non-Firefox engines) we fall back to a 0 offset, so
  * the returned rect degrades to client coordinates. Self-contained: like the
- * steps above it is stringified and injected, so all logic stays inline.
+ * steps above it is injected into the page via `chrome.scripting.executeScript`,
+ * so all logic stays inline (no imports or sibling-function calls).
  */
 export function readElementScreenRect(
   doc: Document,

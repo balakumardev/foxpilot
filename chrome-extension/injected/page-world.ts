@@ -360,9 +360,10 @@ export function buildEmulatePageScript(
 }
 
 /**
- * Orchestrates inject → poll → parse. `exec` is the injected
- * `browser.tabs.executeScript`-style wrapper (`(code) => Promise<any[]>`), and
- * `sleep` is injected for testability.
+ * Orchestrates inject → poll → parse. `exec` is the injected wrapper over
+ * `chrome.scripting.executeScript` (`(code) => Promise<any[]>`): it runs a code
+ * string in the tab's isolated content-script world and resolves to the array of
+ * per-frame results. `sleep` is injected for testability.
  *
  * Steps:
  *   1. Inject the page-world script once.
