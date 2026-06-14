@@ -15,10 +15,16 @@ export class WebsocketClient implements ExtensionTransport {
   private reconnectTimer: number | null = null;
   private connectionAttempts: number = 0;
   private messageCallback: ((data: ServerMessageRequest) => void) | null = null;
+  private readonly onStatusChange?: (connected: boolean) => void;
 
-  constructor(port: number, secret: string) {
+  constructor(
+    port: number,
+    secret: string,
+    onStatusChange?: (connected: boolean) => void
+  ) {
     this.port = port;
     this.secret = secret;
+    this.onStatusChange = onStatusChange;
   }
 
   public connect(): void {
@@ -31,15 +37,18 @@ export class WebsocketClient implements ExtensionTransport {
     this.socket.addEventListener("open", () => {
       console.log("Connected to WebSocket server at port", this.port);
       this.connectionAttempts = 0;
+      this.onStatusChange?.(true);
     });
 
     this.socket.addEventListener("close", () => {
       console.log("WebSocket connection closed event at port", this.port);
       this.connectionAttempts = 0;
+      this.onStatusChange?.(false);
     });
 
     this.socket.addEventListener("error", (event) => {
       console.error("WebSocket error:", event);
+      this.onStatusChange?.(false);
     });
 
     this.socket.addEventListener("message", async (event) => {
@@ -135,5 +144,7 @@ export class WebsocketClient implements ExtensionTransport {
       this.socket.close();
       this.socket = null;
     }
+
+    this.onStatusChange?.(false);
   }
 }

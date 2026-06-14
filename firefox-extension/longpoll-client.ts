@@ -21,10 +21,16 @@ export class LongPollClient implements ExtensionTransport {
   private messageCallback: ((data: ServerMessageRequest) => void) | null = null;
   private stopped = false;
   private abort: AbortController | null = null;
+  private readonly onStatusChange?: (connected: boolean) => void;
 
-  constructor(port: number, secret: string) {
+  constructor(
+    port: number,
+    secret: string,
+    onStatusChange?: (connected: boolean) => void
+  ) {
     this.port = port;
     this.secret = secret;
+    this.onStatusChange = onStatusChange;
   }
 
   connect(): void {
@@ -60,9 +66,12 @@ export class LongPollClient implements ExtensionTransport {
           { signal: this.abort.signal }
         );
         if (!res.ok) {
+          this.onStatusChange?.(false);
           await this.delay(RECONNECT_INTERVAL);
           continue;
         }
+        // A successful poll means the broker is reachable.
+        this.onStatusChange?.(true);
         const data = await res.json();
         if (data && Array.isArray(data.requests) && this.messageCallback) {
           for (const entry of data.requests) {
@@ -83,6 +92,7 @@ export class LongPollClient implements ExtensionTransport {
         if (this.stopped) {
           break;
         }
+        this.onStatusChange?.(false);
         await this.delay(RECONNECT_INTERVAL);
       }
     }
@@ -125,5 +135,6 @@ export class LongPollClient implements ExtensionTransport {
         /* ignore */
       }
     }
+    this.onStatusChange?.(false);
   }
 }

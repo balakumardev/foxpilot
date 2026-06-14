@@ -8,6 +8,11 @@ const DEFAULT_WS_PORT = 8089;
 const DEFAULT_SIDECAR_PORT = 8090;
 const AUDIT_LOG_SIZE_LIMIT = 100; // Maximum number of audit log entries to keep
 
+// Storage key for the live broker connection status. Kept separate from the
+// persisted `config` object so it never pollutes saved settings — it is a
+// transient runtime flag the background script mirrors for the options page.
+export const BROKER_STATUS_STORAGE_KEY = "brokerStatus";
+
 // Define all available tools with their IDs and descriptions
 export interface ToolInfo {
   id: string;
@@ -576,4 +581,27 @@ export async function clearAuditLog(): Promise<void> {
 export function getToolNameById(toolId: string): string {
   const tool = AVAILABLE_TOOLS.find(t => t.id === toolId);
   return tool ? tool.name : toolId;
+}
+
+/**
+ * Returns whether the extension is currently connected to the local broker.
+ * Mirrored into storage by the background script (see setBrokerConnected);
+ * defaults to false when unknown.
+ */
+export async function getBrokerConnected(): Promise<boolean> {
+  const obj = await browser.storage.local.get(BROKER_STATUS_STORAGE_KEY);
+  const status = obj[BROKER_STATUS_STORAGE_KEY] as
+    | { connected?: boolean }
+    | undefined;
+  return status?.connected === true;
+}
+
+/**
+ * Records the live broker connection status so the options page can reflect it.
+ * Stored under BROKER_STATUS_STORAGE_KEY, outside the persisted `config` object.
+ */
+export async function setBrokerConnected(connected: boolean): Promise<void> {
+  await browser.storage.local.set({
+    [BROKER_STATUS_STORAGE_KEY]: { connected },
+  });
 }
