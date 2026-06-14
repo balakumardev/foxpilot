@@ -25,7 +25,11 @@ import type {
   ServerMessageRequest,
 } from "@foxpilot/common";
 import { BrokerCore } from "./broker-core";
-import { BrokerClientFrame, BrokerServerFrame } from "./broker-protocol";
+import {
+  BrokerClientFrame,
+  BrokerControlResult,
+  BrokerServerFrame,
+} from "./broker-protocol";
 import { createSignature, verifySignature } from "./signing";
 import { getCommandTimeout } from "./timeouts";
 
@@ -290,10 +294,22 @@ export class BrokerServer {
       this.core.submitTool(clientId, frame.requestId, frame.message);
     } else if (frame.kind === "control") {
       const control = frame.control;
-      const result =
-        control.control === "acquire-lease"
-          ? this.core.acquireLease(clientId, control.tabId)
-          : this.core.releaseLease(clientId, control.tabId);
+      let result: BrokerControlResult;
+      switch (control.control) {
+        case "acquire-lease":
+          result = this.core.acquireLease(clientId, control.tabId);
+          break;
+        case "release-lease":
+          result = this.core.releaseLease(clientId, control.tabId);
+          break;
+        default:
+          // list-browsers / select-browser are not handled until the broker
+          // gains its browser registry (Task 4). Fail loud for now.
+          result = {
+            ok: false,
+            error: `Unsupported control: ${control.control}`,
+          };
+      }
       this.sendToClient(clientId, {
         kind: "control-result",
         requestId: frame.requestId,
