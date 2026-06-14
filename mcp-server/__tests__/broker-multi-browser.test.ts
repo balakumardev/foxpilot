@@ -412,3 +412,110 @@ describe("BrokerServer list/select control", () => {
     client.close();
   }, 10000);
 });
+
+describe("BrokerServer active-status push", () => {
+  let server: BrokerServer;
+  let port: number;
+
+  beforeEach(async () => {
+    server = new BrokerServer({ port: 0, host: "127.0.0.1", secret: SECRET });
+    await server.listen();
+    port = server.getPort();
+  });
+
+  afterEach(() => {
+    server.close();
+  });
+
+  /** Collect active-status frames seen on an extension socket. */
+  function collectStatus(ws: WebSocket): boolean[] {
+    const seen: boolean[] = [];
+    ws.on("message", (data) => {
+      const env = JSON.parse(data.toString());
+      if (env.payload?.cmd === "active-status") {
+        seen.push(!!env.payload.active);
+      }
+    });
+    return seen;
+  }
+
+  it("pushes active=true to the sole browser when it connects", async () => {
+    const ext = new WebSocket(`ws://127.0.0.1:${port}/extension`);
+    await waitOpen(ext);
+    const seen = collectStatus(ext);
+    ext.send(hello("only-1", "chrome", "Chrome"));
+    await new Promise((r) => setTimeout(r, 150));
+    // Sole connected browser is implicitly active.
+    expect(seen[seen.length - 1]).toBe(true);
+    ext.close();
+  }, 10000);
+
+  it("flips ACTIVE/STANDBY on select-browser across two browsers", async () => {
+    const a = new WebSocket(`ws://127.0.0.1:${port}/extension`);
+    await waitOpen(a);
+    const aSeen = collectStatus(a);
+    a.send(hello("chrome-1", "chrome", "Chrome"));
+
+    const b = new WebSocket(`ws://127.0.0.1:${port}/extension`);
+    await waitOpen(b);
+    const bSeen = collectStatus(b);
+    b.send(hello("firefox-1", "firefox", "Firefox"));
+    await new Promise((r) => setTimeout(r, 150));
+
+    const client = new WebSocket(`ws://127.0.0.1:${port}/mcp`);
+    await waitOpen(client);
+    const selP = nextMessage(client);
+    client.send(
+      envelope({
+        kind: "control",
+        requestId: "sel",
+        control: { control: "select-browser", browserId: "firefox-1" },
+      })
+    );
+    await selP;
+    await new Promise((r) => setTimeout(r, 150));
+
+    // After selecting Firefox: Firefox sees active=true, Chrome sees false.
+    expect(bSeen[bSeen.length - 1]).toBe(true);
+    expect(aSeen[aSeen.length - 1]).toBe(false);
+
+    a.close();
+    b.close();
+    client.close();
+  }, 10000);
+
+  it("select-active frame from a browser makes that browser active", async () => {
+    const server2 = new BrokerServer({ port: 0, host: "127.0.0.1", secret: SECRET });
+    await server2.listen();
+    const p = server2.getPort();
+    const a = new WebSocket(`ws://127.0.0.1:${p}/extension`);
+    await waitOpen(a);
+    a.send(hello("chrome-1", "chrome", "Chrome"));
+    const b = new WebSocket(`ws://127.0.0.1:${p}/extension`);
+    await waitOpen(b);
+    b.send(hello("firefox-1", "firefox", "Firefox"));
+    await new Promise((r) => setTimeout(r, 100));
+
+    // Firefox asks to be made active via the signed select-active frame.
+    const payload = { type: "select-active", browserId: "firefox-1" };
+    b.send(
+      JSON.stringify({
+        payload,
+        signature: createSignature(SECRET, JSON.stringify(payload)),
+      })
+    );
+    await new Promise((r) => setTimeout(r, 100));
+
+    // A list-browsers now flags firefox-1 active.
+    const client = new WebSocket(`ws://127.0.0.1:${p}/mcp`);
+    await waitOpen(client);
+    const lp = nextMessage(client);
+    client.send(envelope({ kind: "control", requestId: "c1", control: { control: "list-browsers" } }));
+    const list = await lp;
+    const ff = list.payload.result.browsers.find((x: any) => x.browserId === "firefox-1");
+    expect(ff.active).toBe(true);
+
+    a.close(); b.close(); client.close();
+    server2.close();
+  }, 10000);
+});

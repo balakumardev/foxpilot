@@ -385,6 +385,33 @@ export class BrokerServer {
       return;
     }
 
+    // "Make this browser active" sent from the options page: a signed
+    // { type:"select-active", browserId } frame on the extension->broker channel,
+    // symmetric to the hello. Verify the signature, and only honor it if the
+    // named browser is actually connected (id-checked), then push the new state.
+    const maybeSelect = decoded as {
+      payload?: { type?: string; browserId?: string };
+      signature?: string;
+    };
+    if (
+      maybeSelect?.payload?.type === "select-active" &&
+      typeof maybeSelect.signature === "string"
+    ) {
+      if (
+        verifySignature(
+          this.secret,
+          JSON.stringify(maybeSelect.payload),
+          maybeSelect.signature
+        ) &&
+        maybeSelect.payload.browserId &&
+        this.extensions.has(maybeSelect.payload.browserId)
+      ) {
+        this.activeBrowserId = maybeSelect.payload.browserId;
+        this.broadcastActiveStatus();
+      }
+      return;
+    }
+
     // Error frames are sent raw (unsigned), matching the existing protocol.
     if (isExtensionErrorFrame(decoded)) {
       this.core.handleExtensionError(decoded);
@@ -496,9 +523,33 @@ export class BrokerServer {
     }));
   }
 
-  /** Placeholder; the real implementation lands in Task 6. */
+  /**
+   * Push the current ACTIVE/STANDBY state to every connected browser. A browser
+   * is active if it is the sole connected one (implicit) or its id ===
+   * activeBrowserId. Sent as a signed { cmd:"active-status", correlationId:"",
+   * active } frame so it rides the existing signed-frame path; the extension
+   * short-circuits it before its command switch.
+   */
   private broadcastActiveStatus(): void {
-    /* implemented in Task 6 */
+    const soleId =
+      this.extensions.size === 1 ? [...this.extensions.keys()][0] : null;
+    for (const conn of this.extensions.values()) {
+      const active =
+        conn.browserId === this.activeBrowserId || conn.browserId === soleId;
+      const payload = {
+        cmd: "active-status",
+        correlationId: "",
+        active,
+      };
+      if (conn.ws && conn.ws.readyState === WebSocket.OPEN) {
+        const signature = createSignature(this.secret, JSON.stringify(payload));
+        conn.ws.send(JSON.stringify({ payload, signature }));
+      } else if (conn.transport === "longpoll" && this.longPollSink) {
+        // Long-poll browsers receive it on their next poll batch (the sink
+        // signs each queued payload itself).
+        this.longPollSink(payload as unknown as ServerMessageRequest);
+      }
+    }
   }
 
   // ---- client leg ----

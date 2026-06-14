@@ -13,6 +13,11 @@ import { initKeepalive } from "./keepalive";
 // bootstrap does not create duplicate clients for the same port.
 const clientsByPort = new Map<number, ExtensionTransport>();
 
+// The transport the "Make this browser active" button forwards its request
+// through. Points at the most recently initialized client (in the common
+// single-port deployment there is exactly one).
+let activeClientRef: ExtensionTransport | null = null;
+
 function initClient(
   port: number,
   secret: string,
@@ -30,6 +35,22 @@ function initClient(
 
   client.connect();
 
+  // Reflect the broker's ACTIVE/STANDBY push on the toolbar badge and relay it
+  // to any open options page so its badge stays live.
+  if (client.addStatusListener) {
+    client.addStatusListener((active) => {
+      try {
+        (chrome as any).action?.setBadgeText({ text: active ? "ON" : "" });
+        (chrome as any).action?.setBadgeBackgroundColor?.({ color: "#4caf50" });
+      } catch {
+        /* action API may be unavailable in some contexts */
+      }
+      // Relay to any open options page (best-effort; ignore "no receiver").
+      browser.runtime.sendMessage({ type: "active-status", active }).catch(() => {});
+    });
+  }
+  activeClientRef = client;
+
   client.addMessageListener(async (message) => {
     console.log("Message from server:", message);
 
@@ -46,6 +67,20 @@ function initClient(
   clientsByPort.set(port, client);
   return client;
 }
+
+// Forward the options page's "Make this browser active" request to the broker
+// via the live client (it sends the signed select-active frame).
+browser.runtime.onMessage.addListener((msg: any) => {
+  if (
+    msg?.type === "select-this-browser" &&
+    activeClientRef &&
+    activeClientRef.sendSelectActive
+  ) {
+    activeClientRef.sendSelectActive(msg.browserId).catch((e) =>
+      console.error("select-this-browser failed:", e)
+    );
+  }
+});
 
 async function initExtension() {
   let config = await getConfig();

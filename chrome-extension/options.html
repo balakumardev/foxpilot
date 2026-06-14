@@ -392,6 +392,23 @@
     </div>
 
     <div class="section-container">
+      <h2>Connection Status</h2>
+      <div class="section-content">
+        <p>When more than one browser is connected to the broker, only the <strong>active</strong> one is driven. This shows whether this browser is the active driver, and lets you make it active.</p>
+        <style>
+          .badge { display: inline-block; padding: 4px 12px; border-radius: 12px; font-weight: bold; font-size: 13px; }
+          .badge.active { background: #4caf50; color: #fff; }
+          .badge.standby { background: #ccc; color: #333; }
+        </style>
+        <div id="connection-badge" class="badge standby">STANDBY</div>
+        <div style="margin-top: 12px;">
+          <button class="copy-button" id="make-active-btn">Make this browser active</button>
+        </div>
+        <div class="status" id="connection-status"></div>
+      </div>
+    </div>
+
+    <div class="section-container">
       <h2>WebSocket Ports</h2>
       <div class="section-content">
         <p>Configure the WebSocket ports for MCP server connections (comma-separated list). Note: Changing this value will reload the extension.</p>

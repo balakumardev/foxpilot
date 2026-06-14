@@ -23,6 +23,7 @@ import {
   getSidecarPort,
 } from "./extension-config";
 import { NativeInputClient } from "./native-input-client";
+import { applyActiveStatus, selectThisBrowser } from "./options-status";
 
 const secretDisplay = document.getElementById(
   "secret-display"
@@ -70,6 +71,12 @@ const inputRealismSelect = document.getElementById(
 ) as HTMLSelectElement;
 const inputRealismStatus = document.getElementById(
   "input-realism-status"
+) as HTMLDivElement;
+const makeActiveButton = document.getElementById(
+  "make-active-btn"
+) as HTMLButtonElement;
+const connectionStatus = document.getElementById(
+  "connection-status"
 ) as HTMLDivElement;
 
 /**
@@ -424,6 +431,29 @@ async function probeSidecar() {
     inputRealismStatus.textContent =
       "Sidecar not running — native input falls back to human-like. Start the input-sidecar (see docs).";
     inputRealismStatus.style.color = "red";
+  }
+}
+
+/**
+ * "Make this browser active": asks the background page to forward a
+ * select-active to the broker for this browser's id. The broker then pushes the
+ * new ACTIVE/STANDBY state back to every browser (this one flips ACTIVE, others
+ * flip STANDBY) via the active-status relay.
+ */
+async function handleMakeActive(event: MouseEvent) {
+  if (!event.isTrusted) return;
+  try {
+    await selectThisBrowser();
+    connectionStatus.textContent = "Requested — making this browser active.";
+    connectionStatus.style.color = "#4caf50";
+    setTimeout(() => {
+      connectionStatus.textContent = "";
+      connectionStatus.style.color = "";
+    }, 3000);
+  } catch (error) {
+    console.error("Error making this browser active:", error);
+    connectionStatus.textContent = "Failed (is the broker connected?).";
+    connectionStatus.style.color = "red";
   }
 }
 
@@ -834,6 +864,14 @@ clearAuditLogButton.addEventListener("click", handleClearAuditLog);
 automationModeToggle.addEventListener("change", handleAutomationModeToggle);
 transportSelect.addEventListener("change", handleTransportChange);
 inputRealismSelect.addEventListener("change", handleInputRealismChange);
+makeActiveButton.addEventListener("click", handleMakeActive);
+// The background relays broker active-status pushes to the options page so the
+// badge reflects the live ACTIVE/STANDBY state.
+browser.runtime.onMessage.addListener((msg: any) => {
+  if (msg?.type === "active-status") {
+    applyActiveStatus(!!msg.active);
+  }
+});
 document.addEventListener("DOMContentLoaded", () => {
   loadSecret();
   createToolSettingsUI();
