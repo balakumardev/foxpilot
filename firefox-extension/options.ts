@@ -23,7 +23,11 @@ import {
   getSidecarPort,
 } from "./extension-config";
 import { NativeInputClient } from "./native-input-client";
-import { applyActiveStatus, selectThisBrowser } from "./options-status";
+import {
+  applyActiveStatus,
+  selectThisBrowser,
+  fetchInitialActiveStatus,
+} from "./options-status";
 
 const secretDisplay = document.getElementById(
   "secret-display"
@@ -881,6 +885,9 @@ document.addEventListener("DOMContentLoaded", () => {
   loadAutomationMode();
   loadTransport();
   loadInputRealism();
+  // Reflect the real current ACTIVE/STANDBY state on open (the live relay below
+  // keeps it updated thereafter). Self-guards; never throws.
+  fetchInitialActiveStatus();
   initializeCollapsibleSections();
 
   // Ensure modal is hidden by default

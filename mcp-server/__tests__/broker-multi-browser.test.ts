@@ -484,6 +484,59 @@ describe("BrokerServer active-status push", () => {
     client.close();
   }, 10000);
 
+  it("still delivers to healthy browsers when one connection's send throws (TOCTOU guard)", async () => {
+    // Two browsers connected and registered.
+    const a = new WebSocket(`ws://127.0.0.1:${port}/extension`);
+    await waitOpen(a);
+    a.send(hello("chrome-1", "chrome", "Chrome"));
+    const b = new WebSocket(`ws://127.0.0.1:${port}/extension`);
+    await waitOpen(b);
+    const bSeen = collectStatus(b);
+    b.send(hello("firefox-1", "firefox", "Firefox"));
+    await new Promise((r) => setTimeout(r, 150));
+
+    // Simulate the TOCTOU: chrome-1's socket still reports OPEN but its send
+    // throws (as a socket caught mid-transition to CLOSING would). Reaching the
+    // private map is fine — TS `private` is compile-time only.
+    // chrome-1 is still OPEN here (both browsers handshaked), so the OPEN branch
+    // is taken; we only need its send to throw, as a socket caught mid-
+    // transition to CLOSING would. (`readyState` is a getter-only prop on the
+    // real ws, so we override `send` rather than the state.)
+    const conns: Map<string, any> = (server as any).extensions;
+    const bad = conns.get("chrome-1");
+    expect(bad).toBeTruthy();
+    expect(bad.ws.readyState).toBe(WebSocket.OPEN);
+    bad.ws.send = () => {
+      throw new Error("socket closing mid-send");
+    };
+
+    // Trigger a broadcast by selecting firefox-1. Pre-guard, chrome-1's throw
+    // would abort the loop; whether firefox-1 got its frame depended on map
+    // order. The guard makes delivery to the healthy socket unconditional and
+    // keeps broadcastActiveStatus from throwing.
+    const client = new WebSocket(`ws://127.0.0.1:${port}/mcp`);
+    await waitOpen(client);
+    const selP = nextMessage(client);
+    client.send(
+      envelope({
+        kind: "control",
+        requestId: "sel",
+        control: { control: "select-browser", browserId: "firefox-1" },
+      })
+    );
+    const sel = await selP;
+    // The select itself succeeds (the broadcast it triggers does not throw).
+    expect(sel.payload.result.ok).toBe(true);
+    await new Promise((r) => setTimeout(r, 150));
+
+    // The healthy browser received its ACTIVE frame despite the bad socket.
+    expect(bSeen[bSeen.length - 1]).toBe(true);
+
+    a.close();
+    b.close();
+    client.close();
+  }, 10000);
+
   it("select-active frame from a browser makes that browser active", async () => {
     const server2 = new BrokerServer({ port: 0, host: "127.0.0.1", secret: SECRET });
     await server2.listen();

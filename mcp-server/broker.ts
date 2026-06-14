@@ -541,13 +541,25 @@ export class BrokerServer {
         correlationId: "",
         active,
       };
-      if (conn.ws && conn.ws.readyState === WebSocket.OPEN) {
-        const signature = createSignature(this.secret, JSON.stringify(payload));
-        conn.ws.send(JSON.stringify({ payload, signature }));
-      } else if (conn.transport === "longpoll" && this.longPollSink) {
-        // Long-poll browsers receive it on their next poll batch (the sink
-        // signs each queued payload itself).
-        this.longPollSink(payload as unknown as ServerMessageRequest);
+      // Guard each connection's delivery independently: a socket can transition
+      // to CLOSING between the readyState check and the send (a TOCTOU), making
+      // `ws.send` throw. Without this catch one such throw would abort the loop
+      // and starve EVERY remaining browser of the active-status update. Skip the
+      // bad connection and keep delivering to the rest.
+      try {
+        if (conn.ws && conn.ws.readyState === WebSocket.OPEN) {
+          const signature = createSignature(
+            this.secret,
+            JSON.stringify(payload)
+          );
+          conn.ws.send(JSON.stringify({ payload, signature }));
+        } else if (conn.transport === "longpoll" && this.longPollSink) {
+          // Long-poll browsers receive it on their next poll batch (the sink
+          // signs each queued payload itself).
+          this.longPollSink(payload as unknown as ServerMessageRequest);
+        }
+      } catch {
+        // One misbehaving sink/socket must not drop the broadcast to others.
       }
     }
   }

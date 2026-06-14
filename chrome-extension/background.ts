@@ -18,6 +18,11 @@ const clientsByPort = new Map<number, ExtensionTransport>();
 // single-port deployment there is exactly one).
 let activeClientRef: ExtensionTransport | null = null;
 
+// Most-recent ACTIVE/STANDBY value the broker pushed to any client's status
+// listener. Cached so a freshly-opened options page can fetch the real current
+// state on load (via `get-active-status`) instead of waiting for the next push.
+let lastActiveStatus: boolean = false;
+
 function initClient(
   port: number,
   secret: string,
@@ -39,6 +44,8 @@ function initClient(
   // to any open options page so its badge stays live.
   if (client.addStatusListener) {
     client.addStatusListener((active) => {
+      // Cache the latest state so the options page can read it on open.
+      lastActiveStatus = active;
       try {
         (chrome as any).action?.setBadgeText({ text: active ? "ON" : "" });
         (chrome as any).action?.setBadgeBackgroundColor?.({ color: "#4caf50" });
@@ -69,18 +76,31 @@ function initClient(
 }
 
 // Forward the options page's "Make this browser active" request to the broker
-// via the live client (it sends the signed select-active frame).
-browser.runtime.onMessage.addListener((msg: any) => {
-  if (
-    msg?.type === "select-this-browser" &&
-    activeClientRef &&
-    activeClientRef.sendSelectActive
-  ) {
-    activeClientRef.sendSelectActive(msg.browserId).catch((e) =>
-      console.error("select-this-browser failed:", e)
-    );
+// via the live client (it sends the signed select-active frame). Also answers
+// the options page's `get-active-status` probe with the cached ACTIVE/STANDBY
+// value so its badge is correct immediately on open.
+// `chrome.runtime.onMessage` (typed in browser-global.d.ts to accept
+// `boolean | void`) is used here rather than the polyfill's stricter
+// `browser.runtime.onMessage`, so the handler can both fall through (void) for
+// `select-this-browser` and `return true` for the `get-active-status` reply.
+chrome.runtime.onMessage.addListener(
+  (msg: any, _sender: any, sendResponse: (response?: any) => void) => {
+    if (
+      msg?.type === "select-this-browser" &&
+      activeClientRef &&
+      activeClientRef.sendSelectActive
+    ) {
+      activeClientRef.sendSelectActive(msg.browserId).catch((e) =>
+        console.error("select-this-browser failed:", e)
+      );
+      return;
+    }
+    if (msg?.type === "get-active-status") {
+      sendResponse({ active: lastActiveStatus });
+      return true; // keep the channel open for the (synchronous) reply
+    }
   }
-});
+);
 
 async function initExtension() {
   let config = await getConfig();

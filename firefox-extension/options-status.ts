@@ -24,3 +24,23 @@ export async function selectThisBrowser(): Promise<void> {
     browserId,
   });
 }
+
+/**
+ * Fetch the current ACTIVE/STANDBY state from the background on options-page
+ * open and reflect it on the badge immediately, so it is not stale until the
+ * next broker push (which can be a long time away). The background replies with
+ * its cached `lastActiveStatus`. If the background is asleep / does not answer
+ * (no `{active}` in the reply), default to STANDBY without throwing — the live
+ * relay will correct the badge on the next push.
+ */
+export async function fetchInitialActiveStatus(): Promise<void> {
+  try {
+    const resp: any = await browser.runtime.sendMessage({
+      type: "get-active-status",
+    });
+    applyActiveStatus(!!(resp && resp.active));
+  } catch {
+    // Background asleep or no receiver — leave the default STANDBY.
+    applyActiveStatus(false);
+  }
+}
