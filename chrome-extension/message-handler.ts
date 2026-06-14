@@ -26,6 +26,22 @@ import { getConsoleEntries } from "./console-capture";
 import { getNetworkRequests } from "./network-capture";
 import { Point, mousePath, typingPlan } from "./humanize/motion-model";
 
+type InputActionArgs =
+  | { action: "click"; uid: string; doubleClick?: boolean }
+  | { action: "hover"; uid: string }
+  | { action: "fill"; uid: string; value: string }
+  | { action: "fill-form"; fields: { uid: string; value: string }[] }
+  | { action: "type"; text: string; submit?: boolean }
+  | { action: "press-key"; key: string; modifiers?: string[] }
+  | { action: "drag"; fromUid: string; toUid: string };
+
+// @types/chrome on this version exposes the enum as chrome.tabGroups.Color and
+// types color as a template-literal union rather than a `ColorEnum` alias, so we
+// pin the accepted values with an explicit literal union here.
+type TabGroupColor =
+  | "grey" | "blue" | "red" | "yellow" | "green"
+  | "pink" | "purple" | "cyan" | "orange";
+
 const sleep = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -489,7 +505,7 @@ export class MessageHandler {
   private async runInputAction(
     correlationId: string,
     tabId: number,
-    args: any
+    args: InputActionArgs
   ): Promise<void> {
     const tab = await browser.tabs.get(tabId);
     if (tab.url && (await isDomainInDenyList(tab.url))) {
@@ -518,7 +534,7 @@ export class MessageHandler {
     });
   }
 
-  private async runHumanInputAction(tabId: number, args: any): Promise<any> {
+  private async runHumanInputAction(tabId: number, args: InputActionArgs): Promise<any> {
     const cursor = this.cursorByTab.get(tabId) || { x: 100, y: 100 };
     const result = await sendMessageToTab(tabId, {
       type: "runHumanInput",
@@ -531,7 +547,7 @@ export class MessageHandler {
     return result;
   }
 
-  private async runNativeInputAction(tabId: number, args: any): Promise<any> {
+  private async runNativeInputAction(tabId: number, args: InputActionArgs): Promise<any> {
     if (args.action === "fill" || args.action === "fill-form") {
       return this.runHumanInputAction(tabId, args);
     }
@@ -1072,7 +1088,7 @@ export class MessageHandler {
     correlationId: string,
     tabIds: number[],
     isCollapsed: boolean,
-    groupColor: any,
+    groupColor: TabGroupColor,
     groupTitle: string
   ): Promise<void> {
     const groupId = await browser.tabs.group({ tabIds });

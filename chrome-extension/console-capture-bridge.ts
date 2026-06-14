@@ -6,9 +6,12 @@
  * forwards it to the background via chrome.runtime.sendMessage. The MAIN world
  * cannot reach chrome.runtime, which is why this split exists.
  *
- * Security: only forward same-window messages (e.source === window) carrying the
- * expected payload shape, so a hostile page cannot inject forged console entries
- * by posting a crafted { __bcmcp_console } message.
+ * The `e.source === window` guard only forwards messages that originated in THIS
+ * same window/frame, rejecting cross-frame/cross-window posts (e.g. from an
+ * iframe or another tab). It does NOT prevent same-page forgery: a page's own
+ * script shares this `window`, so it can still post a crafted { __bcmcp_console }
+ * message that we forward. Captured console output is therefore page-influenced
+ * data, not a trusted channel — treat it accordingly.
  */
 
 window.addEventListener("message", function (e) {

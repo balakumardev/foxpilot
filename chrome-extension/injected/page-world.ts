@@ -1,10 +1,10 @@
 /**
  * Reusable page-world injection helper.
  *
- * `browser.tabs.executeScript` runs in the extension's ISOLATED content-script
- * world. That world can read/modify the DOM but cannot see the page's REAL
- * `window` (its frameworks, globals, app state), and `executeScript` does NOT
- * await promises. To run code in the page's real world AND get an async result
+ * `chrome.scripting.executeScript` runs in the extension's ISOLATED
+ * content-script world. That world can read/modify the DOM but cannot see the
+ * page's REAL `window` (its frameworks, globals, app state). To run code in the
+ * page's real world AND get an async result
  * back, we use a two-stage inject-then-poll pattern:
  *
  *   1. INJECT (one `executeScript` call): an isolated-world "injector" appends a

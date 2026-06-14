@@ -1,9 +1,9 @@
 /**
  * Single-step injected helpers for the synthetic (Tier 1) human-like executor.
  *
- * CRITICAL - like `performInputAction`, each exported function here is
- * stringified via `.toString()` and injected with `browser.tabs.executeScript`,
- * so each MUST be fully self-contained: no imports, no module-scope references,
+ * CRITICAL - like `performInputAction`, each exported function here is injected
+ * into the page via `chrome.scripting.executeScript`, so each MUST be fully
+ * self-contained: no imports, no module-scope references,
  * no sibling-function calls. Every helper is an inner function. (Guarded by
  * self-containment.test.ts.)
  *

@@ -1,13 +1,13 @@
 /**
  * Screenshot helpers for the take-screenshot tool.
  *
- * This module is bundled into the extension background page (a real DOM
- * document, so `document.createElement("canvas")` and `Image` work in Firefox).
- * The element-crop and full-page-stitch modes draw onto a `<canvas>`, which has
- * NO renderer in jsdom — so the pure planning/parsing helpers are extracted and
- * unit-tested directly, while the canvas compositing is exercised only in a real
- * browser. Every canvas access is guarded so importing this module never throws
- * in a headless/jsdom environment.
+ * This module is bundled into the MV3 offscreen document (a real DOM document,
+ * so `document.createElement("canvas")` and `Image` work). MV3 service workers
+ * have no DOM, so the element-crop and full-page-stitch canvas work runs in the
+ * offscreen document. `<canvas>` has NO renderer in jsdom — so the pure
+ * planning/parsing helpers are extracted and unit-tested directly, while the
+ * canvas compositing is exercised only in a real browser. Every canvas access is
+ * guarded so importing this module never throws in a headless/jsdom environment.
  *
  * Unlike the snapshot/action injected scripts, the functions here are NOT
  * stringified into the page world: `captureVisibleTab` and canvas work happen in

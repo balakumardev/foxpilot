@@ -189,8 +189,12 @@ if ((window as any).__bcmcpContentScriptLoaded) {
     while ((window as any).find(queryPhrase, false, false, true)) {
       count++;
     }
-    // window.find highlights the last found match. We don't have a way to
-    // highlight all matches like browser.find.highlightResults.
+    // LIMITATION: window.find leaves only the LAST match selected/highlighted —
+    // Chrome has no equivalent of Firefox's browser.find.highlightResults that
+    // highlights every match. `count` is accurate (we iterate every match), but
+    // visually only the final occurrence is highlighted. Approximating
+    // "highlight all" would require wrapping matches in <mark> spans and
+    // restoring the DOM afterward; deferred as low priority.
     return { count };
   }
 
@@ -226,15 +230,6 @@ if ((window as any).__bcmcpContentScriptLoaded) {
     };
 
     return runHumanInput(args, deps);
-  }
-
-  // Run native input action (fallback to humanized if needed).
-  async function runNativeInputAction(
-    args: Parameters<typeof performInputAction>[1]
-  ): Promise<StepResult> {
-    // In the content script, we don't have access to the native sidecar.
-    // The service worker should handle native input. This is a fallback.
-    return { ok: false, error: "Native input not available in content script" };
   }
 
   // Message listener

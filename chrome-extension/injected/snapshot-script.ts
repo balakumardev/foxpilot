@@ -3,9 +3,8 @@
  *
  * CRITICAL: `buildSnapshot` is used in TWO ways:
  *   (a) Imported and unit-tested directly in jsdom.
- *   (b) Stringified via `buildSnapshot.toString()` and injected into the page
- *       with `browser.tabs.executeScript`, where it runs in the page's own
- *       JS world with no access to this module.
+ *   (b) Injected into the page world via `chrome.scripting.executeScript`
+ *       (func/args), where it runs with no access to this module.
  *
  * Because of (b) the function MUST be fully self-contained: it may NOT
  * reference any imports, module-scope variables, or sibling functions. Every
