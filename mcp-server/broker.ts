@@ -35,6 +35,7 @@ import { createSignature, verifySignature } from "./signing";
 import { getCommandTimeout } from "./timeouts";
 
 const DEFAULT_IDLE_TIMEOUT_MS = 5 * 60 * 1000;
+const DEFAULT_HANDSHAKE_TIMEOUT_MS = 10 * 1000;
 
 /** A connected browser extension and the transport it arrived on. */
 interface ExtensionConn {
@@ -43,6 +44,7 @@ interface ExtensionConn {
   transport: "ws" | "longpoll";
   type: "chrome" | "firefox";
   label: string;
+  /** Reserved for the Task 4 `list-browsers` and Task 6 liveness consumers (written now, read later). */
   lastSeen: number;
 }
 
@@ -53,6 +55,13 @@ export interface BrokerServerOptions {
   /** Called once the broker has been idle (no clients, no extension) for idleTimeoutMs. */
   onIdle?: () => void;
   idleTimeoutMs?: number;
+  /**
+   * How long a freshly-accepted `/extension` socket may stay anonymous (no valid
+   * signed hello) before the broker closes it. Bounds the unauthenticated
+   * resource pin a silent peer could otherwise hold open. Defaults to
+   * DEFAULT_HANDSHAKE_TIMEOUT_MS.
+   */
+  handshakeTimeoutMs?: number;
 }
 
 /** Distinguishes the extension's raw (unsigned) error frame from a signed response envelope. */
@@ -71,6 +80,7 @@ export class BrokerServer {
   private readonly secret: string;
   private readonly onIdle?: () => void;
   private readonly idleTimeoutMs: number;
+  private readonly handshakeTimeoutMs: number;
 
   private readonly httpServer: http.Server;
   private readonly wss: WebSocketServer;
@@ -91,6 +101,8 @@ export class BrokerServer {
     this.secret = opts.secret;
     this.onIdle = opts.onIdle;
     this.idleTimeoutMs = opts.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS;
+    this.handshakeTimeoutMs =
+      opts.handshakeTimeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS;
 
     this.core = new BrokerCore({
       sendToExtension: (req) => this.sendToExtension(req),
@@ -140,6 +152,11 @@ export class BrokerServer {
     this.httpServer.close();
   }
 
+  /** The resolved anonymous-socket handshake timeout (ms); useful for tests. */
+  getHandshakeTimeoutMs(): number {
+    return this.handshakeTimeoutMs;
+  }
+
   /** The actually-bound port (useful when constructed with port 0 for tests). */
   getPort(): number {
     const addr = this.httpServer.address();
@@ -164,12 +181,43 @@ export class BrokerServer {
     this.clearIdleTimer();
     let conn: ExtensionConn | null = null;
 
+    // While the socket is anonymous (conn === null) it pins a file descriptor
+    // and, because every connect calls clearIdleTimer(), suppresses idle
+    // shutdown. A peer that connects and sends nothing must not hold that open
+    // forever — reachable off-host under CONTAINERIZED — so bound the anonymous
+    // window with a one-shot timer that terminates a still-anonymous socket.
+    let handshakeTimer: ReturnType<typeof setTimeout> | null = setTimeout(
+      () => {
+        handshakeTimer = null;
+        if (conn === null) {
+          try {
+            ws.terminate();
+          } catch {
+            /* ignore */
+          }
+        }
+      },
+      this.handshakeTimeoutMs
+    );
+    (handshakeTimer as { unref?: () => void }).unref?.();
+    const clearHandshakeTimer = () => {
+      if (handshakeTimer) {
+        clearTimeout(handshakeTimer);
+        handshakeTimer = null;
+      }
+    };
+
     ws.on("message", (data) => {
       const raw = data.toString();
       if (!conn) {
         conn = this.tryRegisterHello(raw, ws);
-        if (!conn) {
-          // Invalid/absent hello — never admit; close without echoing.
+        if (conn) {
+          // Registered: the socket is no longer anonymous, disarm the timer.
+          clearHandshakeTimer();
+        } else {
+          // Invalid/absent hello — never admit; close without echoing. Leave the
+          // handshake timer armed (the close handler clears it) in case the peer
+          // keeps the socket open after the rejected frame.
           try {
             ws.close();
           } catch {
@@ -183,12 +231,15 @@ export class BrokerServer {
     });
 
     ws.on("close", () => {
+      // A normally-closing anonymous socket must not leave a dangling timer.
+      clearHandshakeTimer();
       if (conn) {
         this.removeExtension(conn.browserId, ws);
       }
       this.maybeScheduleIdle();
     });
     ws.on("error", () => {
+      clearHandshakeTimer();
       /* close handler will run */
     });
   }
@@ -334,6 +385,11 @@ export class BrokerServer {
         return true;
       }
     }
+    // A pure long-poll deployment still routes tools via the sink in
+    // sendToExtension()/onClientMessage(); the `extensions.size > 0` clause is
+    // intentional — the long-poll leg gets its hello/registry entry in Task 5,
+    // so until then a sink alone (size 0) reports not-connected here. Do not
+    // "simplify" this to `!!this.longPollSink`.
     return !!this.longPollSink && this.extensions.size > 0;
   }
 
