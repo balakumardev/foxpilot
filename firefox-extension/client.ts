@@ -100,6 +100,25 @@ export class WebsocketClient implements ExtensionTransport {
     this.statusCallback = callback;
   }
 
+  /**
+   * Ask the broker to make THIS browser the active driver. Sends a signed
+   * { type:"select-active", browserId } frame on the extension->broker channel
+   * (symmetric to the hello); the broker verifies the signature, sets
+   * activeBrowserId, and pushes the new ACTIVE/STANDBY state to every browser.
+   */
+  public async sendSelectActive(browserId: string): Promise<void> {
+    if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
+      console.error("Socket not open; cannot select active");
+      return;
+    }
+    const payload = { type: "select-active", browserId };
+    const signature = await getMessageSignature(
+      JSON.stringify(payload),
+      this.secret
+    );
+    this.socket.send(JSON.stringify({ payload, signature }));
+  }
+
   private startReconnectTimer(): void {
     this.reconnectTimer = window.setInterval(() => {
       if (this.socket && this.socket.readyState === WebSocket.CONNECTING) {

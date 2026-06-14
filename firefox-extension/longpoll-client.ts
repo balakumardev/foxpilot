@@ -45,6 +45,21 @@ export class LongPollClient implements ExtensionTransport {
     this.statusCallback = callback;
   }
 
+  /**
+   * Ask the broker to make THIS browser the active driver. POSTs a signed
+   * { type:"select-active", browserId } frame to /respond (same ingest path as
+   * the hello); the broker verifies it, sets activeBrowserId, and pushes the
+   * new ACTIVE/STANDBY state back on the next poll batch.
+   */
+  async sendSelectActive(browserId: string): Promise<void> {
+    const payload = { type: "select-active", browserId };
+    const signature = await getMessageSignature(
+      JSON.stringify(payload),
+      this.secret
+    );
+    await this.post(JSON.stringify({ payload, signature }));
+  }
+
   private baseUrl(): string {
     return `http://localhost:${this.port}`;
   }
