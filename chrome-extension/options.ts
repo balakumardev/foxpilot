@@ -120,12 +120,14 @@ async function saveSecret() {
     secretDisplay.textContent = value;
     secretDisplay.style.color = "";
     copyButton.disabled = false;
-    statusElement.textContent = "Secret saved. Reload the extension to apply.";
+    statusElement.textContent = "Secret saved — reloading…";
     statusElement.style.color = "#4caf50";
-    setTimeout(() => {
-      statusElement.textContent = "";
-      statusElement.style.color = "";
-    }, 3000);
+    // Reload the extension so the new secret actually takes effect: live
+    // clients (ports/long-poll/WS) capture the secret at construction and keep
+    // signing with the OLD one until reloaded, so every frame — including new
+    // hellos — would silently fail broker verification. Matches the ports and
+    // transport save handlers.
+    browser.runtime.reload();
   } catch (error) {
     console.error("Error saving secret:", error);
     statusElement.textContent = "Failed to save secret";

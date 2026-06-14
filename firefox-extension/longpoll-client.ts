@@ -74,6 +74,11 @@ export class LongPollClient implements ExtensionTransport {
           { signal: this.abort.signal }
         );
         if (!res.ok) {
+          // Connection considered dropped: the broker's stale timer may have
+          // deleted our long-poll registry entry (onLongPollExtensionGone),
+          // which only a hello POST recreates. Re-arm the hello so the next
+          // iteration re-registers this browser before resuming polling.
+          this.helloSent = false;
           await this.delay(RECONNECT_INTERVAL);
           continue;
         }
@@ -101,6 +106,12 @@ export class LongPollClient implements ExtensionTransport {
         if (this.stopped) {
           break;
         }
+        // A failed poll round-trip means the connection dropped; the broker may
+        // have stale-dropped our registry entry. Re-arm the hello so the next
+        // iteration re-POSTs it and re-registers this browser before polling
+        // resumes. A re-hello on a transient blip is harmless (registerExtension
+        // just re-registers the same browserId).
+        this.helloSent = false;
         await this.delay(RECONNECT_INTERVAL);
       }
     }
