@@ -7,7 +7,7 @@ import { getConfig, generateSecret, getTransport } from "./extension-config";
 import { initConsoleCapture } from "./console-capture";
 import { initNetworkCapture } from "./network-capture";
 import { initEmulate } from "./emulate";
-import { initKeepalive, KeepaliveClient } from "./keepalive";
+import { initKeepalive } from "./keepalive";
 
 // Per-port client registry so a service-worker respawn that re-runs the
 // bootstrap does not create duplicate clients for the same port.
@@ -86,9 +86,9 @@ initExtension()
 
     // Keep the service worker's transports alive across MV3 idle timeouts. The
     // client list is read fresh each tick from the per-port registry.
-    initKeepalive(() =>
-      Array.from(clientsByPort.values()) as unknown as KeepaliveClient[]
-    );
+    // `ExtensionTransport` structurally satisfies `KeepaliveClient`, so the
+    // compiler enforces every transport implements `isClosed`/`connect`/`ping`.
+    initKeepalive(() => Array.from(clientsByPort.values()));
 
     console.log("Browser extension initialized");
   })

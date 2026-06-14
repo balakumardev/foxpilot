@@ -14,4 +14,9 @@ export interface ExtensionTransport {
   sendResourceToServer(resource: ExtensionMessage): Promise<void>;
   sendErrorToServer(correlationId: string, errorMessage: string): Promise<void>;
   disconnect(): void;
+  // Keepalive surface (consumed by `keepalive.ts` on each MV3 alarm wake). Both
+  // transports must implement these so the SW keepalive is type-safe and future
+  // transports are compiler-checked rather than cast around.
+  isClosed(): boolean;
+  ping(): void;
 }
