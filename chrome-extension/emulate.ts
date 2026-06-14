@@ -1,11 +1,13 @@
 /**
  * Background-side device/UA emulation support for Chrome MV3.
  *
- * In Chrome MV3 service workers, blocking webRequest is not available,
- * so we cannot rewrite the User-Agent request header on the wire.
- * The page-world navigator.userAgent shim (injected by the message handler)
- * still works and changes what the PAGE reads, but the server-visible
- * User-Agent header remains unchanged.
+ * Blocking webRequest is unavailable in MV3 service workers, so we rewrite the
+ * wire User-Agent request header via declarativeNetRequest session rules
+ * instead (one modifyHeaders rule per tab; see buildUserAgentRule /
+ * applyUserAgentRule below). This makes the server-visible User-Agent header
+ * match the emulated value. The page-world navigator.userAgent shim (injected
+ * by the message handler) covers what the PAGE reads in JS, so the two stay
+ * consistent.
  *
  * We keep the per-tab UA map for reference and the tab removal cleanup.
  */

@@ -621,7 +621,7 @@ export class BrowserAPI {
   async getNetworkRequests(
     tabId: number,
     opts?: { filter?: string; limit?: number; includeBody?: boolean }
-  ): Promise<NetworkRecord[]> {
+  ): Promise<{ requests: NetworkRecord[]; bodyCaptureSupported?: boolean }> {
     const message = await this.sendTool<NetworkRequestsExtensionMessage>({
       cmd: "get-network-requests",
       tabId,
@@ -629,7 +629,10 @@ export class BrowserAPI {
       limit: opts?.limit,
       includeBody: opts?.includeBody,
     });
-    return message.requests;
+    return {
+      requests: message.requests,
+      bodyCaptureSupported: message.bodyCaptureSupported,
+    };
   }
 }
 

@@ -16,11 +16,6 @@ const INFLIGHT_CAP = 1000;
 const buffers = new Map<number, NetworkRecord[]>();
 const inFlight = new Map<string, NetworkRecord>();
 const recordTabId = new Map<string, number>();
-let bodyCaptureEnabled = false;
-
-export function setBodyCaptureEnabled(enabled: boolean): void {
-  bodyCaptureEnabled = enabled;
-}
 
 interface WebRequestDetails {
   requestId: string;

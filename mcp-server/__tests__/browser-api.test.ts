@@ -94,6 +94,26 @@ describe("BrowserAPI over the broker", () => {
               ],
             },
           };
+        case "get-network-requests":
+          return {
+            payload: {
+              resource: "network-requests",
+              correlationId: req.correlationId,
+              requests: [
+                {
+                  requestId: "r1",
+                  url: "https://a.com/api",
+                  method: "GET",
+                  type: "xmlhttprequest",
+                  timeStamp: 1,
+                  statusCode: 200,
+                },
+              ],
+              // Mirror the Chrome MV3 extension, which sets this to false when
+              // bodies were requested but cannot be captured.
+              bodyCaptureSupported: false,
+            },
+          };
         case "find-highlight":
           return { error: "boom" };
         default:
@@ -132,6 +152,17 @@ describe("BrowserAPI over the broker", () => {
       { level: "log", text: "hello", timestamp: 1 },
       { level: "error", text: "boom", timestamp: 2 },
     ]);
+  });
+
+  it("surfaces bodyCaptureSupported from the network-requests reply", async () => {
+    const result = await api.getNetworkRequests(1, { includeBody: true });
+    expect(result.bodyCaptureSupported).toBe(false);
+    expect(result.requests).toHaveLength(1);
+    expect(result.requests[0]).toMatchObject({
+      url: "https://a.com/api",
+      method: "GET",
+      statusCode: 200,
+    });
   });
 
   it("propagates an extension error as a rejection", async () => {
