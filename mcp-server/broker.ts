@@ -196,6 +196,17 @@ export class BrokerServer {
       return;
     }
 
+    // Extension keepalive frame from `chrome-extension/client.ts ping()`, sent
+    // on each SW alarm wake to keep the socket warm. Nothing to do server-side;
+    // recognized here so it isn't logged as a malformed envelope below.
+    if (
+      decoded &&
+      typeof decoded === "object" &&
+      (decoded as { type?: unknown }).type === "ping"
+    ) {
+      return;
+    }
+
     // Error frames are sent raw (unsigned), matching the existing protocol.
     if (isExtensionErrorFrame(decoded)) {
       this.core.handleExtensionError(decoded);

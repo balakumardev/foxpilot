@@ -146,8 +146,9 @@ export class WebsocketClient implements ExtensionTransport {
   }
 
   /**
-   * Best-effort liveness ping so the broker observes the connection on each
-   * alarm wake. Silent no-op if the socket is not open.
+   * Sends a lightweight keepalive frame on each alarm wake so the socket stays
+   * warm. The broker recognizes and silently ignores this frame (it does not
+   * track liveness from it). Silent no-op if the socket is not open.
    */
   public ping(): void {
     if (this.socket && this.socket.readyState === WebSocket.OPEN) {
