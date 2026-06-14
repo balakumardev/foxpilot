@@ -60,6 +60,9 @@ let captureId: string | null = null;
 let registering = false;
 let desiredRegistered = false;
 
+const MAIN_ID = "bcmcp-console-capture-main";
+const BRIDGE_ID = "bcmcp-console-capture-bridge";
+
 export async function registerCaptureScript(): Promise<void> {
   desiredRegistered = true;
   if (captureId || registering) {
@@ -67,17 +70,29 @@ export async function registerCaptureScript(): Promise<void> {
   }
   registering = true;
   try {
-    const id = "bcmcp-console-capture";
     await browser.scripting.registerContentScripts([
       {
-        id,
+        id: MAIN_ID,
         matches: ["<all_urls>"],
         runAt: "document_start",
-        js: ["dist/console-capture-content.js"],
+        js: ["dist/console-capture-main.js"],
+        allFrames: true,
+        world: "MAIN",
+      },
+      {
+        id: BRIDGE_ID,
+        matches: ["<all_urls>"],
+        runAt: "document_start",
+        js: ["dist/console-capture-bridge.js"],
         allFrames: true,
       },
     ]);
-    captureId = id;
+    captureId = MAIN_ID;
+    // If automation mode flipped OFF while we were awaiting registration, undo
+    // it now so we don't leave the scripts injected (parity with Firefox).
+    if (!desiredRegistered) {
+      void unregisterCaptureScript();
+    }
   } catch (error) {
     console.error("console-capture: failed to register capture script:", error);
   } finally {
@@ -93,7 +108,9 @@ export async function unregisterCaptureScript(): Promise<void> {
     return;
   }
   try {
-    await browser.scripting.unregisterContentScripts({ ids: [id] });
+    await browser.scripting.unregisterContentScripts({
+      ids: [MAIN_ID, BRIDGE_ID],
+    });
   } catch (error) {
     console.error("console-capture: failed to unregister capture script:", error);
   }

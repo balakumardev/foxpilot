@@ -1,6 +1,12 @@
 /**
- * Content script that wraps console.* and window errors in the page world.
- * Injected at document_start for all URLs via chrome.scripting.registerContentScripts.
+ * MAIN-world console + error wrapper for Chrome MV3.
+ *
+ * Registered with world:"MAIN" at document_start so it wraps the PAGE's own
+ * console.* and error events (not the isolated content-script world's). The
+ * MAIN world has no chrome.runtime, so it cannot message the background
+ * directly — it posts a window message that the isolated bridge
+ * (console-capture-bridge.ts) forwards. Keep this file free of any chrome.*
+ * usage.
  */
 
 (function () {
@@ -90,21 +96,3 @@
     /* never throw out of injected content script */
   }
 })();
-
-// Bridge page-world messages to the background.
-window.addEventListener("message", function (e) {
-  if (e.source === window && e.data && e.data.__bcmcp_console) {
-    try {
-      chrome.runtime.sendMessage({
-        type: "bcmcp-console-entry",
-        entry: {
-          level: e.data.__bcmcp_console.level,
-          text: e.data.__bcmcp_console.text,
-          timestamp: Date.now(),
-        },
-      });
-    } catch (err) {
-      /* ignore */
-    }
-  }
-});
