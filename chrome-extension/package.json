@@ -1,0 +1,31 @@
+{
+  "name": "chrome-extension",
+  "version": "1.0.3",
+  "main": "dist/background.js",
+  "scripts": {
+    "build": "esbuild background.ts --bundle --outfile=dist/background.js --format=iife && esbuild options.ts --bundle --outfile=dist/options.js --format=iife && esbuild content-script.ts --bundle --outfile=dist/content-script.js --format=iife && esbuild console-capture-content.ts --bundle --outfile=dist/console-capture-content.js --format=iife && esbuild offscreen.ts --bundle --outfile=dist/offscreen.js --format=iife",
+    "test": "jest"
+  },
+  "license": "MIT",
+  "description": "FoxPilot Chrome Extension",
+  "author": "Bala Kumar <mail@balakumar.dev> (https://github.com/balakumardev)",
+  "homepage": "https://github.com/balakumardev/foxpilot#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/balakumardev/foxpilot.git"
+  },
+  "devDependencies": {
+    "@foxpilot/common": "../common",
+    "@types/chrome": "^0.1.43",
+    "@types/jest": "^29.5.14",
+    "@types/webextension-polyfill": "^0.12.3",
+    "esbuild": "0.25.1",
+    "jest": "^30.0.4",
+    "jest-environment-jsdom": "^30.0.4",
+    "nx": "20.6.0",
+    "ts-jest": "^29.4.0",
+    "typescript": "^5.8.2",
+    "webextension-polyfill": "^0.12.0"
+  },
+  "nx": {}
+}

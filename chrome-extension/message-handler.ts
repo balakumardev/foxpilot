@@ -1,0 +1,1071 @@
+import type { ServerMessageRequest } from "@foxpilot/common";
+import { ExtensionTransport } from "./transport";
+import {
+  isCommandAllowed,
+  isDomainInDenyList,
+  COMMAND_TO_TOOL_ID,
+  addAuditLogEntry,
+  requiresAutomationMode,
+  isAutomationModeEnabled,
+  getInputRealismMode,
+  getSidecarPort,
+  getSecret,
+} from "./extension-config";
+import { setTabUserAgent } from "./emulate";
+import { NativeInputClient } from "./native-input-client";
+import { NativeGesture, NativeWaypoint, NativeInputResponse } from "@foxpilot/common";
+import {
+  cropElementFromCapture,
+  mimeTypeForFormat,
+  planFullPageSteps,
+  stitchFullPage,
+  stripDataUrlPrefix,
+  type ImageFormat,
+} from "./injected/screenshot-script";
+import { getConsoleEntries } from "./console-capture";
+import { getNetworkRequests, setBodyCaptureEnabled } from "./network-capture";
+import { Point, mousePath, typingPlan } from "./humanize/motion-model";
+
+const sleep = (ms: number): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, ms));
+
+let evalKeyCounter = 0;
+const EVAL_TIMEOUT_MS = 10000;
+const UPLOAD_TIMEOUT_MS = 15000;
+const PAGE_SETUP_TIMEOUT_MS = 5000;
+
+function isNavigableUrl(url: string): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return false;
+  }
+  if (parsed.protocol === "https:") {
+    return true;
+  }
+  if (parsed.protocol === "http:") {
+    return (
+      parsed.hostname === "localhost" ||
+      parsed.hostname === "127.0.0.1" ||
+      parsed.hostname === "[::1]"
+    );
+  }
+  return false;
+}
+
+// Ensure content script is loaded in a tab, then send a message.
+async function sendMessageToTab(tabId: number, message: any): Promise<any> {
+  const checkResult = (result: any): any => {
+    if (result && typeof result === "object" && result.error && result.ok === false) {
+      throw new Error(result.error);
+    }
+    return result;
+  };
+  try {
+    const result = await browser.tabs.sendMessage(tabId, message);
+    return checkResult(result);
+  } catch (e: any) {
+    // If the content script is not loaded, inject it and retry.
+    if (e.message && (e.message.includes("Receiving end does not exist") || e.message.includes("Could not establish connection"))) {
+      await browser.scripting.executeScript({
+        target: { tabId },
+        files: ["dist/content-script.js"],
+      });
+      await sleep(100);
+      const result = await browser.tabs.sendMessage(tabId, message);
+      return checkResult(result);
+    }
+    throw e;
+  }
+}
+
+// Offscreen document for screenshot canvas operations.
+let offscreenReady = false;
+let creatingOffscreen = false;
+
+async function ensureOffscreen(): Promise<void> {
+  if (offscreenReady) return;
+  if (creatingOffscreen) {
+    while (creatingOffscreen) {
+      await sleep(100);
+    }
+    return;
+  }
+  creatingOffscreen = true;
+  try {
+    await (chrome as any).offscreen.createDocument({
+      url: browser.runtime.getURL("offscreen.html"),
+      reasons: ["DOM_PARSER", "LOCAL_STORAGE", "WORKERS"],
+      justification: "Screenshot compositing requires canvas and Image DOM APIs.",
+    });
+    offscreenReady = true;
+  } catch (e: any) {
+    if (e.message && e.message.includes("Only one")) {
+      offscreenReady = true;
+    } else {
+      throw e;
+    }
+  } finally {
+    creatingOffscreen = false;
+  }
+}
+
+export class MessageHandler {
+  private client: ExtensionTransport;
+  private cursorByTab: Map<number, Point> = new Map();
+  private nativeCursorByTab: Map<number, Point> = new Map();
+  private nativeClient: NativeInputClient | null = null;
+
+  constructor(client: ExtensionTransport) {
+    this.client = client;
+  }
+
+  public async handleDecodedMessage(req: ServerMessageRequest): Promise<void> {
+    if (requiresAutomationMode(req.cmd) && !(await isAutomationModeEnabled())) {
+      throw new Error(
+        `Command '${req.cmd}' requires Automation Mode, which is currently disabled. ` +
+          `Ask the user to enable Automation Mode in the FoxPilot extension's options page, then try again.`
+      );
+    }
+
+    const isAllowed = await isCommandAllowed(req.cmd);
+    if (!isAllowed) {
+      throw new Error(`Command '${req.cmd}' is disabled in extension settings`);
+    }
+
+    this.addAuditLogForReq(req).catch((error) => {
+      console.error("Failed to add audit log entry:", error);
+    });
+
+    switch (req.cmd) {
+      case "open-tab":
+        await this.openUrl(req.correlationId, req.url);
+        break;
+      case "close-tabs":
+        await this.closeTabs(req.correlationId, req.tabIds);
+        break;
+      case "get-tab-list":
+        await this.sendTabs(req.correlationId);
+        break;
+      case "get-browser-recent-history":
+        await this.sendRecentHistory(req.correlationId, req.searchQuery);
+        break;
+      case "get-tab-content":
+        await this.sendTabsContent(req.correlationId, req.tabId, req.offset);
+        break;
+      case "reorder-tabs":
+        await this.reorderTabs(req.correlationId, req.tabOrder);
+        break;
+      case "find-highlight":
+        await this.findAndHighlightText(req.correlationId, req.tabId, req.queryPhrase);
+        break;
+      case "group-tabs":
+        await this.groupTabs(
+          req.correlationId,
+          req.tabIds,
+          req.isCollapsed,
+          req.groupColor as any,
+          req.groupTitle
+        );
+        break;
+      case "take-snapshot":
+        await this.takeSnapshot(req.correlationId, req.tabId, req.verbose);
+        break;
+      case "navigate-tab":
+        await this.navigateTab(req.correlationId, req.tabId, req.url);
+        break;
+      case "navigate-page-history":
+        await this.navigatePageHistory(
+          req.correlationId,
+          req.tabId,
+          req.direction,
+          req.bypassCache
+        );
+        break;
+      case "select-tab":
+        await this.selectTab(req.correlationId, req.tabId);
+        break;
+      case "get-active-tab":
+        await this.getActiveTab(req.correlationId);
+        break;
+      case "wait-for-text":
+        await this.waitForText(
+          req.correlationId,
+          req.tabId,
+          req.text,
+          req.timeoutMs
+        );
+        break;
+      case "click-element":
+        await this.runInputAction(req.correlationId, req.tabId, {
+          action: "click",
+          uid: req.uid,
+          doubleClick: req.doubleClick,
+        });
+        break;
+      case "hover-element":
+        await this.runInputAction(req.correlationId, req.tabId, {
+          action: "hover",
+          uid: req.uid,
+        });
+        break;
+      case "fill-element":
+        await this.runInputAction(req.correlationId, req.tabId, {
+          action: "fill",
+          uid: req.uid,
+          value: req.value,
+        });
+        break;
+      case "fill-form":
+        await this.runInputAction(req.correlationId, req.tabId, {
+          action: "fill-form",
+          fields: req.fields,
+        });
+        break;
+      case "type-text":
+        await this.runInputAction(req.correlationId, req.tabId, {
+          action: "type",
+          text: req.text,
+          submit: req.submit,
+        });
+        break;
+      case "press-key":
+        await this.runInputAction(req.correlationId, req.tabId, {
+          action: "press-key",
+          key: req.key,
+          modifiers: req.modifiers,
+        });
+        break;
+      case "drag-element":
+        await this.runInputAction(req.correlationId, req.tabId, {
+          action: "drag",
+          fromUid: req.fromUid,
+          toUid: req.toUid,
+        });
+        break;
+      case "resize-window":
+        await this.resizeWindow(
+          req.correlationId,
+          req.tabId,
+          req.width,
+          req.height
+        );
+        break;
+      case "evaluate-script":
+        await this.evaluateScript(
+          req.correlationId,
+          req.tabId,
+          req.function,
+          req.args
+        );
+        break;
+      case "upload-file":
+        await this.uploadFile(
+          req.correlationId,
+          req.tabId,
+          req.uid,
+          req.filename,
+          req.mimeType,
+          req.base64
+        );
+        break;
+      case "take-screenshot":
+        await this.takeScreenshot(req.correlationId, req.tabId, {
+          fullPage: req.fullPage,
+          uid: req.uid,
+          format: req.format,
+        });
+        break;
+      case "handle-dialog":
+        await this.handleDialog(
+          req.correlationId,
+          req.tabId,
+          req.action,
+          req.promptText
+        );
+        break;
+      case "emulate":
+        await this.emulate(req.correlationId, req.tabId, {
+          geolocation: req.geolocation,
+          userAgent: req.userAgent,
+        });
+        break;
+      case "get-console-messages":
+        await this.getConsoleMessages(req.correlationId, req.tabId, req.limit);
+        break;
+      case "get-network-requests":
+        await this.getNetworkRequestsForTab(req.correlationId, req.tabId, {
+          filter: req.filter,
+          limit: req.limit,
+          includeBody: req.includeBody,
+        });
+        break;
+      default:
+        const _exhaustiveCheck: never = req;
+        console.error("Invalid message received:", req);
+    }
+  }
+
+  private async addAuditLogForReq(req: ServerMessageRequest) {
+    let contextUrl: string | undefined;
+    if ("url" in req && req.url) {
+      contextUrl = req.url;
+    }
+    if ("tabId" in req) {
+      try {
+        const tab = await browser.tabs.get(req.tabId);
+        contextUrl = tab.url;
+      } catch (error) {
+        console.error("Failed to get tab URL for audit log:", error);
+      }
+    }
+
+    const toolId = COMMAND_TO_TOOL_ID[req.cmd];
+    const auditEntry = {
+      toolId,
+      command: req.cmd,
+      timestamp: Date.now(),
+      url: contextUrl,
+    };
+
+    await addAuditLogEntry(auditEntry);
+  }
+
+  private async openUrl(correlationId: string, url: string): Promise<void> {
+    if (!url.startsWith("https://")) {
+      console.error("Invalid URL:", url);
+      throw new Error("Invalid URL");
+    }
+
+    if (await isDomainInDenyList(url)) {
+      throw new Error("Domain in user defined deny list");
+    }
+
+    const tab = await browser.tabs.create({ url });
+    await this.client.sendResourceToServer({
+      resource: "opened-tab-id",
+      correlationId,
+      tabId: tab.id,
+    });
+  }
+
+  private async closeTabs(
+    correlationId: string,
+    tabIds: number[]
+  ): Promise<void> {
+    await browser.tabs.remove(tabIds);
+    await this.client.sendResourceToServer({
+      resource: "tabs-closed",
+      correlationId,
+    });
+  }
+
+  private async sendTabs(correlationId: string): Promise<void> {
+    const tabs = await browser.tabs.query({});
+    await this.client.sendResourceToServer({
+      resource: "tabs",
+      correlationId,
+      tabs,
+    });
+  }
+
+  private async sendRecentHistory(
+    correlationId: string,
+    searchQuery: string | null = null
+  ): Promise<void> {
+    const historyItems = await browser.history.search({
+      text: searchQuery ?? "",
+      maxResults: 200,
+      startTime: 0,
+    });
+    const filteredHistoryItems = historyItems.filter((item) => !!item.url);
+    await this.client.sendResourceToServer({
+      resource: "history",
+      correlationId,
+      historyItems: filteredHistoryItems,
+    });
+  }
+
+  private async checkForUrlPermission(url: string | undefined): Promise<void> {
+    if (url) {
+      const origin = new URL(url).origin;
+      const granted = await browser.permissions.contains({
+        origins: [`${origin}/*`],
+      });
+      if (!granted) {
+        const optionsUrl = browser.runtime.getURL("options.html");
+        const urlWithParams = `${optionsUrl}?requestUrl=${encodeURIComponent(url)}`;
+        await browser.tabs.create({ url: urlWithParams });
+        throw new Error(
+          `The user has not yet granted permission to access the domain "${origin}". A dialog is now being opened to request permission. If the user grants permission, you can try the request again.`
+        );
+      }
+    }
+  }
+
+  private async checkForGlobalPermission(permissions: string[]): Promise<void> {
+    const granted = await browser.permissions.contains({ permissions });
+    if (!granted) {
+      const optionsUrl = browser.runtime.getURL("options.html");
+      const urlWithParams = `${optionsUrl}?requestPermissions=${encodeURIComponent(
+        JSON.stringify(permissions)
+      )}`;
+      await browser.tabs.create({ url: urlWithParams });
+      throw new Error(
+        `The user has not yet granted permission for the following operations: ${permissions.join(
+          ", "
+        )}. A dialog is now being opened to request permission. If the user grants permission, you can try the request again.`
+      );
+    }
+  }
+
+  private async sendTabsContent(
+    correlationId: string,
+    tabId: number,
+    offset?: number
+  ): Promise<void> {
+    const tab = await browser.tabs.get(tabId);
+    if (tab.url && (await isDomainInDenyList(tab.url))) {
+      throw new Error(`Domain in tab URL is in the deny list`);
+    }
+    await this.checkForUrlPermission(tab.url);
+
+    const result = await sendMessageToTab(tabId, {
+      type: "getTabContent",
+      offset: Number(offset) || 0,
+    });
+
+    await this.client.sendResourceToServer({
+      resource: "tab-content",
+      tabId,
+      correlationId,
+      isTruncated: result.isTruncated,
+      fullText: result.fullText,
+      links: result.links,
+      totalLength: result.totalLength,
+    });
+  }
+
+  private async takeSnapshot(
+    correlationId: string,
+    tabId: number,
+    verbose?: boolean
+  ): Promise<void> {
+    const tab = await browser.tabs.get(tabId);
+    if (tab.url && (await isDomainInDenyList(tab.url))) {
+      throw new Error(`Domain in tab URL is in the deny list`);
+    }
+    await this.checkForUrlPermission(tab.url);
+
+    const result = await sendMessageToTab(tabId, {
+      type: "buildSnapshot",
+      options: { verbose: !!verbose },
+    });
+
+    await this.client.sendResourceToServer({
+      resource: "snapshot",
+      correlationId,
+      tabId,
+      snapshot: result.tree,
+      isTruncated: result.isTruncated,
+    });
+  }
+
+  private async runInputAction(
+    correlationId: string,
+    tabId: number,
+    args: any
+  ): Promise<void> {
+    const tab = await browser.tabs.get(tabId);
+    if (tab.url && (await isDomainInDenyList(tab.url))) {
+      throw new Error(`Domain in tab URL is in the deny list`);
+    }
+    await this.checkForUrlPermission(tab.url);
+
+    const mode = await getInputRealismMode();
+    let result: any;
+    if (mode === "off") {
+      result = await sendMessageToTab(tabId, {
+        type: "performInputAction",
+        args,
+      });
+    } else if (mode === "native") {
+      result = await this.runNativeInputAction(tabId, args);
+    } else {
+      result = await this.runHumanInputAction(tabId, args);
+    }
+
+    await this.client.sendResourceToServer({
+      resource: "action-result",
+      correlationId,
+      ok: result.ok,
+      error: result.error,
+    });
+  }
+
+  private async runHumanInputAction(tabId: number, args: any): Promise<any> {
+    const cursor = this.cursorByTab.get(tabId) || { x: 100, y: 100 };
+    const result = await sendMessageToTab(tabId, {
+      type: "runHumanInput",
+      args,
+      cursor,
+    });
+    if (result.ok && result.cursor) {
+      this.cursorByTab.set(tabId, result.cursor);
+    }
+    return result;
+  }
+
+  private async runNativeInputAction(tabId: number, args: any): Promise<any> {
+    if (args.action === "fill" || args.action === "fill-form") {
+      return this.runHumanInputAction(tabId, args);
+    }
+
+    const rng = Math.random;
+    const screenRect = async (uid: string) => {
+      const info = await sendMessageToTab(tabId, {
+        type: "readElementScreenRect",
+        uid,
+      });
+      return info;
+    };
+    const getCursor = (): Point => this.nativeCursorByTab.get(tabId) || { x: 200, y: 200 };
+    const pathFrom = (from: Point, to: Point): NativeWaypoint[] =>
+      mousePath(from, to, rng).map((s) => ({ x: s.x, y: s.y, delayMs: s.delayMs }));
+
+    let gesture: NativeGesture;
+    let landing: Point | null = null;
+
+    if (args.action === "click" || args.action === "hover") {
+      const info = await screenRect(args.uid);
+      if (!info) return this.runHumanInputAction(tabId, args);
+      const center: Point = {
+        x: info.screenX + info.width / 2,
+        y: info.screenY + info.height / 2,
+      };
+      const waypoints = pathFrom(getCursor(), center);
+      landing = center;
+      gesture =
+        args.action === "click"
+          ? { kind: "move-click", waypoints, button: "left", doubleClick: args.doubleClick }
+          : { kind: "move", waypoints };
+    } else if (args.action === "drag") {
+      const fromInfo = await screenRect(args.fromUid);
+      const toInfo = await screenRect(args.toUid);
+      if (!fromInfo || !toInfo) return this.runHumanInputAction(tabId, args);
+      const fromC: Point = {
+        x: fromInfo.screenX + fromInfo.width / 2,
+        y: fromInfo.screenY + fromInfo.height / 2,
+      };
+      const toC: Point = {
+        x: toInfo.screenX + toInfo.width / 2,
+        y: toInfo.screenY + toInfo.height / 2,
+      };
+      const from = pathFrom(getCursor(), fromC);
+      const to = pathFrom(fromC, toC);
+      landing = toC;
+      gesture = { kind: "drag", from, to };
+    } else if (args.action === "type") {
+      const keys = typingPlan(args.text, rng).map((k) => ({
+        char: k.char,
+        delayMs: k.delayMs,
+      }));
+      gesture = { kind: "type", keys };
+    } else if (args.action === "press-key") {
+      gesture = { kind: "key", key: args.key, modifiers: args.modifiers };
+    } else {
+      return this.runHumanInputAction(tabId, args);
+    }
+
+    let res: NativeInputResponse;
+    try {
+      const client = await this.getNativeClient();
+      res = await client.sendGesture(gesture);
+    } catch (e) {
+      res = { id: "", ok: false, error: String(e) };
+    }
+
+    if (!res.ok) {
+      return this.runHumanInputAction(tabId, args);
+    }
+
+    if (landing) this.nativeCursorByTab.set(tabId, landing);
+
+    if (args.action === "type" && args.submit) {
+      try {
+        const client = await this.getNativeClient();
+        await client.sendGesture({ kind: "key", key: "Enter" });
+      } catch (e) {
+        /* submit best-effort */
+      }
+    }
+
+    return { ok: true };
+  }
+
+  private async getNativeClient(): Promise<NativeInputClient> {
+    if (!this.nativeClient) {
+      const port = await getSidecarPort();
+      const secret = await getSecret();
+      this.nativeClient = new NativeInputClient(port, secret);
+    }
+    return this.nativeClient;
+  }
+
+  private async evaluateScript(
+    correlationId: string,
+    tabId: number,
+    functionSource: string,
+    args?: unknown[]
+  ): Promise<void> {
+    const tab = await browser.tabs.get(tabId);
+    if (tab.url && (await isDomainInDenyList(tab.url))) {
+      throw new Error(`Domain in tab URL is in the deny list`);
+    }
+    await this.checkForUrlPermission(tab.url);
+
+    const resultAttr = `data-bcmcp-result-${Date.now()}-${++evalKeyCounter}`;
+    const result = await sendMessageToTab(tabId, {
+      type: "evaluateScript",
+      functionSource,
+      args: args ?? [],
+      resultAttr,
+      timeoutMs: EVAL_TIMEOUT_MS,
+    });
+
+    await this.client.sendResourceToServer({
+      resource: "eval-result",
+      correlationId,
+      ok: result.ok,
+      value: result.value,
+      error: result.error,
+    });
+  }
+
+  private async uploadFile(
+    correlationId: string,
+    tabId: number,
+    uid: string,
+    filename: string,
+    mimeType: string,
+    base64: string
+  ): Promise<void> {
+    const tab = await browser.tabs.get(tabId);
+    if (tab.url && (await isDomainInDenyList(tab.url))) {
+      throw new Error(`Domain in tab URL is in the deny list`);
+    }
+    await this.checkForUrlPermission(tab.url);
+
+    const resultAttr = `data-bcmcp-result-${Date.now()}-${++evalKeyCounter}`;
+    const result = await sendMessageToTab(tabId, {
+      type: "uploadFile",
+      uid,
+      filename,
+      mimeType,
+      base64,
+      resultAttr,
+      timeoutMs: UPLOAD_TIMEOUT_MS,
+    });
+
+    await this.client.sendResourceToServer({
+      resource: "action-result",
+      correlationId,
+      ok: result.ok,
+      error: result.error,
+    });
+  }
+
+  private async handleDialog(
+    correlationId: string,
+    tabId: number,
+    action: "accept" | "dismiss",
+    promptText?: string
+  ): Promise<void> {
+    const tab = await browser.tabs.get(tabId);
+    if (tab.url && (await isDomainInDenyList(tab.url))) {
+      throw new Error(`Domain in tab URL is in the deny list`);
+    }
+    await this.checkForUrlPermission(tab.url);
+
+    const resultAttr = `data-bcmcp-result-${Date.now()}-${++evalKeyCounter}`;
+    const result = await sendMessageToTab(tabId, {
+      type: "handleDialog",
+      action,
+      promptText,
+      resultAttr,
+      timeoutMs: PAGE_SETUP_TIMEOUT_MS,
+    });
+
+    await this.client.sendResourceToServer({
+      resource: "action-result",
+      correlationId,
+      ok: result.ok,
+      error: result.error,
+    });
+  }
+
+  private async emulate(
+    correlationId: string,
+    tabId: number,
+    opts: {
+      geolocation?: { latitude: number; longitude: number; accuracy?: number };
+      userAgent?: string;
+    }
+  ): Promise<void> {
+    const tab = await browser.tabs.get(tabId);
+    if (tab.url && (await isDomainInDenyList(tab.url))) {
+      throw new Error(`Domain in tab URL is in the deny list`);
+    }
+    await this.checkForUrlPermission(tab.url);
+
+    if (opts.userAgent !== undefined) {
+      setTabUserAgent(tabId, opts.userAgent);
+    }
+
+    const resultAttr = `data-bcmcp-result-${Date.now()}-${++evalKeyCounter}`;
+    const result = await sendMessageToTab(tabId, {
+      type: "emulate",
+      geolocation: opts.geolocation,
+      userAgent: opts.userAgent,
+      resultAttr,
+      timeoutMs: PAGE_SETUP_TIMEOUT_MS,
+    });
+
+    await this.client.sendResourceToServer({
+      resource: "action-result",
+      correlationId,
+      ok: result.ok,
+      error: result.error,
+    });
+  }
+
+  private async takeScreenshot(
+    correlationId: string,
+    tabId: number,
+    opts: { fullPage?: boolean; uid?: string; format?: "png" | "jpeg" }
+  ): Promise<void> {
+    const tab = await browser.tabs.get(tabId);
+    if (tab.url && (await isDomainInDenyList(tab.url))) {
+      throw new Error(`Domain in tab URL is in the deny list`);
+    }
+    await this.checkForUrlPermission(tab.url);
+
+    const format: ImageFormat = opts.format === "jpeg" ? "jpeg" : "png";
+    await browser.tabs.update(tabId, { active: true });
+
+    let result: { mimeType: string; base64: string };
+    if (opts.uid) {
+      result = await this.captureElement(tabId, tab.windowId, opts.uid, format);
+    } else if (opts.fullPage) {
+      result = await this.captureFullPage(tabId, tab.windowId, format);
+    } else {
+      result = await this.captureViewport(tab.windowId, format);
+    }
+
+    await this.client.sendResourceToServer({
+      resource: "screenshot",
+      correlationId,
+      mimeType: result.mimeType,
+      base64: result.base64,
+    });
+  }
+
+  private async captureViewport(
+    windowId: number | undefined,
+    format: ImageFormat
+  ): Promise<{ mimeType: string; base64: string }> {
+    const dataUrl = await this.captureWindow(windowId, format);
+    const { base64 } = stripDataUrlPrefix(dataUrl);
+    return { mimeType: mimeTypeForFormat(format), base64 };
+  }
+
+  private async captureElement(
+    tabId: number,
+    windowId: number | undefined,
+    uid: string,
+    format: ImageFormat
+  ): Promise<{ mimeType: string; base64: string }> {
+    const rect = await sendMessageToTab(tabId, {
+      type: "readElementRect",
+      uid,
+    });
+    if (!rect) {
+      throw new Error(
+        `Element uid '${uid}' not found — take a fresh snapshot (uids are reassigned each snapshot).`
+      );
+    }
+    await sleep(100);
+    const dataUrl = await this.captureWindow(windowId, format);
+    await ensureOffscreen();
+    const result = await browser.runtime.sendMessage({
+      type: "cropElement",
+      dataUrl,
+      rect,
+      format,
+    });
+    return result as { mimeType: string; base64: string };
+  }
+
+  private async captureFullPage(
+    tabId: number,
+    windowId: number | undefined,
+    format: ImageFormat
+  ): Promise<{ mimeType: string; base64: string }> {
+    const dims = await sendMessageToTab(tabId, {
+      type: "readPageDimensions",
+    });
+    const offsets = planFullPageSteps(dims);
+    const captures: { offsetY: number; dataUrl: string }[] = [];
+    try {
+      for (const y of offsets) {
+        await sendMessageToTab(tabId, { type: "scrollTo", y });
+        await sleep(100);
+        const dataUrl = await this.captureWindow(windowId, format);
+        captures.push({ offsetY: y, dataUrl });
+      }
+    } finally {
+      await sendMessageToTab(tabId, {
+        type: "scrollTo",
+        y: dims.originalScrollY,
+      });
+    }
+    await ensureOffscreen();
+    const result = await browser.runtime.sendMessage({
+      type: "stitchFullPage",
+      captures,
+      dims: {
+        scrollWidth: dims.scrollWidth,
+        scrollHeight: dims.scrollHeight,
+        dpr: dims.dpr,
+      },
+      format,
+    });
+    return result as { mimeType: string; base64: string };
+  }
+
+  private async captureWindow(
+    windowId: number | undefined,
+    format: ImageFormat
+  ): Promise<string> {
+    const options = { format, quality: 90 } as any;
+    if (windowId != null) {
+      return await browser.tabs.captureVisibleTab(windowId, options);
+    }
+    return await browser.tabs.captureVisibleTab(options);
+  }
+
+  private async navigateTab(
+    correlationId: string,
+    tabId: number,
+    url: string
+  ): Promise<void> {
+    if (!isNavigableUrl(url)) {
+      throw new Error("Invalid URL (must be https, or http for localhost)");
+    }
+    if (await isDomainInDenyList(url)) {
+      throw new Error("Domain in user defined deny list");
+    }
+    await browser.tabs.update(tabId, { url });
+    await this.client.sendResourceToServer({
+      resource: "navigated",
+      correlationId,
+      tabId,
+      url,
+    });
+  }
+
+  private async navigatePageHistory(
+    correlationId: string,
+    tabId: number,
+    direction: "back" | "forward" | "reload",
+    bypassCache?: boolean
+  ): Promise<void> {
+    switch (direction) {
+      case "back":
+        await browser.tabs.goBack(tabId);
+        break;
+      case "forward":
+        await browser.tabs.goForward(tabId);
+        break;
+      case "reload":
+        await browser.tabs.reload(tabId, { bypassCache: !!bypassCache });
+        break;
+    }
+    await this.client.sendResourceToServer({
+      resource: "navigated",
+      correlationId,
+      tabId,
+    });
+  }
+
+  private async selectTab(
+    correlationId: string,
+    tabId: number
+  ): Promise<void> {
+    const tab = await browser.tabs.get(tabId);
+    await browser.tabs.update(tabId, { active: true });
+    if (tab.windowId != null) {
+      await browser.windows.update(tab.windowId, { focused: true });
+    }
+    await this.client.sendResourceToServer({
+      resource: "tab-selected",
+      correlationId,
+      tabId,
+    });
+  }
+
+  private async resizeWindow(
+    correlationId: string,
+    tabId: number,
+    width: number,
+    height: number
+  ): Promise<void> {
+    const tab = await browser.tabs.get(tabId);
+    if (tab.windowId != null) {
+      await browser.windows.update(tab.windowId, { width, height });
+    }
+    await this.client.sendResourceToServer({
+      resource: "action-result",
+      correlationId,
+      ok: true,
+    });
+  }
+
+  private async getActiveTab(correlationId: string): Promise<void> {
+    const tabs = await browser.tabs.query({
+      active: true,
+      currentWindow: true,
+    });
+    await this.client.sendResourceToServer({
+      resource: "active-tab",
+      correlationId,
+      tab: tabs[0] ?? null,
+    });
+  }
+
+  private async getConsoleMessages(
+    correlationId: string,
+    tabId: number,
+    limit?: number
+  ): Promise<void> {
+    const entries = getConsoleEntries(tabId, limit);
+    await this.client.sendResourceToServer({
+      resource: "console-messages",
+      correlationId,
+      entries,
+    });
+  }
+
+  private async getNetworkRequestsForTab(
+    correlationId: string,
+    tabId: number,
+    opts: { filter?: string; limit?: number; includeBody?: boolean }
+  ): Promise<void> {
+    if (opts.includeBody !== undefined) {
+      setBodyCaptureEnabled(opts.includeBody);
+    }
+    const requests = getNetworkRequests(tabId, {
+      filter: opts.filter,
+      limit: opts.limit,
+    });
+    await this.client.sendResourceToServer({
+      resource: "network-requests",
+      correlationId,
+      requests,
+    });
+  }
+
+  private async waitForText(
+    correlationId: string,
+    tabId: number,
+    text: string,
+    timeoutMs?: number
+  ): Promise<void> {
+    const tab = await browser.tabs.get(tabId);
+    if (tab.url && (await isDomainInDenyList(tab.url))) {
+      throw new Error(`Domain in tab URL is in the deny list`);
+    }
+    const deadline = Date.now() + (timeoutMs ?? 30000);
+    let found = false;
+    while (true) {
+      const result = await sendMessageToTab(tabId, {
+        type: "waitForText",
+        text,
+        timeoutMs: 500, // Short timeout per check, we handle the overall deadline
+      });
+      if (result.found) {
+        found = true;
+        break;
+      }
+      if (Date.now() >= deadline) {
+        break;
+      }
+      await sleep(300);
+    }
+    await this.client.sendResourceToServer({
+      resource: "wait-for-text-result",
+      correlationId,
+      found,
+    });
+  }
+
+  private async reorderTabs(
+    correlationId: string,
+    tabOrder: number[]
+  ): Promise<void> {
+    for (let newIndex = 0; newIndex < tabOrder.length; newIndex++) {
+      const tabId = tabOrder[newIndex];
+      await browser.tabs.move(tabId, { index: newIndex });
+    }
+    await this.client.sendResourceToServer({
+      resource: "tabs-reordered",
+      correlationId,
+      tabOrder,
+    });
+  }
+
+  private async findAndHighlightText(
+    correlationId: string,
+    tabId: number,
+    queryPhrase: string
+  ): Promise<void> {
+    const tab = await browser.tabs.get(tabId);
+    if (tab.url && (await isDomainInDenyList(tab.url))) {
+      throw new Error(`Domain in tab URL is in the deny list`);
+    }
+    await this.checkForGlobalPermission(["activeTab"]);
+
+    await browser.tabs.update(tabId, { active: true });
+    const result = await sendMessageToTab(tabId, {
+      type: "findHighlight",
+      queryPhrase,
+    });
+
+    await this.client.sendResourceToServer({
+      resource: "find-highlight-result",
+      correlationId,
+      noOfResults: result.count,
+    });
+  }
+
+  private async groupTabs(
+    correlationId: string,
+    tabIds: number[],
+    isCollapsed: boolean,
+    groupColor: any,
+    groupTitle: string
+  ): Promise<void> {
+    const groupId = await browser.tabs.group({ tabIds });
+    const tabGroup = await browser.tabGroups.update(groupId, {
+      collapsed: isCollapsed,
+      color: groupColor,
+      title: groupTitle,
+    });
+    await this.client.sendResourceToServer({
+      resource: "new-tab-group",
+      correlationId,
+      groupId: tabGroup.id,
+    });
+  }
+}

@@ -1,0 +1,36 @@
+{
+  "manifest_version": 3,
+  "name": "FoxPilot",
+  "version": "1.0.3",
+  "description": "An extension that lets a local MCP server drive Chrome: tabs, history, content, and opt-in page automation.",
+  "author": "Bala Kumar",
+  "homepage_url": "https://github.com/balakumardev/foxpilot",
+  "permissions": [
+    "tabs",
+    "history",
+    "storage",
+    "webRequest",
+    "scripting",
+    "tabGroups",
+    "activeTab"
+  ],
+  "host_permissions": [
+    "http://localhost/*",
+    "http://127.0.0.1/*",
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "dist/background.js"
+  },
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
+  },
+  "action": {
+    "default_title": "FoxPilot"
+  },
+  "offscreen": {
+    "reasons": ["DOM_PARSER", "LOCAL_STORAGE", "WORKERS"],
+    "justification": "Screenshot compositing requires canvas and Image DOM APIs not available in a service worker."
+  }
+}
