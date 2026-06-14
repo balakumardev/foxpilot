@@ -5,6 +5,7 @@ import type {
 } from "@foxpilot/common";
 import { getMessageSignature } from "./auth";
 import { ExtensionTransport } from "./transport";
+import { buildHello } from "./hello";
 
 const RECONNECT_INTERVAL = 2000; // 2 seconds
 
@@ -15,6 +16,7 @@ export class WebsocketClient implements ExtensionTransport {
   private reconnectTimer: number | null = null;
   private connectionAttempts: number = 0;
   private messageCallback: ((data: ServerMessageRequest) => void) | null = null;
+  private statusCallback: ((active: boolean) => void) | null = null;
 
   constructor(port: number, secret: string) {
     this.port = port;
@@ -28,9 +30,16 @@ export class WebsocketClient implements ExtensionTransport {
     // browser connection and fans many MCP-client sessions in/out of it.
     this.socket = new WebSocket(`ws://localhost:${this.port}/extension`);
 
-    this.socket.addEventListener("open", () => {
+    this.socket.addEventListener("open", async () => {
       console.log("Connected to WebSocket server at port", this.port);
       this.connectionAttempts = 0;
+      // Identity first: the broker rejects any /extension socket whose first
+      // frame is not a valid signed hello, so send it before anything else.
+      try {
+        this.socket?.send(await buildHello(this.secret));
+      } catch (err) {
+        console.error("Failed to send hello:", err);
+      }
     });
 
     this.socket.addEventListener("close", () => {
@@ -43,9 +52,6 @@ export class WebsocketClient implements ExtensionTransport {
     });
 
     this.socket.addEventListener("message", async (event) => {
-      if (this.messageCallback === null) {
-        return;
-      }
       try {
         const signedMessage = JSON.parse(event.data);
         const messageSig = await getMessageSignature(
@@ -54,10 +60,22 @@ export class WebsocketClient implements ExtensionTransport {
         );
         if (messageSig.length === 0 || messageSig !== signedMessage.signature) {
           console.error("Invalid message signature");
-          await this.sendErrorToServer(
-            signedMessage.payload.correlationId,
-            "Invalid message signature - extension and server not in sync"
-          );
+          // Only error back for correlated command frames; status frames carry
+          // an empty correlationId and are not awaited by anyone.
+          if (signedMessage.payload?.correlationId) {
+            await this.sendErrorToServer(
+              signedMessage.payload.correlationId,
+              "Invalid message signature - extension and server not in sync"
+            );
+          }
+          return;
+        }
+        // active-status is a server push, not a command — route it separately.
+        if (signedMessage.payload?.cmd === "active-status") {
+          this.statusCallback?.(!!signedMessage.payload.active);
+          return;
+        }
+        if (this.messageCallback === null) {
           return;
         }
         this.messageCallback(signedMessage.payload);
@@ -76,6 +94,10 @@ export class WebsocketClient implements ExtensionTransport {
     callback: (data: ServerMessageRequest) => void
   ): void {
     this.messageCallback = callback;
+  }
+
+  public addStatusListener(callback: (active: boolean) => void): void {
+    this.statusCallback = callback;
   }
 
   private startReconnectTimer(): void {

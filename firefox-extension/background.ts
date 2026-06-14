@@ -33,9 +33,12 @@ function initClient(port: number, secret: string, transport: "websocket" | "long
 async function initExtension() {
   let config = await getConfig();
   if (!config.secret) {
-    console.log("No secret found, generating new one");
+    // First run: generate a default secret so there is something to copy.
+    // The user is expected to REPLACE this with the SAME secret used by the
+    // broker (EXTENSION_SECRET) and every other browser, via the options
+    // page (editable secret input). Open options so they can do that now.
+    console.log("No secret found, generating a default one");
     await generateSecret();
-    // Open the options page to allow the user to view the config:
     await browser.runtime.openOptionsPage();
     config = await getConfig();
   }
