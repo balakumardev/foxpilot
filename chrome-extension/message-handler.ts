@@ -11,7 +11,7 @@ import {
   getSidecarPort,
   getSecret,
 } from "./extension-config";
-import { setTabUserAgent } from "./emulate";
+import { applyUserAgentRule, clearUserAgentRule } from "./emulate";
 import { NativeInputClient } from "./native-input-client";
 import { NativeGesture, NativeWaypoint, NativeInputResponse } from "@foxpilot/common";
 import {
@@ -23,7 +23,7 @@ import {
   type ImageFormat,
 } from "./injected/screenshot-script";
 import { getConsoleEntries } from "./console-capture";
-import { getNetworkRequests, setBodyCaptureEnabled } from "./network-capture";
+import { getNetworkRequests } from "./network-capture";
 import { Point, mousePath, typingPlan } from "./humanize/motion-model";
 
 const sleep = (ms: number): Promise<void> =>
@@ -734,7 +734,11 @@ export class MessageHandler {
     await this.checkForUrlPermission(tab.url);
 
     if (opts.userAgent !== undefined) {
-      setTabUserAgent(tabId, opts.userAgent);
+      if (opts.userAgent === "") {
+        await clearUserAgentRule(tabId);
+      } else {
+        await applyUserAgentRule(tabId, opts.userAgent);
+      }
     }
 
     const resultAttr = `data-bcmcp-result-${Date.now()}-${++evalKeyCounter}`;
@@ -976,9 +980,6 @@ export class MessageHandler {
     tabId: number,
     opts: { filter?: string; limit?: number; includeBody?: boolean }
   ): Promise<void> {
-    if (opts.includeBody !== undefined) {
-      setBodyCaptureEnabled(opts.includeBody);
-    }
     const requests = getNetworkRequests(tabId, {
       filter: opts.filter,
       limit: opts.limit,
@@ -987,6 +988,10 @@ export class MessageHandler {
       resource: "network-requests",
       correlationId,
       requests,
+      // Response-body capture needs chrome.debugger and is out of scope in MV3.
+      // When the caller asked for bodies, say so honestly rather than silently
+      // returning records without a `body`.
+      ...(opts.includeBody ? { bodyCaptureSupported: false } : {}),
     });
   }
 

@@ -14,7 +14,8 @@
     "tabGroups",
     "activeTab",
     "offscreen",
-    "alarms"
+    "alarms",
+    "declarativeNetRequest"
   ],
   "host_permissions": [
     "http://localhost/*",
