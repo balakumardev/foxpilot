@@ -278,6 +278,61 @@ mcpServer.tool(
 );
 
 mcpServer.tool(
+  "list-browsers",
+  "List the browser extensions currently connected to the FoxPilot broker (Chrome and/or Firefox) and which one is the active driver. Use this when more than one browser is connected and a tool fails asking you to choose; then call select-browser with the browserId you want.",
+  {},
+  async () => {
+    const browsers = await browserApi.listBrowsers();
+    if (browsers.length === 0) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: "No browsers connected. Open Chrome or Firefox with the FoxPilot extension installed and connected (same secret).",
+          },
+        ],
+      };
+    }
+    return {
+      content: browsers.map((b) => ({
+        type: "text",
+        text: `${b.label} (${b.type}) id=${b.browserId}${
+          b.active ? " [active]" : ""
+        }${b.connected ? "" : " [disconnected]"}`,
+      })),
+    };
+  }
+);
+
+mcpServer.tool(
+  "select-browser",
+  "Choose which connected browser is the single active driver for all subsequent tools. Pass the browserId from list-browsers. Required when two or more browsers are connected; with only one connected it is implicitly active.",
+  { browserId: z.string() },
+  async ({ browserId }) => {
+    const result = await browserApi.selectBrowser(browserId);
+    if (!result.ok) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Could not select browser: ${result.error ?? "unknown error"}`,
+          },
+        ],
+        isError: true,
+      };
+    }
+    return {
+      content: [
+        {
+          type: "text",
+          text: `Active browser is now ${result.activeBrowserId}.`,
+        },
+      ],
+    };
+  }
+);
+
+mcpServer.tool(
   "wait-for-text",
   "Wait until the given text appears on a tab's page, polling until found or the timeout elapses (default 30000ms).",
   { tabId: z.number(), text: z.string(), timeoutMs: z.number().optional() },

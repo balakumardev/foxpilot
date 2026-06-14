@@ -272,7 +272,7 @@ describe("BrokerServer target resolution", () => {
 
   // NOTE: This case depends on the `select-browser` control handler, which
   // lands in Task 4. It is `.skip`ped here and un-skipped in Task 4 Step 7.
-  it.skip("disconnecting the active falls back to the lone remaining browser", async () => {
+  it("disconnecting the active falls back to the lone remaining browser", async () => {
     const a = await connectExtension(port, "chrome-1", "chrome", "Chrome");
     const b = await connectExtension(port, "firefox-1", "firefox", "Firefox");
 
@@ -307,6 +307,108 @@ describe("BrokerServer target resolution", () => {
     const res = await toolResult(client, "r1", { cmd: "get-tab-list" });
     expect(res).toMatchObject({ kind: "tool-result", requestId: "r1" });
     b.close();
+    client.close();
+  }, 10000);
+});
+
+describe("BrokerServer list/select control", () => {
+  let server: BrokerServer;
+  let port: number;
+
+  beforeEach(async () => {
+    server = new BrokerServer({ port: 0, host: "127.0.0.1", secret: SECRET });
+    await server.listen();
+    port = server.getPort();
+  });
+
+  afterEach(() => {
+    server.close();
+  });
+
+  async function control(
+    client: WebSocket,
+    requestId: string,
+    ctl: unknown
+  ): Promise<any> {
+    const p = nextMessage(client);
+    client.send(envelope({ kind: "control", requestId, control: ctl }));
+    return (await p).payload;
+  }
+
+  it("list-browsers returns both browsers with connected/active flags", async () => {
+    const a = await connectExtension(port, "chrome-1", "chrome", "Chrome");
+    const b = await connectExtension(port, "firefox-1", "firefox", "Firefox");
+    const client = new WebSocket(`ws://127.0.0.1:${port}/mcp`);
+    await waitOpen(client);
+
+    const res = await control(client, "c1", { control: "list-browsers" });
+    expect(res).toMatchObject({ kind: "control-result", requestId: "c1" });
+    expect(res.result.ok).toBe(true);
+    const ids = res.result.browsers.map((x: any) => x.browserId).sort();
+    expect(ids).toEqual(["chrome-1", "firefox-1"]);
+    expect(res.result.browsers.every((x: any) => x.connected)).toBe(true);
+    // No active set yet -> none flagged active.
+    expect(res.result.browsers.some((x: any) => x.active)).toBe(false);
+
+    a.close();
+    b.close();
+    client.close();
+  }, 10000);
+
+  it("select-browser sets active and subsequent tools route there", async () => {
+    const a = await connectExtension(port, "chrome-1", "chrome", "Chrome");
+    const b = await connectExtension(port, "firefox-1", "firefox", "Firefox");
+    let firefoxGot = false;
+    b.on("message", (data) => {
+      const env = JSON.parse(data.toString());
+      if (env.payload?.cmd !== "get-tab-list") return;
+      firefoxGot = true;
+      b.send(
+        envelope({
+          resource: "tabs",
+          correlationId: env.payload.correlationId,
+          tabs: [],
+        })
+      );
+    });
+    const client = new WebSocket(`ws://127.0.0.1:${port}/mcp`);
+    await waitOpen(client);
+
+    const sel = await control(client, "c1", {
+      control: "select-browser",
+      browserId: "firefox-1",
+    });
+    expect(sel.result.ok).toBe(true);
+    expect(sel.result.activeBrowserId).toBe("firefox-1");
+
+    const toolP = nextMessage(client);
+    client.send(
+      envelope({
+        kind: "tool",
+        requestId: "r1",
+        message: { cmd: "get-tab-list" },
+      })
+    );
+    const tool = await toolP;
+    expect(tool.payload).toMatchObject({ kind: "tool-result", requestId: "r1" });
+    expect(firefoxGot).toBe(true);
+
+    a.close();
+    b.close();
+    client.close();
+  }, 10000);
+
+  it("select-browser with an unknown id returns ok:false", async () => {
+    const a = await connectExtension(port, "chrome-1", "chrome", "Chrome");
+    const client = new WebSocket(`ws://127.0.0.1:${port}/mcp`);
+    await waitOpen(client);
+    const sel = await control(client, "c1", {
+      control: "select-browser",
+      browserId: "ghost",
+    });
+    expect(sel.result.ok).toBe(false);
+    expect(sel.result.error).toMatch(/not connected|unknown/i);
+    a.close();
     client.close();
   }, 10000);
 });

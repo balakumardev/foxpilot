@@ -29,6 +29,7 @@ import {
   BrokerClientFrame,
   BrokerControlResult,
   BrokerServerFrame,
+  BrowserInfo,
 } from "./broker-protocol";
 import type { HelloPayload } from "./broker-protocol";
 import { createSignature, verifySignature } from "./signing";
@@ -448,6 +449,24 @@ export class BrokerServer {
     return [...this.extensions.values()].map((c) => c.label).join(", ");
   }
 
+  /**
+   * Snapshot of the connected browsers for `list-browsers` / the status badge.
+   * `active` reflects the sole-connected implicit-active rule so this agrees
+   * with {@link resolveTarget} (a lone browser is active even with no explicit
+   * `activeBrowserId`).
+   */
+  private listBrowserInfo(): BrowserInfo[] {
+    const soleId =
+      this.extensions.size === 1 ? [...this.extensions.keys()][0] : null;
+    return [...this.extensions.values()].map((c) => ({
+      browserId: c.browserId,
+      label: c.label,
+      type: c.type,
+      connected: !!c.ws ? c.ws.readyState === WebSocket.OPEN : true,
+      active: c.browserId === this.activeBrowserId || c.browserId === soleId,
+    }));
+  }
+
   /** Placeholder; the real implementation lands in Task 6. */
   private broadcastActiveStatus(): void {
     /* implemented in Task 6 */
@@ -508,13 +527,35 @@ export class BrokerServer {
         case "release-lease":
           result = this.core.releaseLease(clientId, control.tabId);
           break;
-        default:
-          // list-browsers / select-browser are not handled until the broker
-          // gains its browser registry (Task 4). Fail loud for now.
-          result = {
-            ok: false,
-            error: `Unsupported control: ${control.control}`,
-          };
+        case "list-browsers":
+          result = { ok: true, browsers: this.listBrowserInfo() };
+          if (this.activeBrowserId) {
+            result.activeBrowserId = this.activeBrowserId;
+          }
+          break;
+        case "select-browser": {
+          const conn = this.extensions.get(control.browserId);
+          if (!conn) {
+            result = {
+              ok: false,
+              error: `Browser '${control.browserId}' is not connected.`,
+              browsers: this.listBrowserInfo(),
+            };
+          } else {
+            this.activeBrowserId = control.browserId;
+            this.broadcastActiveStatus();
+            result = {
+              ok: true,
+              activeBrowserId: this.activeBrowserId,
+              browsers: this.listBrowserInfo(),
+            };
+          }
+          break;
+        }
+        default: {
+          const _exhaustive: never = control;
+          result = { ok: false, error: "Unknown control" };
+        }
       }
       this.sendToClient(clientId, {
         kind: "control-result",
