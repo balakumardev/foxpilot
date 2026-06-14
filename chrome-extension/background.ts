@@ -3,7 +3,12 @@ import { WebsocketClient } from "./client";
 import { LongPollClient } from "./longpoll-client";
 import { ExtensionTransport } from "./transport";
 import { MessageHandler } from "./message-handler";
-import { getConfig, generateSecret, getTransport } from "./extension-config";
+import {
+  getConfig,
+  generateSecret,
+  getTransport,
+  setBrokerConnected,
+} from "./extension-config";
 import { initConsoleCapture } from "./console-capture";
 import { initNetworkCapture } from "./network-capture";
 import { initEmulate } from "./emulate";
@@ -23,6 +28,25 @@ let activeClientRef: ExtensionTransport | null = null;
 // state on load (via `get-active-status`) instead of waiting for the next push.
 let lastActiveStatus: boolean = false;
 
+// Tracks which broker ports currently have a live connection so the options
+// page can show real status. We mirror the aggregate (any port connected) into
+// storage, de-duping writes so a chatty long-poll loop doesn't thrash storage.
+const connectedPorts = new Set<number>();
+let lastBrokerConnected: boolean | null = null;
+
+function updateBrokerConnected(port: number, connected: boolean): void {
+  if (connected) {
+    connectedPorts.add(port);
+  } else {
+    connectedPorts.delete(port);
+  }
+  const anyConnected = connectedPorts.size > 0;
+  if (anyConnected !== lastBrokerConnected) {
+    lastBrokerConnected = anyConnected;
+    void setBrokerConnected(anyConnected);
+  }
+}
+
 function initClient(
   port: number,
   secret: string,
@@ -32,10 +56,12 @@ function initClient(
   if (existing) {
     return existing;
   }
+  const onStatusChange = (connected: boolean) =>
+    updateBrokerConnected(port, connected);
   const client: ExtensionTransport =
     transport === "longpoll"
-      ? new LongPollClient(port, secret)
-      : new WebsocketClient(port, secret);
+      ? new LongPollClient(port, secret, onStatusChange)
+      : new WebsocketClient(port, secret, onStatusChange);
   const messageHandler = new MessageHandler(client);
 
   client.connect();
@@ -138,6 +164,9 @@ initExtension()
     initEmulate();
 
     const transport = await getTransport();
+    // Start from a known-disconnected state; clients flip this as they connect.
+    await setBrokerConnected(false);
+    lastBrokerConnected = false;
     for (const port of portList) {
       initClient(port, secret, transport);
     }
