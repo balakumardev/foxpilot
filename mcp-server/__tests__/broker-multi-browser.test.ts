@@ -171,3 +171,142 @@ describe("BrokerServer multi-browser handshake", () => {
     firefox.close();
   }, 10000);
 });
+
+describe("BrokerServer target resolution", () => {
+  let server: BrokerServer;
+  let port: number;
+
+  beforeEach(async () => {
+    server = new BrokerServer({ port: 0, host: "127.0.0.1", secret: SECRET });
+    await server.listen();
+    port = server.getPort();
+  });
+
+  afterEach(() => {
+    server.close();
+    delete process.env.DEFAULT_BROWSER;
+  });
+
+  async function toolResult(
+    client: WebSocket,
+    requestId: string,
+    message: unknown
+  ): Promise<any> {
+    const p = nextMessage(client);
+    client.send(envelope({ kind: "tool", requestId, message }));
+    return (await p).payload;
+  }
+
+  it("0 browsers -> tool-error (no browser connected)", async () => {
+    const client = new WebSocket(`ws://127.0.0.1:${port}/mcp`);
+    await waitOpen(client);
+    const res = await toolResult(client, "r1", { cmd: "get-tab-list" });
+    expect(res.kind).toBe("tool-error");
+    expect(res.errorMessage).toMatch(/no browser|not connected/i);
+    client.close();
+  }, 10000);
+
+  it("1 browser -> routes to it implicitly", async () => {
+    const ext = await connectExtension(port, "only-1", "chrome", "Chrome");
+    ext.on("message", (data) => {
+      const env = JSON.parse(data.toString());
+      if (env.payload?.cmd !== "get-tab-list") return;
+      ext.send(
+        envelope({
+          resource: "tabs",
+          correlationId: env.payload.correlationId,
+          tabs: [],
+        })
+      );
+    });
+    const client = new WebSocket(`ws://127.0.0.1:${port}/mcp`);
+    await waitOpen(client);
+    const res = await toolResult(client, "r1", { cmd: "get-tab-list" });
+    expect(res).toMatchObject({ kind: "tool-result", requestId: "r1" });
+    ext.close();
+    client.close();
+  }, 10000);
+
+  it("2 browsers, none active -> fail-loud tool-error naming the labels", async () => {
+    const a = await connectExtension(port, "chrome-1", "chrome", "Chrome");
+    const b = await connectExtension(port, "firefox-1", "firefox", "Firefox");
+    const client = new WebSocket(`ws://127.0.0.1:${port}/mcp`);
+    await waitOpen(client);
+    const res = await toolResult(client, "r1", { cmd: "get-tab-list" });
+    expect(res.kind).toBe("tool-error");
+    expect(res.errorMessage).toMatch(/Multiple browsers connected/);
+    expect(res.errorMessage).toMatch(/Chrome/);
+    expect(res.errorMessage).toMatch(/Firefox/);
+    expect(res.errorMessage).toMatch(/select-browser/);
+    a.close();
+    b.close();
+    client.close();
+  }, 10000);
+
+  it("DEFAULT_BROWSER by label routes when no active is set", async () => {
+    process.env.DEFAULT_BROWSER = "Firefox";
+    const a = await connectExtension(port, "chrome-1", "chrome", "Chrome");
+    const b = await connectExtension(port, "firefox-1", "firefox", "Firefox");
+    b.on("message", (data) => {
+      const env = JSON.parse(data.toString());
+      if (env.payload?.cmd !== "get-tab-list") return;
+      ext_b_received = true;
+      b.send(
+        envelope({
+          resource: "tabs",
+          correlationId: env.payload.correlationId,
+          tabs: [],
+        })
+      );
+    });
+    let ext_b_received = false;
+    const client = new WebSocket(`ws://127.0.0.1:${port}/mcp`);
+    await waitOpen(client);
+    const res = await toolResult(client, "r1", { cmd: "get-tab-list" });
+    expect(res).toMatchObject({ kind: "tool-result" });
+    expect(ext_b_received).toBe(true);
+    a.close();
+    b.close();
+    client.close();
+  }, 10000);
+
+  // NOTE: This case depends on the `select-browser` control handler, which
+  // lands in Task 4. It is `.skip`ped here and un-skipped in Task 4 Step 7.
+  it.skip("disconnecting the active falls back to the lone remaining browser", async () => {
+    const a = await connectExtension(port, "chrome-1", "chrome", "Chrome");
+    const b = await connectExtension(port, "firefox-1", "firefox", "Firefox");
+
+    // Make Chrome active via a select-browser control, then close it.
+    const client = new WebSocket(`ws://127.0.0.1:${port}/mcp`);
+    await waitOpen(client);
+    const selP = nextMessage(client);
+    client.send(
+      envelope({
+        kind: "control",
+        requestId: "sel",
+        control: { control: "select-browser", browserId: "chrome-1" },
+      })
+    );
+    await selP;
+
+    // Close the active (Chrome); Firefox is now the lone remaining one.
+    a.close();
+    await new Promise((r) => setTimeout(r, 100));
+
+    b.on("message", (data) => {
+      const env = JSON.parse(data.toString());
+      if (env.payload?.cmd !== "get-tab-list") return;
+      b.send(
+        envelope({
+          resource: "tabs",
+          correlationId: env.payload.correlationId,
+          tabs: [],
+        })
+      );
+    });
+    const res = await toolResult(client, "r1", { cmd: "get-tab-list" });
+    expect(res).toMatchObject({ kind: "tool-result", requestId: "r1" });
+    b.close();
+    client.close();
+  }, 10000);
+});

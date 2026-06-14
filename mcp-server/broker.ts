@@ -413,8 +413,12 @@ export class BrokerServer {
   }
 
   /**
-   * Resolve the single active driver. Task 2 ships a minimal version; Task 3
-   * replaces this with the full resolution + DEFAULT_BROWSER rule.
+   * Resolve the single active driver:
+   *   0 connected            -> null
+   *   exactly 1              -> that one (implicit active)
+   *   2+ with activeBrowserId -> that browser
+   *   2+ without active      -> optional DEFAULT_BROWSER match (type or label),
+   *                             else null (caller fails loud)
    */
   private resolveTarget(): ExtensionConn | null {
     const conns = [...this.extensions.values()];
@@ -427,7 +431,21 @@ export class BrokerServer {
     if (this.activeBrowserId) {
       return this.extensions.get(this.activeBrowserId) ?? null;
     }
+    const def = process.env.DEFAULT_BROWSER;
+    if (def) {
+      const match = conns.find(
+        (c) => c.type === def || c.label === def
+      );
+      if (match) {
+        return match;
+      }
+    }
     return null;
+  }
+
+  /** Human-readable label list for fail-loud messages. */
+  private connectedLabels(): string {
+    return [...this.extensions.values()].map((c) => c.label).join(", ");
   }
 
   /** Placeholder; the real implementation lands in Task 6. */
@@ -462,12 +480,20 @@ export class BrokerServer {
 
     const frame = decoded.payload;
     if (frame.kind === "tool") {
-      if (!this.extensionConnected() && !this.longPollSink) {
+      if (this.extensions.size === 0 && !this.longPollSink) {
         this.sendToClient(clientId, {
           kind: "tool-error",
           requestId: frame.requestId,
           errorMessage:
-            "No browser extension is connected to the broker. Open Firefox with the FoxPilot extension installed and connected, then retry.",
+            "No browser extension is connected to the broker. Open Chrome or Firefox with the FoxPilot extension installed and connected (same EXTENSION_SECRET), then retry.",
+        });
+        return;
+      }
+      if (this.extensions.size > 1 && this.resolveTarget() === null) {
+        this.sendToClient(clientId, {
+          kind: "tool-error",
+          requestId: frame.requestId,
+          errorMessage: `Multiple browsers connected (${this.connectedLabels()}); call select-browser to choose one.`,
         });
         return;
       }
