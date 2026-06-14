@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "FoxPilot",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "An extension that lets a local MCP server drive Firefox: tabs, history, content, and opt-in page automation.",
   "author": "Bala Kumar",
   "homepage_url": "https://github.com/balakumardev/foxpilot",
@@ -36,5 +36,10 @@
   },
   "options_ui": {
     "page": "options.html"
+  },
+  "icons": {
+    "48": "assets/foxpilot-logo.png",
+    "96": "assets/foxpilot-logo.png",
+    "128": "assets/foxpilot-logo.png"
   }
 }

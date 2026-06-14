@@ -24,10 +24,16 @@ export class LongPollClient implements ExtensionTransport {
   private helloSent = false;
   private stopped = false;
   private abort: AbortController | null = null;
+  private readonly onStatusChange?: (connected: boolean) => void;
 
-  constructor(port: number, secret: string) {
+  constructor(
+    port: number,
+    secret: string,
+    onStatusChange?: (connected: boolean) => void
+  ) {
     this.port = port;
     this.secret = secret;
+    this.onStatusChange = onStatusChange;
   }
 
   connect(): void {
@@ -94,9 +100,13 @@ export class LongPollClient implements ExtensionTransport {
           // which only a hello POST recreates. Re-arm the hello so the next
           // iteration re-registers this browser before resuming polling.
           this.helloSent = false;
+          // Liveness: a failed poll means the broker is not reachable.
+          this.onStatusChange?.(false);
           await this.delay(RECONNECT_INTERVAL);
           continue;
         }
+        // A successful poll means the broker is reachable.
+        this.onStatusChange?.(true);
         const data = await res.json();
         if (data && Array.isArray(data.requests) && this.messageCallback) {
           for (const entry of data.requests) {
@@ -127,6 +137,8 @@ export class LongPollClient implements ExtensionTransport {
         // resumes. A re-hello on a transient blip is harmless (registerExtension
         // just re-registers the same browserId).
         this.helloSent = false;
+        // Liveness: the poll round-trip failed, so the broker is not reachable.
+        this.onStatusChange?.(false);
         await this.delay(RECONNECT_INTERVAL);
       }
     }
@@ -169,5 +181,6 @@ export class LongPollClient implements ExtensionTransport {
         /* ignore */
       }
     }
+    this.onStatusChange?.(false);
   }
 }

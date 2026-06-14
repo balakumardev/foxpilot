@@ -17,10 +17,16 @@ export class WebsocketClient implements ExtensionTransport {
   private connectionAttempts: number = 0;
   private messageCallback: ((data: ServerMessageRequest) => void) | null = null;
   private statusCallback: ((active: boolean) => void) | null = null;
+  private readonly onStatusChange?: (connected: boolean) => void;
 
-  constructor(port: number, secret: string) {
+  constructor(
+    port: number,
+    secret: string,
+    onStatusChange?: (connected: boolean) => void
+  ) {
     this.port = port;
     this.secret = secret;
+    this.onStatusChange = onStatusChange;
   }
 
   public connect(): void {
@@ -40,15 +46,19 @@ export class WebsocketClient implements ExtensionTransport {
       } catch (err) {
         console.error("Failed to send hello:", err);
       }
+      // Liveness: the socket is open, so the broker is reachable.
+      this.onStatusChange?.(true);
     });
 
     this.socket.addEventListener("close", () => {
       console.log("WebSocket connection closed event at port", this.port);
       this.connectionAttempts = 0;
+      this.onStatusChange?.(false);
     });
 
     this.socket.addEventListener("error", (event) => {
       console.error("WebSocket error:", event);
+      this.onStatusChange?.(false);
     });
 
     this.socket.addEventListener("message", async (event) => {
@@ -176,5 +186,7 @@ export class WebsocketClient implements ExtensionTransport {
       this.socket.close();
       this.socket = null;
     }
+
+    this.onStatusChange?.(false);
   }
 }

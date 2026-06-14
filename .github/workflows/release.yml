@@ -127,6 +127,10 @@ jobs:
 
       - name: Sign + submit to AMO (listed)
         if: steps.amo.outputs.ok == 'true'
+        # AMO's API frequently 429-throttles with a multi-hour Retry-After. A
+        # throttled republish must not fail the release (mirrors npm publish);
+        # republish via the Developer Hub in the browser when this is throttled.
+        continue-on-error: true
         run: |
           npx --yes web-ext@latest sign \
             --source-dir build/ext-amo \

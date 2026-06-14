@@ -1,6 +1,6 @@
 {
   "name": "foxpilot",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "private": true,
   "description": "FoxPilot — AI browser automation for Firefox via MCP (Firefox extension + MCP server).",
   "author": "Bala Kumar <mail@balakumar.dev> (https://github.com/balakumardev)",

@@ -1,0 +1,18 @@
+FoxPilot lets your AI assistant drive Firefox.
+
+It's a local MCP (Model Context Protocol) server paired with this extension, so MCP-compatible clients — like Claude Desktop, Claude Code, or Cursor — can control your real Firefox: open and organize tabs, search your history, read page content and links, and (when you opt in) automate pages directly.
+
+What it can do
+- Tabs & windows: open, close, select, reorder, and group tabs; navigate and use back/forward history.
+- Reading: extract a page's text and links, take an accessibility snapshot of interactive elements, and find/highlight text.
+- Automation Mode (opt-in): click, hover, type, fill forms, press keys, drag, upload files, take screenshots, run JavaScript, and capture console & network activity.
+- History: search across your recent browsing.
+
+Privacy first
+FoxPilot runs entirely on your machine. The extension talks only to a local server you run, authenticated with a secret you control. Page automation is off by default and must be explicitly enabled — and broad site access is an optional permission you grant only if you want it.
+
+Who it's for
+Developers and power users who want to give an AI assistant hands-on, auditable control of their browser — for testing, research, scraping, and repetitive web tasks — without sending data to a third party.
+
+Setup
+Install the companion MCP server (foxpilot-mcp) and connect it to your MCP client. Full instructions and source: https://github.com/balakumardev/foxpilot
