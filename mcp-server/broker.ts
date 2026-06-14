@@ -356,6 +356,35 @@ export class BrokerServer {
       return;
     }
 
+    // A long-poll hello arrives here (the WS leg registers in
+    // onExtensionConnection before any message reaches this method).
+    const maybeHello = decoded as { payload?: HelloPayload; signature?: string };
+    if (
+      maybeHello?.payload?.type === "hello" &&
+      typeof maybeHello.signature === "string"
+    ) {
+      if (
+        verifySignature(
+          this.secret,
+          JSON.stringify(maybeHello.payload),
+          maybeHello.signature
+        )
+      ) {
+        this.registerExtension({
+          browserId: maybeHello.payload.browserId,
+          ws: null,
+          transport: "longpoll",
+          type:
+            maybeHello.payload.browserType === "firefox"
+              ? "firefox"
+              : "chrome",
+          label: maybeHello.payload.label || maybeHello.payload.browserType,
+          lastSeen: Date.now(),
+        });
+      }
+      return;
+    }
+
     // Error frames are sent raw (unsigned), matching the existing protocol.
     if (isExtensionErrorFrame(decoded)) {
       this.core.handleExtensionError(decoded);
@@ -645,7 +674,19 @@ export class BrokerServer {
 
   /** Fail in-flight requests when the long-poll extension is detected gone. */
   onLongPollExtensionGone(): void {
+    // A long-poll browser can no longer be reached once its transport
+    // deactivates, so drop its registry entries (and clear active if it was
+    // the active one) before failing in-flight requests.
+    for (const [id, conn] of [...this.extensions]) {
+      if (conn.transport === "longpoll") {
+        this.extensions.delete(id);
+        if (this.activeBrowserId === id) {
+          this.activeBrowserId = null;
+        }
+      }
+    }
     this.core.onExtensionDisconnect();
+    this.broadcastActiveStatus();
     this.maybeScheduleIdle();
   }
 

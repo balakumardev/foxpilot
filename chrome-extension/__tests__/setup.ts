@@ -7,11 +7,28 @@
 // `(browser.X.y as jest.Mock).mockResolvedValue(...)`.
 
 import { TextDecoder as NodeTextDecoder, TextEncoder as NodeTextEncoder } from "util";
+import { webcrypto as nodeWebcrypto } from "crypto";
 if (typeof (global as any).TextDecoder === "undefined") {
   (global as any).TextDecoder = NodeTextDecoder;
 }
 if (typeof (global as any).TextEncoder === "undefined") {
   (global as any).TextEncoder = NodeTextEncoder;
+}
+
+// jsdom does not provide the Web Crypto API. `auth.ts` (HMAC signing) and
+// `extension-config.ts` (randomUUID for browserId/secret) both call into
+// `crypto.subtle`/`crypto.randomUUID`, so back the global `crypto` with Node's
+// webcrypto. Defined configurable/writable so individual tests can still
+// `jest.spyOn(crypto, "randomUUID")`.
+if (
+  typeof (global as any).crypto === "undefined" ||
+  typeof (global as any).crypto.subtle === "undefined"
+) {
+  Object.defineProperty(global, "crypto", {
+    value: nodeWebcrypto,
+    writable: true,
+    configurable: true,
+  });
 }
 
 // WebSocket readyState constants for keepalive tests (jsdom lacks WebSocket).

@@ -261,6 +261,10 @@ export interface ExtensionConfig {
   transport?: "websocket" | "longpoll";
   inputRealismMode?: "off" | "synthetic" | "native";
   sidecarPort?: number;
+  /** Stable per-install identity for the broker registry. */
+  browserId?: string;
+  /** User-editable display label; defaults to the browser type. */
+  browserLabel?: string;
 }
 
 /**
@@ -321,6 +325,64 @@ export async function generateSecret(): Promise<string> {
   config.secret = crypto.randomUUID();
   await saveConfig(config);
   return config.secret;
+}
+
+/**
+ * Returns the stable per-install browserId, generating and persisting it once
+ * via crypto.randomUUID(). Distinct from the secret so the identity survives a
+ * secret change.
+ */
+export async function getOrCreateBrowserId(): Promise<string> {
+  const config = await getConfig();
+  if (config.browserId && config.browserId.length > 0) {
+    return config.browserId;
+  }
+  config.browserId = crypto.randomUUID();
+  await saveConfig(config);
+  return config.browserId;
+}
+
+/**
+ * Detects the browser family at runtime. Firefox (and Zen, which reports as
+ * Firefox) exposes runtime.getBrowserInfo; Chrome does not.
+ */
+export async function getBrowserType(): Promise<"chrome" | "firefox"> {
+  return typeof (browser as any).runtime.getBrowserInfo === "function"
+    ? "firefox"
+    : "chrome";
+}
+
+/**
+ * Returns the display label, defaulting to the detected browser type when the
+ * user has not set one.
+ */
+export async function getBrowserLabel(): Promise<string> {
+  const config = await getConfig();
+  if (config.browserLabel && config.browserLabel.length > 0) {
+    return config.browserLabel;
+  }
+  return await getBrowserType();
+}
+
+/**
+ * Persists a user-supplied label (used by the options "Make this browser
+ * active" / identity UI).
+ */
+export async function setBrowserLabel(label: string): Promise<void> {
+  const config = await getConfig();
+  config.browserLabel = label;
+  await saveConfig(config);
+}
+
+/**
+ * Sets the shared secret. The user pastes the SAME secret into every browser's
+ * options and into the broker's EXTENSION_SECRET env so all legs sign
+ * identically. Replaces silent per-install generation.
+ */
+export async function setSecret(secret: string): Promise<void> {
+  const config = await getConfig();
+  config.secret = secret;
+  await saveConfig(config);
 }
 
 /**

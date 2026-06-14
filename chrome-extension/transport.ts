@@ -11,6 +11,8 @@ import type {
 export interface ExtensionTransport {
   connect(): void;
   addMessageListener(callback: (data: ServerMessageRequest) => void): void;
+  /** Optional: receive broker active-status pushes (ACTIVE/STANDBY). */
+  addStatusListener?(callback: (active: boolean) => void): void;
   sendResourceToServer(resource: ExtensionMessage): Promise<void>;
   sendErrorToServer(correlationId: string, errorMessage: string): Promise<void>;
   disconnect(): void;

@@ -377,10 +377,16 @@
     <div class="section-container">
       <h2>Secret Key</h2>
       <div class="section-content">
-        <p>This secret key is automatically generated when the extension is installed and is used to authenticate
-          connections to the MCP server:</p>
+        <p>This shared secret authenticates connections to the MCP broker. A default is generated on install, but you
+          should set the <strong>same</strong> secret here, in the broker's <code>EXTENSION_SECRET</code> environment
+          variable, and in every other browser you connect — so all of them sign identically.</p>
         <div class="secret-value" id="secret-display">Loading...</div>
         <button class="copy-button" id="copy-button">Copy to Clipboard</button>
+        <p style="margin-top: 15px;">Set a custom shared secret (paste the same value used by the broker and your other
+          browsers):</p>
+        <input type="text" id="secret-input" placeholder="Paste the shared secret" autocomplete="off" spellcheck="false"
+          style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; font-family: monospace; margin-bottom: 10px;" />
+        <button class="copy-button" id="save-secret">Save Secret</button>
         <div class="status" id="status"></div>
       </div>
     </div>

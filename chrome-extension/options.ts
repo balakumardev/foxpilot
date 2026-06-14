@@ -3,6 +3,7 @@
  */
 import {
   getSecret,
+  setSecret,
   AVAILABLE_TOOLS,
   getAllToolSettings,
   setToolEnabled,
@@ -27,6 +28,12 @@ const secretDisplay = document.getElementById(
   "secret-display"
 ) as HTMLDivElement;
 const copyButton = document.getElementById("copy-button") as HTMLButtonElement;
+const secretInput = document.getElementById(
+  "secret-input"
+) as HTMLInputElement;
+const saveSecretButton = document.getElementById(
+  "save-secret"
+) as HTMLButtonElement;
 const statusElement = document.getElementById("status") as HTMLDivElement;
 const toolSettingsContainer = document.getElementById(
   "tool-settings-container"
@@ -75,9 +82,10 @@ async function loadSecret() {
     // Check if secret exists
     if (secret) {
       secretDisplay.textContent = secret;
+      secretInput.value = secret;
     } else {
       secretDisplay.textContent =
-        "No secret found. Please reinstall the extension.";
+        "No secret found. Set a shared secret below (the same one the broker uses).";
       secretDisplay.style.color = "red";
       copyButton.disabled = true;
     }
@@ -87,6 +95,45 @@ async function loadSecret() {
       "Error loading secret. Please check console for details.";
     secretDisplay.style.color = "red";
     copyButton.disabled = true;
+  }
+}
+
+/**
+ * Persists the user-supplied shared secret. The user pastes the SAME secret
+ * configured in the broker's EXTENSION_SECRET and in every other browser, so
+ * all legs sign identically. The extension reconnects with the new secret on
+ * its next bootstrap (a reload is the simplest way to pick it up everywhere).
+ */
+async function saveSecret() {
+  try {
+    const value = secretInput.value.trim();
+    if (!value) {
+      statusElement.textContent = "Secret cannot be empty";
+      statusElement.style.color = "red";
+      setTimeout(() => {
+        statusElement.textContent = "";
+        statusElement.style.color = "";
+      }, 3000);
+      return;
+    }
+    await setSecret(value);
+    secretDisplay.textContent = value;
+    secretDisplay.style.color = "";
+    copyButton.disabled = false;
+    statusElement.textContent = "Secret saved. Reload the extension to apply.";
+    statusElement.style.color = "#4caf50";
+    setTimeout(() => {
+      statusElement.textContent = "";
+      statusElement.style.color = "";
+    }, 3000);
+  } catch (error) {
+    console.error("Error saving secret:", error);
+    statusElement.textContent = "Failed to save secret";
+    statusElement.style.color = "red";
+    setTimeout(() => {
+      statusElement.textContent = "";
+      statusElement.style.color = "";
+    }, 3000);
   }
 }
 
@@ -778,6 +825,7 @@ function hidePermissionModal() {
 
 // Initialize the page
 copyButton.addEventListener("click", copyToClipboard);
+saveSecretButton.addEventListener("click", saveSecret);
 saveDomainListsButton.addEventListener("click", saveDomainLists);
 savePortsButton.addEventListener("click", savePorts);
 clearAuditLogButton.addEventListener("click", handleClearAuditLog);

@@ -4,6 +4,7 @@ import type {
 } from "@foxpilot/common";
 import { getMessageSignature } from "./auth";
 import { ExtensionTransport } from "./transport";
+import { buildHello } from "./hello";
 
 const RECONNECT_INTERVAL = 2000;
 const POLL_AUTH_STRING = "extension-poll";
@@ -19,6 +20,8 @@ export class LongPollClient implements ExtensionTransport {
   private readonly port: number;
   private readonly secret: string;
   private messageCallback: ((data: ServerMessageRequest) => void) | null = null;
+  private statusCallback: ((active: boolean) => void) | null = null;
+  private helloSent = false;
   private stopped = false;
   private abort: AbortController | null = null;
 
@@ -38,6 +41,10 @@ export class LongPollClient implements ExtensionTransport {
     this.messageCallback = callback;
   }
 
+  addStatusListener(callback: (active: boolean) => void): void {
+    this.statusCallback = callback;
+  }
+
   private baseUrl(): string {
     return `http://localhost:${this.port}`;
   }
@@ -53,6 +60,13 @@ export class LongPollClient implements ExtensionTransport {
   private async pollLoop(): Promise<void> {
     while (!this.stopped) {
       try {
+        if (!this.helloSent) {
+          // Identity first: POST the signed hello so the broker registers this
+          // browser before any poll long-parks. /respond ingests it like a WS
+          // first frame.
+          await this.post(await buildHello(this.secret));
+          this.helloSent = true;
+        }
         this.abort = new AbortController();
         const auth = await this.authParam();
         const res = await fetch(
@@ -74,6 +88,10 @@ export class LongPollClient implements ExtensionTransport {
               console.error(
                 "LongPollClient: invalid request signature from broker"
               );
+              continue;
+            }
+            if (entry.payload?.cmd === "active-status") {
+              this.statusCallback?.(!!entry.payload.active);
               continue;
             }
             this.messageCallback(entry.payload as ServerMessageRequest);
