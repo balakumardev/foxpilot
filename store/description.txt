@@ -9,7 +9,7 @@ What it can do
 - History: search across your recent browsing.
 
 Privacy first
-FoxPilot runs entirely on your machine. The extension talks only to a local server you run, authenticated with a secret you control. Page automation is off by default and must be explicitly enabled — and broad site access is an optional permission you grant only if you want it.
+FoxPilot runs entirely on your machine. The extension talks only to a local server you run, pairing with it automatically over a loopback-only connection — no secret to copy or manage. Page automation is off by default and must be explicitly enabled — and broad site access is an optional permission you grant only if you want it.
 
 Who it's for
 Developers and power users who want to give an AI assistant hands-on, auditable control of their browser — for testing, research, scraping, and repetitive web tasks — without sending data to a third party.

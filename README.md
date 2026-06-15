@@ -4,7 +4,7 @@
 [![npm](https://img.shields.io/npm/v/foxpilot-mcp?logo=npm&label=foxpilot-mcp)](https://www.npmjs.com/package/foxpilot-mcp)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
 
-An MCP server paired with a Firefox browser extension that lets AI assistants drive your browser — tab/window management, browsing history, and webpage content by default, plus a full opt-in **Automation Mode** for page interaction, scripting, screenshots, and console/network inspection.
+An MCP server paired with a Firefox or Chrome/Edge browser extension that lets AI assistants drive your browser — tab/window management, browsing history, and webpage content by default, plus a full opt-in **Automation Mode** for page interaction, scripting, screenshots, and console/network inspection.
 
 ## Features
 
@@ -50,7 +50,7 @@ FoxPilot is built to run safely against your **personal** Firefox profile rather
 
 * **Privacy-first defaults.** Page interaction, scripting, screenshots, and console/network capture are off until you explicitly turn on **Automation Mode** in the extension — and it can be turned back off at any time.
 * **Per-domain consent.** Reading webpage content requires your explicit consent in the browser for each domain, enforced at the extension's manifest level.
-* **Local-only.** Communication uses a local-only connection secured by a shared secret between the MCP server and the extension. No remote data collection or tracking.
+* **Local-only.** Communication uses a local-only (loopback) connection between the MCP server and the extension. The extension pairs automatically — the local broker only admits browser-extension connections that arrive over loopback, so there's no secret for you to copy or manage. No remote data collection or tracking.
 * **Auditable.** The extension keeps an audit log of tool calls and lets you enable/disable individual tools.
 * **No runtime third-party dependencies** in the extension.
 
@@ -58,11 +58,14 @@ FoxPilot is built to run safely against your **personal** Firefox profile rather
 
 ## Installation
 
-### Option 1: Install the Firefox and Claude Desktop extensions
+### Option 1: Install the browser and Claude Desktop extensions
 
-The Firefox extension / add-on is [available on addons.mozilla.org](https://addons.mozilla.org/en-US/firefox/addon/foxpilot/). You can also download the latest pre-built extension from this repository's [releases](https://github.com/balakumardev/foxpilot/releases/latest) ([foxpilot-extension.zip](https://github.com/balakumardev/foxpilot/releases/latest/download/foxpilot-extension.zip)). Complete the installation based on the instructions in the "Manage extension" page, which will open automatically after installation.
+FoxPilot is **zero-config**: install the MCP server and the browser add-on, and they pair automatically over a local-only connection — there's no secret to copy or paste.
 
-The add-on's "Manage extension" page will include a link to the Claude Desktop DXT file. You can also download it here: [foxpilot-mcp.dxt](https://github.com/balakumardev/foxpilot/releases/latest/download/foxpilot-mcp.dxt). After downloading the file, open it or drag it into Claude Desktop's settings window. Make sure to enable the DXT extension after installing it. This will only work with the latest versions of Claude Desktop. If you wish to install the MCP server locally, see the MCP configuration below.
+1. **Install the MCP server (Claude Desktop DXT).** Download [foxpilot-mcp.dxt](https://github.com/balakumardev/foxpilot/releases/latest/download/foxpilot-mcp.dxt), then open it or drag it into Claude Desktop's settings window. Make sure to enable the DXT extension after installing it. This only works with the latest versions of Claude Desktop. (If you'd rather run the MCP server yourself via `npx`/`node`/Docker, see the MCP configuration below.)
+2. **Install the browser add-on.** The Firefox add-on is [available on addons.mozilla.org](https://addons.mozilla.org/en-US/firefox/addon/foxpilot/); the Chrome/Edge extension is on the Chrome Web Store. You can also download the latest pre-built extension from this repository's [releases](https://github.com/balakumardev/foxpilot/releases/latest) ([foxpilot-extension.zip](https://github.com/balakumardev/foxpilot/releases/latest/download/foxpilot-extension.zip)). Complete the installation based on the instructions in the "Manage extension" page, which will open automatically after installation.
+
+That's it — the extension connects to the local server automatically. It might take a few seconds for the connection to establish.
 
 ### Option 2: Build from code
 
@@ -80,16 +83,16 @@ To install the extension on Firefox as a Temporary Add-on:
 2. Click on "This Firefox"
 3. click on "Load Temporary Add-on..."
 4. Select the `manifest.json` file under the `firefox-extension` folder in this project
-5. The extension's preferences page will open. Copy the secret key to your clipboard. It will be used to configure the MCP server.
+5. The extension's preferences page will open. No secret to copy — once the MCP server is running, the extension pairs with it automatically over the local connection.
 
-Alternatively, to install a permanent add-on, you can install the [FoxPilot on addons.mozilla.org](https://addons.mozilla.org/en-US/firefox/addon/foxpilot/) and then configure the MCP Server as detailed below.
+Alternatively, to install a permanent add-on, you can install the [FoxPilot on addons.mozilla.org](https://addons.mozilla.org/en-US/firefox/addon/foxpilot/) and then run the MCP Server as detailed below.
 
 If you prefer not to run the extension on your personal Firefox browser, an alternative is to download a separate Firefox instance (such as Firefox Developer Edition, available at https://www.mozilla.org/en-US/firefox/developer/).
 
 
 #### MCP Server configuration
 
-After installing the browser extension, add FoxPilot to your `mcpServers` configuration (e.g. `claude_desktop_config.json` for Claude Desktop). The easiest way is via `npx` — no local checkout or build required:
+Add FoxPilot to your `mcpServers` configuration (e.g. `claude_desktop_config.json` for Claude Desktop). The easiest way is via `npx` — no local checkout or build required. No secret is required: when `EXTENSION_SECRET` is omitted, the browser extension pairs automatically (the broker only admits extension connections that arrive over loopback):
 ```json
 {
     "mcpServers": {
@@ -97,7 +100,6 @@ After installing the browser extension, add FoxPilot to your `mcpServers` config
             "command": "npx",
             "args": ["-y", "foxpilot-mcp"],
             "env": {
-                "EXTENSION_SECRET": "<secret_on_firefox_extension_options_page>",
                 "EXTENSION_PORT": "8089"
             }
         }
@@ -115,7 +117,6 @@ Or, if you built from source, point `node` at the built server instead (replace 
                 "/path/to/repo/mcp-server/dist/server.js"
             ],
             "env": {
-                "EXTENSION_SECRET": "<secret_on_firefox_extension_options_page>",
                 "EXTENSION_PORT": "8089"
             }
         }
@@ -123,9 +124,15 @@ Or, if you built from source, point `node` at the built server instead (replace 
 }
 ```
 
-Set the EXTENSION_SECRET to the value shown on the extension's preferences page in Firefox (you can access it at `about:addons`). You can also set the EXTENSION_PORT environment variable to specify the port that the MCP server will use to communicate with the extension (default is 8089).
+`EXTENSION_PORT` is optional and specifies the port that the MCP server will use to communicate with the extension (default is 8089).
+
+`EXTENSION_SECRET` is **optional** and only needed for advanced/remote deployments — see [Remote / containerized deployments](#configure-the-mcp-server-with-docker) below. For normal local use, omit it and rely on zero-config pairing.
 
 It might take a few seconds for the MCP server to connect to the extension.
+
+#### Migration from earlier versions
+
+Nothing to do. If you already have `EXTENSION_SECRET` set in your MCP config from an earlier release, it keeps working unchanged — the extension that shares that secret continues to authenticate over the signed path. New users don't need to set anything: just install the MCP server and the extension and they pair automatically.
 
 ##### Configure the MCP server with Docker
 
@@ -146,7 +153,7 @@ and use the following mcpServers configuration:
                 "--rm",
                 "-i",
                 "-p", "127.0.0.1:8089:8089",
-                "-e", "EXTENSION_SECRET=<secret_from_extension>",
+                "-e", "EXTENSION_SECRET=<your_chosen_secret>",
                 "-e", "CONTAINERIZED=true",
                 "foxpilot"
             ]
@@ -154,6 +161,8 @@ and use the following mcpServers configuration:
     }
 }
 ```
+
+In a containerized (`CONTAINERIZED=true`) or remote setup the extension's connection does not arrive over loopback with a recognizable browser-extension Origin, so zero-config pairing does not apply. Here `EXTENSION_SECRET` is **required**: choose any secret, set it on the `docker run` command above, and set the **same** secret in the extension's **Advanced** settings so the two can authenticate.
 
 ## Author
 

@@ -29,7 +29,7 @@ Monorepo, five projects:
 ### Communication flow
 - Client ↔ MCP server: MCP over stdio.
 - MCP server ↔ extension: through a **broker** on port 8089 (WebSocket). The broker is a separate, persistent process that holds the extension connection; multiple browsers (Chrome/Firefox) can connect and one is the active driver (`list-browsers` / `select-browser`).
-- Auth: shared `EXTENSION_SECRET` — the secret configured in the extension's options must match the server/broker. `EXTENSION_PORT` defaults to 8089.
+- Auth: zero-config by default. The broker admits an extension based on the connection being loopback with a `chrome-extension://`/`moz-extension://` Origin — no user-typed secret. The control leg (MCP server ↔ broker) is signed with an auto-managed secret the broker generates internally. A manual `EXTENSION_SECRET` is only set for remote/CONTAINERIZED deployments (where loopback+Origin gating doesn't apply); the same secret must then be set in the extension's Advanced settings. The broker binds both IPv4 and IPv6 loopback. `EXTENSION_PORT` defaults to 8089.
 
 ### Key files
 - `mcp-server/server.ts` — tool definitions; `mcp-server/broker.ts` — broker.
@@ -40,7 +40,7 @@ Monorepo, five projects:
 ## Gotchas (these cost real time)
 - **Isolated vs page world / CSP:** DOM ops (click, fill, snapshot, **upload-file**) run in the ISOLATED content-script world and are CSP-immune. `evaluate-script` / `handle-dialog` / `emulate` inject a page-world `<script>`, which **strict-CSP pages (e.g. chrome.google.com) block** → "Timed out waiting for in-page result" / "Invalid message signature". Don't add page-world `<script>` injection for anything that can run in the isolated world.
 - **Firefox file upload:** content scripts see the page via Xray; build File/DataTransfer in the page realm via `wrappedJSObject` + `cloneInto` so `input.files` accepts the FileList (see `injected/upload-script.ts`).
-- **Stale broker:** the broker is a detached persistent process holding port 8089. After rebuilding mcp-server, `pkill -f dist/broker-main.js` so a fresh broker starts. If tools report "no extension connected" or signature errors, the loaded extension is older than the rebuilt broker — **reload the extension** (Firefox: `about:debugging` → Reload).
+- **Stale broker:** the broker is a detached persistent process holding port 8089. After rebuilding mcp-server, `pkill -f dist/broker-main.js` so a fresh broker starts. Extension admission is origin-gated (loopback + `chrome-extension://`/`moz-extension://` Origin), so a user-secret mismatch is no longer the usual failure. The common transition issue after a broker rebuild: the still-loaded extension is older than the fresh broker — if tools report "no extension connected," **reload the extension** (Firefox: `about:debugging` → Reload).
 - **`docs/` is gitignored** — use `git add -f` to commit docs (e.g. `docs/privacy-policy.md`).
 
 ## CI/CD
