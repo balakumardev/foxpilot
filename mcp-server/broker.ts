@@ -617,19 +617,18 @@ export class BrokerServer {
   private sendToExtension(req: ServerMessageRequest): void {
     const target = this.resolveTarget();
     if (target && target.ws && target.ws.readyState === WebSocket.OPEN) {
-      const payload = JSON.stringify(req);
-      const signature = createSignature(this.secret, payload);
-      target.ws.send(JSON.stringify({ payload: req, signature }));
+      if (target.authMode === "signed") {
+        const payload = JSON.stringify(req);
+        const signature = createSignature(this.secret, payload);
+        target.ws.send(JSON.stringify({ payload: req, signature }));
+      } else {
+        target.ws.send(JSON.stringify({ payload: req }));
+      }
       return;
     }
-    // Long-poll target (an ExtensionConn whose ws is null) or no resolvable ws
-    // target: fall back to the long-poll sink if one is registered — the sink
-    // itself is the routable transport for the long-poll leg. Else the core's
-    // timeout fails the request.
     if (this.longPollSink && this.longPollSink(req)) {
       return;
     }
-    // No resolvable transport; the core's timeout will fail the request.
   }
 
   /**
@@ -711,11 +710,15 @@ export class BrokerServer {
       // bad connection and keep delivering to the rest.
       try {
         if (conn.ws && conn.ws.readyState === WebSocket.OPEN) {
-          const signature = createSignature(
-            this.secret,
-            JSON.stringify(payload)
-          );
-          conn.ws.send(JSON.stringify({ payload, signature }));
+          if (conn.authMode === "signed") {
+            const signature = createSignature(
+              this.secret,
+              JSON.stringify(payload)
+            );
+            conn.ws.send(JSON.stringify({ payload, signature }));
+          } else {
+            conn.ws.send(JSON.stringify({ payload }));
+          }
         } else if (conn.transport === "longpoll" && this.longPollSink) {
           // Long-poll browsers receive it on their next poll batch (the sink
           // signs each queued payload itself).

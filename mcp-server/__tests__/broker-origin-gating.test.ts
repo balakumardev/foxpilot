@@ -114,4 +114,59 @@ describe("BrokerServer origin gating", () => {
     expect(await allowedMsg).toMatchObject({ type: "welcome" });
     allowed.close();
   }, 10000);
+
+  it("sends an UNSIGNED active-status to an origin-admitted browser", async () => {
+    const ext = new WebSocket(`ws://127.0.0.1:${port}/extension`, {
+      origin: "chrome-extension://abcdefghijklmnop",
+    });
+    await waitOpen(ext);
+    // The hello triggers admission; the broker replies with welcome.
+    ext.send(unsignedHello("origin-status-1"));
+    await nextMessage(ext); // welcome
+    // The sole browser is implicitly active; an active-status push is broadcast
+    // on registration. Capture the next active-status frame.
+    const frame = await new Promise<any>((resolve) => {
+      const onMsg = (d: WebSocket.RawData) => {
+        const m = JSON.parse(d.toString());
+        if (m?.payload?.cmd === "active-status") {
+          ext.off("message", onMsg);
+          resolve(m);
+        }
+      };
+      ext.on("message", onMsg);
+      // Trigger a re-broadcast by opening a second browser then closing it.
+      const ext2 = new WebSocket(`ws://127.0.0.1:${port}/extension`, {
+        origin: "chrome-extension://second",
+      });
+      ext2.on("open", () => ext2.send(unsignedHello("second")));
+    });
+    expect(frame.payload.cmd).toBe("active-status");
+    expect(frame.signature).toBeUndefined();
+    ext.close();
+  }, 10000);
+
+  it("answers a healthcheck frame with a healthcheck-result snapshot", async () => {
+    const ext = new WebSocket(`ws://127.0.0.1:${port}/extension`, {
+      origin: "chrome-extension://abcdefghijklmnop",
+    });
+    await waitOpen(ext);
+    // The hello triggers admission; the broker replies with welcome.
+    ext.send(unsignedHello("hc-1"));
+    await nextMessage(ext); // welcome
+    const resultPromise = new Promise<any>((resolve) => {
+      const onMsg = (d: WebSocket.RawData) => {
+        const m = JSON.parse(d.toString());
+        if (m?.type === "healthcheck-result") {
+          ext.off("message", onMsg);
+          resolve(m);
+        }
+      };
+      ext.on("message", onMsg);
+    });
+    ext.send(JSON.stringify({ type: "healthcheck" }));
+    const result = await resultPromise;
+    expect(result).toMatchObject({ type: "healthcheck-result", extensionConnected: true });
+    expect(Array.isArray(result.browsers)).toBe(true);
+    ext.close();
+  }, 10000);
 });
