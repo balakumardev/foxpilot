@@ -148,14 +148,16 @@ chrome.runtime.onMessage.addListener(
     }
     if (msg?.type === "get-active-status") {
       // Include the connected-browser roster (from the last welcome) so the
-      // options page can list the other browsers and explain STANDBY.
+      // options page can list the other browsers and explain STANDBY. Both the
+      // cached status and getLastRoster() are synchronous, so we reply inline and
+      // do NOT return true (only the truly-async healthcheck branch needs that).
       const roster = activeClientRef?.getLastRoster?.() ?? null;
       sendResponse({
         active: lastActiveStatus,
         browsers: roster?.browsers ?? [],
         browserId: roster?.browserId,
       });
-      return true; // keep the channel open for the (synchronous) reply
+      return;
     }
     if (msg?.type === "healthcheck") {
       // Probe the broker over the live client and relay its snapshot to the

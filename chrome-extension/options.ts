@@ -610,13 +610,11 @@ async function testConnection() {
     );
     const count = connectedBrowsers.length;
     const admitted = result.extensionConnected;
-    const mine = connectedBrowsers.find((b) => b.active);
-    const activeWord =
-      count <= 1
-        ? "active"
-        : mine && mine.active
-        ? "active"
-        : "standby";
+    // `find(b => b.active)` only ever returns an entry whose `active` is true, so
+    // its mere presence means an active browser exists. A lone connected browser
+    // is treated as active even before the broker marks it so.
+    const hasActive = connectedBrowsers.some((b) => b.active);
+    const activeWord = count <= 1 || hasActive ? "active" : "standby";
     if (!admitted) {
       testConnectionStatus.textContent =
         "Server reachable, but this browser is not admitted. If you set a custom secret, make sure it matches the broker's EXTENSION_SECRET.";
@@ -964,6 +962,9 @@ function applyConnectionStatus(status: BrokerStatus) {
 function prettyReason(reason: string): string {
   if (reason === "origin_not_allowed") {
     return "extension origin not allowed";
+  }
+  if (reason === "longpoll-requires-secret") {
+    return "long-poll needs a secret — set one in Advanced";
   }
   return reason;
 }

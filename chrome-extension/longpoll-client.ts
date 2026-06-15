@@ -24,8 +24,10 @@ const HEALTHCHECK_TIMEOUT = 3000;
  * Long-poll is a LEGACY/signed-only transport: the broker's origin-mode (zero
  * secret) admission is WebSocket-only, so a long-poll deployment always needs a
  * configured secret. It has no `welcome` frame, so it maps a successful poll
- * round-trip to "connected" and any failure to "disconnected"; it never reports
- * "blocked".
+ * round-trip to "connected" and any failure to "disconnected". The one "blocked"
+ * case is a no-secret config: signing would throw, so `connect()` refuses up
+ * front with reason "longpoll-requires-secret" instead of spinning a throw/retry
+ * loop.
  */
 export class LongPollClient implements ExtensionTransport {
   private readonly port: number;
@@ -47,8 +49,25 @@ export class LongPollClient implements ExtensionTransport {
     this.onConnectionState = onConnectionState;
   }
 
+  /** True when a secret is configured (the only mode long-poll can operate in). */
+  private get signed(): boolean {
+    return this.secret.length > 0;
+  }
+
   connect(): void {
     this.stopped = false;
+    // Long-poll is signed-only: every request is authed with an HMAC of the
+    // shared secret, and getMessageSignature THROWS on an empty secret. Under
+    // the zero-config default (no secret) the poll loop would otherwise spin a
+    // failing throw/retry loop forever. Refuse cleanly instead: surface a
+    // human-meaningful "blocked" state telling the user this transport needs a
+    // secret, and never start the loop.
+    if (!this.signed) {
+      this.onConnectionState?.("blocked", {
+        reason: "longpoll-requires-secret",
+      });
+      return;
+    }
     void this.pollLoop();
   }
 

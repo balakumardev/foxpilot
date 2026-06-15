@@ -200,6 +200,12 @@ export class WebsocketClient implements ExtensionTransport {
 
   /** Compute whether THIS browser is the active driver from a welcome roster. */
   private deriveActive(frame: WelcomeFrame): boolean {
+    // A malformed welcome with a non-array roster must not throw. We can't trust
+    // anything about admission from it, so treat it as standby (not-active)
+    // rather than crashing the handler or guessing ACTIVE.
+    if (!Array.isArray(frame.browsers)) {
+      return false;
+    }
     const mine = frame.browsers.find((b) => b.browserId === frame.browserId);
     if (mine) {
       return mine.active;
