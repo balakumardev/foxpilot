@@ -1,12 +1,15 @@
 import { WebsocketClient } from "./client";
 import { LongPollClient } from "./longpoll-client";
-import { ExtensionTransport } from "./transport";
+import {
+  ExtensionTransport,
+  ConnectionState,
+  ConnectionStateDetail,
+} from "./transport";
 import { MessageHandler } from "./message-handler";
 import {
   getConfig,
-  generateSecret,
   getTransport,
-  setBrokerConnected,
+  setBrokerStatus,
 } from "./extension-config";
 import { initConsoleCapture } from "./console-capture";
 import { initNetworkCapture } from "./network-capture";
@@ -22,32 +25,53 @@ let activeClientRef: ExtensionTransport | null = null;
 // state on load (via `get-active-status`) instead of waiting for the next push.
 let lastActiveStatus: boolean = false;
 
-// Tracks which broker ports currently have a live connection so the options
-// page can show real status. We mirror the aggregate (any port connected) into
-// storage, de-duping writes so a chatty long-poll loop doesn't thrash storage.
-const connectedPorts = new Set<number>();
-let lastBrokerConnected: boolean | null = null;
+// Per-port honest connection state so the options page can show real status. We
+// mirror the AGGREGATE across ports into storage, de-duping writes so a chatty
+// long-poll loop doesn't thrash storage. Aggregation priority: any port
+// "connected" wins (tools can flow); else any "blocked" (server up, refused)
+// carrying its reason; else "disconnected" (server not running / unreachable).
+const portStates = new Map<number, { state: ConnectionState; reason?: string }>();
+let lastMirrored: { state: ConnectionState; reason?: string } | null = null;
 
-function updateBrokerConnected(port: number, connected: boolean): void {
-  if (connected) {
-    connectedPorts.add(port);
-  } else {
-    connectedPorts.delete(port);
+function aggregateBrokerStatus(): { state: ConnectionState; reason?: string } {
+  let blocked: { state: ConnectionState; reason?: string } | null = null;
+  for (const entry of portStates.values()) {
+    if (entry.state === "connected") {
+      return { state: "connected" };
+    }
+    if (entry.state === "blocked" && !blocked) {
+      blocked = { state: "blocked", reason: entry.reason };
+    }
   }
-  const anyConnected = connectedPorts.size > 0;
-  if (anyConnected !== lastBrokerConnected) {
-    lastBrokerConnected = anyConnected;
-    void setBrokerConnected(anyConnected);
+  return blocked ?? { state: "disconnected" };
+}
+
+function updateBrokerState(
+  port: number,
+  state: ConnectionState,
+  detail?: ConnectionStateDetail
+): void {
+  portStates.set(port, { state, reason: detail?.reason });
+  const agg = aggregateBrokerStatus();
+  if (
+    !lastMirrored ||
+    agg.state !== lastMirrored.state ||
+    agg.reason !== lastMirrored.reason
+  ) {
+    lastMirrored = agg;
+    void setBrokerStatus(agg.state, agg.reason);
   }
 }
 
 function initClient(port: number, secret: string, transport: "websocket" | "longpoll") {
-  const onStatusChange = (connected: boolean) =>
-    updateBrokerConnected(port, connected);
+  const onConnectionState = (
+    state: ConnectionState,
+    detail?: ConnectionStateDetail
+  ) => updateBrokerState(port, state, detail);
   const client: ExtensionTransport =
     transport === "longpoll"
-      ? new LongPollClient(port, secret, onStatusChange)
-      : new WebsocketClient(port, secret, onStatusChange);
+      ? new LongPollClient(port, secret, onConnectionState)
+      : new WebsocketClient(port, secret, onConnectionState);
   const messageHandler = new MessageHandler(client);
 
   client.connect();
@@ -85,9 +109,10 @@ function initClient(port: number, secret: string, transport: "websocket" | "long
 }
 
 // Forward the options page's "Make this browser active" request to the broker
-// via the live client (it sends the signed select-active frame). Also answers
-// the options page's `get-active-status` probe with the cached ACTIVE/STANDBY
-// value so its badge is correct immediately on open.
+// via the live client (it sends the select-active frame). Also answers the
+// options page's `get-active-status` probe with the cached ACTIVE/STANDBY value
+// so its badge is correct immediately on open, and runs the broker
+// healthcheck() for the options "Test Connection" button.
 browser.runtime.onMessage.addListener(
   (msg: any, _sender: any, sendResponse: (response?: any) => void) => {
     if (
@@ -101,35 +126,63 @@ browser.runtime.onMessage.addListener(
       return;
     }
     if (msg?.type === "get-active-status") {
-      sendResponse({ active: lastActiveStatus });
-      return true; // keep the channel open for the (synchronous) reply
+      // Include the connected-browser roster (from the last welcome) so the
+      // options page can list the other browsers and explain STANDBY. Both the
+      // cached status and getLastRoster() are synchronous, so we reply inline and
+      // do NOT return true (only the truly-async healthcheck branch needs that).
+      const roster = activeClientRef?.getLastRoster?.() ?? null;
+      sendResponse({
+        active: lastActiveStatus,
+        browsers: roster?.browsers ?? [],
+        browserId: roster?.browserId,
+      });
+      return;
+    }
+    if (msg?.type === "healthcheck") {
+      // Probe the broker over the live client and relay its snapshot to the
+      // options page. Resolves (never rejects) with serverReachable:false when
+      // the broker is not running, so the options page always gets a result.
+      const client = activeClientRef;
+      if (client && client.healthcheck) {
+        client
+          .healthcheck()
+          .then((result) => sendResponse(result))
+          .catch(() =>
+            sendResponse({
+              serverReachable: false,
+              extensionConnected: false,
+              browsers: [],
+              activeBrowserId: null,
+            })
+          );
+      } else {
+        sendResponse({
+          serverReachable: false,
+          extensionConnected: false,
+          browsers: [],
+          activeBrowserId: null,
+        });
+      }
+      return true; // async reply
     }
   }
 );
 
 async function initExtension() {
-  let config = await getConfig();
-  if (!config.secret) {
-    // First run: generate a default secret so there is something to copy.
-    // The user is expected to REPLACE this with the SAME secret used by the
-    // broker (EXTENSION_SECRET) and every other browser, via the options
-    // page (editable secret input). Open options so they can do that now.
-    console.log("No secret found, generating a default one");
-    await generateSecret();
-    await browser.runtime.openOptionsPage();
-    config = await getConfig();
-  }
-  return config;
+  // Zero-config: a fresh install connects with NO secret (origin mode) — the
+  // broker admits this browser by its moz-extension:// Origin over loopback.
+  // We do NOT auto-generate a secret or force-open the options page anymore. A
+  // user who wants the legacy signed/remote setup can set a custom secret in the
+  // options page's Advanced section.
+  return getConfig();
 }
 
 initExtension()
   .then(async (config) => {
+    // Empty secret => origin mode (default). A non-empty secret => legacy signed
+    // mode. Both are valid, so do not abort on an empty secret.
     const secret = config.secret;
 
-    if (!secret) {
-      console.error("Secret not found in storage - reinstall extension");
-      return;
-    }
     const portList = config.ports;
     if (portList.length === 0) {
       console.error("No ports configured in extension config");
@@ -151,8 +204,8 @@ initExtension()
 
     const transport = await getTransport();
     // Start from a known-disconnected state; clients flip this as they connect.
-    await setBrokerConnected(false);
-    lastBrokerConnected = false;
+    await setBrokerStatus("disconnected");
+    lastMirrored = { state: "disconnected" };
     for (const port of portList) {
       initClient(port, secret, transport);
     }

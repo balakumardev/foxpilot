@@ -21,7 +21,8 @@ import {
   getInputRealismMode,
   setInputRealismMode,
   getSidecarPort,
-  getBrokerConnected,
+  getBrokerStatus,
+  BrokerStatus,
   BROKER_STATUS_STORAGE_KEY,
 } from "./extension-config";
 import { NativeInputClient } from "./native-input-client";
@@ -30,6 +31,7 @@ import {
   selectThisBrowser,
   fetchInitialActiveStatus,
 } from "./options-status";
+import type { HealthcheckResult } from "./transport";
 
 const secretDisplay = document.getElementById(
   "secret-display"
@@ -110,6 +112,14 @@ const activeStatusMsg = document.getElementById(
 const connectionStatusEl = document.getElementById(
   "connection-status"
 ) as HTMLSpanElement;
+// "Test Connection" button + its result line (Setup panel). Probes the broker
+// via the background's healthcheck() and reports an honest result.
+const testConnectionButton = document.getElementById(
+  "test-connection-btn"
+) as HTMLButtonElement | null;
+const testConnectionStatus = document.getElementById(
+  "test-connection-status"
+) as HTMLDivElement | null;
 
 // SVG markup for the secret reveal toggle (eye / eye-off).
 const EYE_ICON =
@@ -156,11 +166,11 @@ async function loadSecret() {
       secretInput.value = secret;
     } else {
       currentSecret = null;
-      // No secret yet — guide the user to set one in the editable input below
-      // (the same shared secret the broker and every other browser use).
+      // No secret is the DEFAULT (zero-config / origin mode) — this is normal,
+      // not an error. Only set a secret here for advanced/remote setups.
       secretDisplay.textContent =
-        "No secret found. Set a shared secret below (the same one the broker uses).";
-      secretDisplay.style.color = "var(--danger)";
+        "No secret set — using zero-config pairing (recommended).";
+      secretDisplay.style.color = "var(--text-muted)";
       copyButton.disabled = true;
       secretToggle.disabled = true;
     }
@@ -574,6 +584,55 @@ async function probeSidecar() {
 }
 
 /**
+ * Test Connection: asks the background to run the broker healthcheck() and
+ * renders a clear, honest result — server reachable? this browser admitted?
+ * N browsers connected? active or standby? Mirrors probeSidecar's UX (a status
+ * line that never throws). The background relays the transport's
+ * HealthcheckResult, resolving serverReachable:false when nothing is listening.
+ */
+async function testConnection() {
+  if (!testConnectionStatus) {
+    return;
+  }
+  testConnectionStatus.textContent = "Testing…";
+  testConnectionStatus.style.color = "var(--text-muted)";
+  try {
+    const result: HealthcheckResult | undefined =
+      await browser.runtime.sendMessage({ type: "healthcheck" });
+    if (!result || !result.serverReachable) {
+      testConnectionStatus.textContent =
+        "Server not running — start the FoxPilot MCP server (it launches the broker). This browser will connect automatically once it is up.";
+      testConnectionStatus.style.color = "var(--danger)";
+      return;
+    }
+    const connectedBrowsers = (result.browsers || []).filter(
+      (b) => b.connected
+    );
+    const count = connectedBrowsers.length;
+    const admitted = result.extensionConnected;
+    // `find(b => b.active)` only ever returns an entry whose `active` is true, so
+    // its mere presence means an active browser exists. A lone connected browser
+    // is treated as active even before the broker marks it so.
+    const hasActive = connectedBrowsers.some((b) => b.active);
+    const activeWord = count <= 1 || hasActive ? "active" : "standby";
+    if (!admitted) {
+      testConnectionStatus.textContent =
+        "Server reachable, but this browser is not admitted. If you set a custom secret, make sure it matches the broker's EXTENSION_SECRET.";
+      testConnectionStatus.style.color = "var(--warning)";
+      return;
+    }
+    const browserWord = count === 1 ? "browser" : "browsers";
+    testConnectionStatus.textContent = `Connected — server reachable, this browser admitted. ${count} ${browserWord} connected; this browser is ${activeWord}.`;
+    testConnectionStatus.style.color = "var(--success)";
+  } catch (error) {
+    console.error("Error testing connection:", error);
+    testConnectionStatus.textContent =
+      "Could not reach the background service worker. Try reloading the extension.";
+    testConnectionStatus.style.color = "var(--danger)";
+  }
+}
+
+/**
  * "Make this browser active": asks the background page to forward a
  * select-active to the broker for this browser's id. The broker then pushes the
  * new ACTIVE/STANDBY state back to every browser (this one flips ACTIVE, others
@@ -870,27 +929,54 @@ async function handleClearAuditLog(event: MouseEvent) {
 }
 
 /**
- * Reflects the broker connection state in the header indicator.
+ * Reflects the HONEST broker connection state in the header pill. Maps the
+ * transport tri-state to the three things the user needs to tell apart:
+ *  - connected     -> "Connected" (the broker admitted this browser)
+ *  - blocked       -> "Blocked" + reason (server up, refused admission)
+ *  - disconnected  -> "Server not running" (nothing is listening / unreachable)
+ *
+ * The pill's CSS knows data-state connected|disconnected|blocked.
  */
-function applyConnectionStatus(connected: boolean) {
+function applyConnectionStatus(status: BrokerStatus) {
   if (!connectionStatusEl) {
     return;
   }
   const label = connectionStatusEl.querySelector(".conn-label");
-  connectionStatusEl.dataset.state = connected ? "connected" : "disconnected";
-  if (label) {
-    label.textContent = connected ? "Connected" : "Disconnected";
+  connectionStatusEl.dataset.state = status.state;
+  if (!label) {
+    return;
   }
+  if (status.state === "connected") {
+    label.textContent = "Connected";
+  } else if (status.state === "blocked") {
+    label.textContent = status.reason
+      ? `Blocked (${prettyReason(status.reason)})`
+      : "Blocked";
+  } else {
+    // The default zero-config failure is simply: no broker is listening.
+    label.textContent = "Server not running";
+  }
+}
+
+/** Humanize a broker rejection reason for the status pill / Test Connection. */
+function prettyReason(reason: string): string {
+  if (reason === "origin_not_allowed") {
+    return "extension origin not allowed";
+  }
+  if (reason === "longpoll-requires-secret") {
+    return "long-poll needs a secret — set one in Advanced";
+  }
+  return reason;
 }
 
 /**
  * Loads the current broker connection state and subscribes to live updates.
- * The background script mirrors connect/disconnect into storage; we read it
- * once on load and then react to storage changes.
+ * The background script mirrors the tri-state into storage; we read it once on
+ * load and then react to storage changes.
  */
 async function loadConnectionStatus() {
   try {
-    applyConnectionStatus(await getBrokerConnected());
+    applyConnectionStatus(await getBrokerStatus());
   } catch (error) {
     console.error("Error loading connection status:", error);
   }
@@ -903,8 +989,17 @@ function initConnectionStatusWatcher() {
     }
     const change = changes[BROKER_STATUS_STORAGE_KEY];
     if (change) {
-      const value = change.newValue as { connected?: boolean } | undefined;
-      applyConnectionStatus(value?.connected === true);
+      const value = change.newValue as Partial<BrokerStatus> | undefined;
+      const state = value?.state
+        ? value.state
+        : value?.connected
+        ? "connected"
+        : "disconnected";
+      applyConnectionStatus({
+        connected: state === "connected",
+        state,
+        reason: value?.reason,
+      });
     }
   });
 }
@@ -1118,6 +1213,9 @@ automationModeToggle.addEventListener("change", handleAutomationModeToggle);
 transportSelect.addEventListener("change", handleTransportChange);
 inputRealismSelect.addEventListener("change", handleInputRealismChange);
 makeActiveButton.addEventListener("click", handleMakeActive);
+if (testConnectionButton) {
+  testConnectionButton.addEventListener("click", testConnection);
+}
 // The background relays broker active-status pushes to the options page so the
 // ACTIVE/STANDBY badge reflects the live "is this browser the active driver?"
 // state (independent of the topbar's Connected/Disconnected liveness).

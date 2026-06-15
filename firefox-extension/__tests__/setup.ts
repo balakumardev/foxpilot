@@ -7,11 +7,40 @@
 // real code paths run under test instead of silently hitting their best-effort
 // catch branches. These are standard web globals; installing them is benign.
 import { TextDecoder as NodeTextDecoder, TextEncoder as NodeTextEncoder } from "util";
+import { webcrypto as nodeWebcrypto } from "crypto";
 if (typeof (global as any).TextDecoder === "undefined") {
   (global as any).TextDecoder = NodeTextDecoder;
 }
 if (typeof (global as any).TextEncoder === "undefined") {
   (global as any).TextEncoder = NodeTextEncoder;
+}
+
+// jsdom does not provide the Web Crypto API. `auth.ts` (HMAC signing) and
+// `extension-config.ts` (randomUUID for browserId/secret) both call into
+// `crypto.subtle`/`crypto.randomUUID`, so back the global `crypto` with Node's
+// webcrypto. Defined configurable/writable so individual tests can still
+// `jest.spyOn(crypto, "randomUUID")`.
+if (
+  typeof (global as any).crypto === "undefined" ||
+  typeof (global as any).crypto.subtle === "undefined"
+) {
+  Object.defineProperty(global, "crypto", {
+    value: nodeWebcrypto,
+    writable: true,
+    configurable: true,
+  });
+}
+
+// WebSocket readyState constants for the transport tests (jsdom lacks
+// WebSocket; the client tests install a controllable FakeWebSocket on the global
+// and reference these constants).
+if (typeof (global as any).WebSocket === "undefined") {
+  (global as any).WebSocket = {
+    CONNECTING: 0,
+    OPEN: 1,
+    CLOSING: 2,
+    CLOSED: 3,
+  };
 }
 
 // Mock the browser API completely
@@ -62,6 +91,7 @@ const mockBrowser = {
   },
   runtime: {
     getURL: jest.fn(),
+    sendMessage: jest.fn(),
     onMessage: {
       addListener: jest.fn(),
       removeListener: jest.fn(),

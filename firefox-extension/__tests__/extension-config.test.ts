@@ -157,3 +157,66 @@ describe("sidecarPort", () => {
     });
   });
 });
+
+import {
+  getBrokerConnected,
+  getBrokerStatus,
+  setBrokerStatus,
+  BROKER_STATUS_STORAGE_KEY,
+} from "../extension-config";
+
+describe("broker status mirror", () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it("setBrokerStatus writes state + reason under the status key", async () => {
+    await setBrokerStatus("blocked", "origin_not_allowed");
+    expect(browser.storage.local.set).toHaveBeenCalledWith({
+      [BROKER_STATUS_STORAGE_KEY]: {
+        connected: false,
+        state: "blocked",
+        reason: "origin_not_allowed",
+      },
+    });
+  });
+
+  it("setBrokerStatus marks connected:true only for the connected state", async () => {
+    await setBrokerStatus("connected");
+    expect(browser.storage.local.set).toHaveBeenCalledWith({
+      [BROKER_STATUS_STORAGE_KEY]: {
+        connected: true,
+        state: "connected",
+        reason: undefined,
+      },
+    });
+  });
+
+  it("getBrokerStatus reads back the full state + reason", async () => {
+    (browser.storage.local.get as jest.Mock).mockResolvedValue({
+      [BROKER_STATUS_STORAGE_KEY]: {
+        connected: false,
+        state: "blocked",
+        reason: "origin_not_allowed",
+      },
+    });
+    const status = await getBrokerStatus();
+    expect(status.state).toBe("blocked");
+    expect(status.reason).toBe("origin_not_allowed");
+    expect(status.connected).toBe(false);
+  });
+
+  it("getBrokerStatus defaults to disconnected when nothing is stored", async () => {
+    (browser.storage.local.get as jest.Mock).mockResolvedValue({});
+    const status = await getBrokerStatus();
+    expect(status.state).toBe("disconnected");
+    expect(status.connected).toBe(false);
+  });
+
+  it("getBrokerConnected still reflects the connected flag", async () => {
+    (browser.storage.local.get as jest.Mock).mockResolvedValue({
+      [BROKER_STATUS_STORAGE_KEY]: { connected: true, state: "connected" },
+    });
+    expect(await getBrokerConnected()).toBe(true);
+  });
+});

@@ -3,11 +3,16 @@ import type {
   ServerMessageRequest,
 } from "@foxpilot/common";
 import { getMessageSignature } from "./auth";
-import { ExtensionTransport } from "./transport";
+import {
+  ExtensionTransport,
+  ConnectionStateCallback,
+  HealthcheckResult,
+} from "./transport";
 import { buildHello } from "./hello";
 
 const RECONNECT_INTERVAL = 2000;
 const POLL_AUTH_STRING = "extension-poll";
+const HEALTHCHECK_TIMEOUT = 3000;
 
 /**
  * HTTP long-poll transport to the broker — a fallback for environments where a
@@ -15,6 +20,14 @@ const POLL_AUTH_STRING = "extension-poll";
  * pending requests and POSTs responses to `/extension/respond`. Authenticates
  * every request with an HMAC of a fixed string (proving knowledge of the
  * shared secret), matching the broker's `BrokerLongPoll`.
+ *
+ * Long-poll is a LEGACY/signed-only transport: the broker's origin-mode (zero
+ * secret) admission is WebSocket-only, so a long-poll deployment always needs a
+ * configured secret. It has no `welcome` frame, so it maps a successful poll
+ * round-trip to "connected" and any failure to "disconnected". The one "blocked"
+ * case is a no-secret config: signing would throw, so `connect()` refuses up
+ * front with reason "longpoll-requires-secret" instead of spinning a throw/retry
+ * loop.
  */
 export class LongPollClient implements ExtensionTransport {
   private readonly port: number;
@@ -24,20 +37,37 @@ export class LongPollClient implements ExtensionTransport {
   private helloSent = false;
   private stopped = false;
   private abort: AbortController | null = null;
-  private readonly onStatusChange?: (connected: boolean) => void;
+  private readonly onConnectionState?: ConnectionStateCallback;
 
   constructor(
     port: number,
     secret: string,
-    onStatusChange?: (connected: boolean) => void
+    onConnectionState?: ConnectionStateCallback
   ) {
     this.port = port;
     this.secret = secret;
-    this.onStatusChange = onStatusChange;
+    this.onConnectionState = onConnectionState;
+  }
+
+  /** True when a secret is configured (the only mode long-poll can operate in). */
+  private get signed(): boolean {
+    return this.secret.length > 0;
   }
 
   connect(): void {
     this.stopped = false;
+    // Long-poll is signed-only: every request is authed with an HMAC of the
+    // shared secret, and getMessageSignature THROWS on an empty secret. Under
+    // the zero-config default (no secret) the poll loop would otherwise spin a
+    // failing throw/retry loop forever. Refuse cleanly instead: surface a
+    // human-meaningful "blocked" state telling the user this transport needs a
+    // secret, and never start the loop.
+    if (!this.signed) {
+      this.onConnectionState?.("blocked", {
+        reason: "longpoll-requires-secret",
+      });
+      return;
+    }
     void this.pollLoop();
   }
 
@@ -64,6 +94,50 @@ export class LongPollClient implements ExtensionTransport {
       this.secret
     );
     await this.post(JSON.stringify({ payload, signature }));
+  }
+
+  /**
+   * Probe the broker with a single short-timeout authed poll. The long-poll
+   * leg has no `welcome`/roster, so a 200 means the broker is reachable and this
+   * (signed) browser is admitted; it cannot report the full multi-browser roster
+   * that the WebSocket healthcheck does. Resolves (never rejects) with
+   * `serverReachable:false` on any failure or timeout.
+   */
+  async healthcheck(): Promise<HealthcheckResult> {
+    const notReachable: HealthcheckResult = {
+      serverReachable: false,
+      extensionConnected: false,
+      browsers: [],
+      activeBrowserId: null,
+    };
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), HEALTHCHECK_TIMEOUT);
+    try {
+      const auth = await this.authParam();
+      const res = await fetch(
+        `${this.baseUrl()}/extension/poll?auth=${auth}`,
+        { signal: controller.signal }
+      );
+      if (!res.ok) {
+        return notReachable;
+      }
+      // Drain the body so the long-park GET does not leave a dangling stream.
+      try {
+        await res.json();
+      } catch {
+        /* ignore — reachability is what matters */
+      }
+      return {
+        serverReachable: true,
+        extensionConnected: true,
+        browsers: [],
+        activeBrowserId: null,
+      };
+    } catch {
+      return notReachable;
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   private baseUrl(): string {
@@ -101,12 +175,13 @@ export class LongPollClient implements ExtensionTransport {
           // iteration re-registers this browser before resuming polling.
           this.helloSent = false;
           // Liveness: a failed poll means the broker is not reachable.
-          this.onStatusChange?.(false);
+          this.onConnectionState?.("disconnected");
           await this.delay(RECONNECT_INTERVAL);
           continue;
         }
-        // A successful poll means the broker is reachable.
-        this.onStatusChange?.(true);
+        // A successful poll round-trip means the broker admitted us (long-poll
+        // has no welcome frame; a successful authed poll is the admission proof).
+        this.onConnectionState?.("connected");
         const data = await res.json();
         if (data && Array.isArray(data.requests) && this.messageCallback) {
           for (const entry of data.requests) {
@@ -138,7 +213,7 @@ export class LongPollClient implements ExtensionTransport {
         // just re-registers the same browserId).
         this.helloSent = false;
         // Liveness: the poll round-trip failed, so the broker is not reachable.
-        this.onStatusChange?.(false);
+        this.onConnectionState?.("disconnected");
         await this.delay(RECONNECT_INTERVAL);
       }
     }
@@ -181,6 +256,6 @@ export class LongPollClient implements ExtensionTransport {
         /* ignore */
       }
     }
-    this.onStatusChange?.(false);
+    this.onConnectionState?.("disconnected");
   }
 }

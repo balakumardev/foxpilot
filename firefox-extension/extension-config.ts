@@ -3,6 +3,7 @@
  */
 
 import { ServerMessageRequest } from "@foxpilot/common/server-messages";
+import type { ConnectionState } from "./transport";
 
 const DEFAULT_WS_PORT = 8089;
 const DEFAULT_SIDECAR_PORT = 8090;
@@ -12,6 +13,18 @@ const AUDIT_LOG_SIZE_LIMIT = 100; // Maximum number of audit log entries to keep
 // persisted `config` object so it never pollutes saved settings — it is a
 // transient runtime flag the background script mirrors for the options page.
 export const BROKER_STATUS_STORAGE_KEY = "brokerStatus";
+
+/**
+ * The live broker connection status the background mirrors for the options page.
+ * `state` is the honest tri-state from the transport; `connected` is kept as a
+ * derived boolean so older read paths keep working. `reason` carries the broker
+ * rejection reason for the "blocked" state.
+ */
+export interface BrokerStatus {
+  connected: boolean;
+  state: ConnectionState;
+  reason?: string;
+}
 
 // Define all available tools with their IDs and descriptions
 export interface ToolInfo {
@@ -646,24 +659,59 @@ export function getToolNameById(toolId: string): string {
 }
 
 /**
- * Returns whether the extension is currently connected to the local broker.
- * Mirrored into storage by the background script (see setBrokerConnected);
- * defaults to false when unknown.
+ * Returns the full live broker connection status (tri-state + reason) the
+ * background mirrored into storage. Defaults to "disconnected" when unknown.
  */
-export async function getBrokerConnected(): Promise<boolean> {
+export async function getBrokerStatus(): Promise<BrokerStatus> {
   const obj = await browser.storage.local.get(BROKER_STATUS_STORAGE_KEY);
-  const status = obj[BROKER_STATUS_STORAGE_KEY] as
-    | { connected?: boolean }
+  const stored = obj[BROKER_STATUS_STORAGE_KEY] as
+    | Partial<BrokerStatus>
     | undefined;
-  return status?.connected === true;
+  if (!stored) {
+    return { connected: false, state: "disconnected" };
+  }
+  // Tolerate a legacy `{ connected }`-only record by deriving the state.
+  const state: ConnectionState =
+    stored.state ?? (stored.connected ? "connected" : "disconnected");
+  return {
+    connected: state === "connected",
+    state,
+    reason: stored.reason,
+  };
 }
 
 /**
  * Records the live broker connection status so the options page can reflect it.
  * Stored under BROKER_STATUS_STORAGE_KEY, outside the persisted `config` object.
+ * `connected` is derived from the state so existing read paths keep working.
+ */
+export async function setBrokerStatus(
+  state: ConnectionState,
+  reason?: string
+): Promise<void> {
+  await browser.storage.local.set({
+    [BROKER_STATUS_STORAGE_KEY]: {
+      connected: state === "connected",
+      state,
+      reason,
+    },
+  });
+}
+
+/**
+ * Returns whether the extension is currently connected to (admitted by) the
+ * local broker. Defaults to false when unknown. Kept as a thin wrapper over the
+ * richer status for callers that only care about the boolean.
+ */
+export async function getBrokerConnected(): Promise<boolean> {
+  const status = await getBrokerStatus();
+  return status.connected;
+}
+
+/**
+ * Records connect/disconnect as a boolean. Thin wrapper over setBrokerStatus
+ * for callers that have not adopted the tri-state surface.
  */
 export async function setBrokerConnected(connected: boolean): Promise<void> {
-  await browser.storage.local.set({
-    [BROKER_STATUS_STORAGE_KEY]: { connected },
-  });
+  await setBrokerStatus(connected ? "connected" : "disconnected");
 }
