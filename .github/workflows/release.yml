@@ -76,8 +76,10 @@ jobs:
           (cd build/ext && zip -r -X ../../foxpilot-extension.zip . >/dev/null)
 
       - name: Package Chrome extension zip (stable name for releases/latest)
+        # Build chrome-extension explicitly — nx run-many --all does not always
+        # include it, so don't rely on the global build having produced dist/.
         run: |
-          node chrome-extension/scripts/package.mjs
+          npm run package --prefix chrome-extension
           cp chrome-extension/web-ext-artifacts/foxpilot-chrome-*.zip foxpilot-chrome-extension.zip
 
       - name: Create GitHub Release
