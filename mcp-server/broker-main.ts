@@ -8,32 +8,36 @@
 
 import { BrokerServer } from "./broker";
 import { BrokerLongPoll } from "./broker-longpoll";
+import { getControlSecret } from "./control-secret";
 
 const WS_DEFAULT_PORT = 8089;
 
 function readBrokerConfig() {
+  const strict = (process.env.FOXPILOT_STRICT_EXTENSION_IDS ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
   return {
-    secret: process.env.EXTENSION_SECRET,
+    secret: getControlSecret(),
     port: process.env.EXTENSION_PORT
       ? parseInt(process.env.EXTENSION_PORT, 10)
       : WS_DEFAULT_PORT,
+    requireSignature: !!process.env.CONTAINERIZED,
+    strictExtensionIds: strict.length > 0 ? strict : undefined,
   };
 }
 
 async function main() {
-  const { secret, port } = readBrokerConfig();
-  if (!secret) {
-    console.error(
-      "Broker: EXTENSION_SECRET env var missing. See the extension's options page."
-    );
-    process.exit(1);
-  }
+  const { secret, port, requireSignature, strictExtensionIds } =
+    readBrokerConfig();
 
   const host = process.env.CONTAINERIZED ? "0.0.0.0" : "localhost";
   const server = new BrokerServer({
     port,
     host,
     secret,
+    requireSignature,
+    strictExtensionIds,
     onIdle: () => {
       console.error(
         "Broker: idle with no clients or extension; shutting down."
