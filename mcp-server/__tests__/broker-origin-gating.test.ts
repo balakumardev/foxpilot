@@ -125,6 +125,7 @@ describe("BrokerServer origin gating", () => {
     await nextMessage(ext); // welcome
     // The sole browser is implicitly active; an active-status push is broadcast
     // on registration. Capture the next active-status frame.
+    let ext2: WebSocket | null = null;
     const frame = await new Promise<any>((resolve) => {
       const onMsg = (d: WebSocket.RawData) => {
         const m = JSON.parse(d.toString());
@@ -135,14 +136,22 @@ describe("BrokerServer origin gating", () => {
       };
       ext.on("message", onMsg);
       // Trigger a re-broadcast by opening a second browser then closing it.
-      const ext2 = new WebSocket(`ws://127.0.0.1:${port}/extension`, {
+      ext2 = new WebSocket(`ws://127.0.0.1:${port}/extension`, {
         origin: "chrome-extension://second",
       });
-      ext2.on("open", () => ext2.send(unsignedHello("second")));
+      ext2.on("open", () => ext2!.send(unsignedHello("second")));
+      // The active-status frame can arrive before ext2 finishes its handshake;
+      // afterEach's server.close() then RSTs the still-connecting socket. Swallow
+      // that teardown error so it does not surface as an unhandled 'error' event
+      // (which would otherwise crash a later test in this file).
+      ext2.on("error", () => {});
     });
     expect(frame.payload.cmd).toBe("active-status");
     expect(frame.signature).toBeUndefined();
     ext.close();
+    if (ext2) {
+      (ext2 as WebSocket).close();
+    }
   }, 10000);
 
   it("answers a healthcheck frame with a healthcheck-result snapshot", async () => {

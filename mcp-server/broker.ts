@@ -147,7 +147,14 @@ export class BrokerServer {
   private readonly strictExtensionIds: string[] | undefined;
   private readonly requireSignature: boolean;
 
-  private readonly httpServer: http.Server;
+  /**
+   * One HTTP server per bind host. When `host` is `localhost` we bind BOTH
+   * loopback families (`127.0.0.1` and `::1`) so a peer connecting to either
+   * literal succeeds — macOS resolves `localhost` to `::1` only, which otherwise
+   * left `127.0.0.1` clients with ECONNREFUSED. All servers share the same
+   * `handleHttp` request handler and feed the single `noServer` WebSocketServer.
+   */
+  private readonly httpServers: http.Server[];
   private readonly wss: WebSocketServer;
   private readonly core: BrokerCore;
 
@@ -177,31 +184,94 @@ export class BrokerServer {
       getTimeoutMs: getCommandTimeout,
     });
 
-    this.httpServer = http.createServer((req, res) => this.handleHttp(req, res));
-    this.wss = new WebSocketServer({
-      server: this.httpServer,
-      verifyClient: (info, cb) => {
-        // Loopback enforcement at the handshake (rejects with HTTP 403 before a
-        // socket exists). Skipped under requireSignature (remote/CONTAINERIZED).
-        if (!this.requireSignature && !isLoopbackAddress(info.req.socket.remoteAddress)) {
-          cb(false, 403, "Forbidden");
+    // A single shared WebSocketServer in noServer mode; each per-host http.Server
+    // hands accepted upgrades to it. This lets us listen on multiple loopback
+    // addresses (see resolveBindHosts) while keeping one connection pipeline.
+    this.wss = new WebSocketServer({ noServer: true });
+    this.wss.on("connection", (ws, req) => this.onConnection(ws, req));
+
+    this.httpServers = this.resolveBindHosts().map(() => {
+      const httpServer = http.createServer((req, res) =>
+        this.handleHttp(req, res)
+      );
+      httpServer.on("upgrade", (req, socket, head) => {
+        // Loopback enforcement, formerly done by the ws `verifyClient` hook.
+        // Reject non-loopback peers before any WebSocket exists. Skipped under
+        // requireSignature (remote/CONTAINERIZED), where the signed hello is the
+        // gate instead. Read the peer address from req.socket (the upgrade
+        // `socket` arg is typed as a bare Duplex and omits remoteAddress).
+        if (
+          !this.requireSignature &&
+          !isLoopbackAddress(req.socket.remoteAddress)
+        ) {
+          try {
+            socket.write("HTTP/1.1 403 Forbidden\r\n\r\n");
+          } catch {
+            /* ignore */
+          }
+          socket.destroy();
           return;
         }
-        cb(true);
-      },
+        this.wss.handleUpgrade(req, socket, head, (ws) => {
+          this.wss.emit("connection", ws, req);
+        });
+      });
+      return httpServer;
     });
-    this.wss.on("connection", (ws, req) => this.onConnection(ws, req));
+  }
+
+  /**
+   * The loopback addresses to bind. `localhost` expands to BOTH IPv4 and IPv6
+   * loopback so connecting to either literal works regardless of how the OS
+   * resolves `localhost` (macOS resolves it to `::1` only). An explicit host
+   * (e.g. tests' `127.0.0.1`, or `0.0.0.0` under CONTAINERIZED) is bound as-is
+   * — single-bind, behaviour unchanged.
+   */
+  private resolveBindHosts(): string[] {
+    return this.host === "localhost" ? ["127.0.0.1", "::1"] : [this.host];
   }
 
   listen(): Promise<void> {
-    return new Promise((resolve, reject) => {
-      const onError = (err: NodeJS.ErrnoException) => reject(err);
-      this.httpServer.once("error", onError);
-      this.httpServer.listen(this.port, this.host, () => {
-        this.httpServer.removeListener("error", onError);
-        resolve();
+    const hosts = this.resolveBindHosts();
+    const [first, ...rest] = this.httpServers;
+
+    const listenOn = (server: http.Server, port: number, host: string) =>
+      new Promise<void>((resolve, reject) => {
+        const onError = (err: NodeJS.ErrnoException) => reject(err);
+        server.once("error", onError);
+        server.listen(port, host, () => {
+          server.removeListener("error", onError);
+          resolve();
+        });
       });
-    });
+
+    // Bind the first server on the requested port; with port 0 (tests) this
+    // resolves an ephemeral port that the remaining servers then reuse so the
+    // whole loopback set shares one port. 127.0.0.1 and ::1 can share a port
+    // number (different address families) — expected, not a conflict.
+    return listenOn(first, this.port, hosts[0])
+      .then(() => {
+        const addr = first.address();
+        const resolvedPort =
+          addr && typeof addr === "object" ? addr.port : this.port;
+        return Promise.all(
+          rest.map((server, i) => listenOn(server, resolvedPort, hosts[i + 1]))
+        ).then(() => undefined);
+      })
+      .catch((err) => {
+        // Partial-bind cleanup: tear down anything that did come up so a failed
+        // listen leaves no half-open servers. Preserve the original error
+        // (notably err.code === "EADDRINUSE") so broker-main's exit(0) race
+        // handling still triggers.
+        for (const server of this.httpServers) {
+          try {
+            server.close();
+          } catch {
+            /* ignore */
+          }
+        }
+        throw err;
+      });
   }
 
   close(): void {
@@ -227,7 +297,13 @@ export class BrokerServer {
     }
     this.extensions.clear();
     this.wss.close();
-    this.httpServer.close();
+    for (const server of this.httpServers) {
+      try {
+        server.close();
+      } catch {
+        /* ignore */
+      }
+    }
   }
 
   /** The resolved anonymous-socket handshake timeout (ms); useful for tests. */
@@ -237,7 +313,7 @@ export class BrokerServer {
 
   /** The actually-bound port (useful when constructed with port 0 for tests). */
   getPort(): number {
-    const addr = this.httpServer.address();
+    const addr = this.httpServers[0]?.address();
     if (addr && typeof addr === "object") {
       return addr.port;
     }
