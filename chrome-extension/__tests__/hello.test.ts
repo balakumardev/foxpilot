@@ -40,4 +40,20 @@ describe("buildHello", () => {
     );
     expect(parsed.signature).not.toBe(wrongSig);
   });
+
+  it("omits the signature in origin mode (no secret configured)", async () => {
+    const env = await buildHello("");
+    const parsed = JSON.parse(env);
+    // Same payload shape as signed mode...
+    expect(parsed.payload).toEqual({
+      type: "hello",
+      browserId: "bid-1",
+      browserType: "chrome",
+      label: "My Chrome",
+    });
+    // ...but NO signature field — the broker admits by Origin, and signing an
+    // empty secret would throw (auth.getMessageSignature rejects "").
+    expect("signature" in parsed).toBe(false);
+    expect(parsed.signature).toBeUndefined();
+  });
 });
