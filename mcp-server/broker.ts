@@ -61,14 +61,14 @@ function isAllowedExtensionOrigin(
 }
 
 /** True for loopback peers (127.0.0.0/8 and ::1, including IPv4-mapped). */
-function isLoopbackAddress(addr: string | undefined): boolean {
+export function isLoopbackAddress(addr: string | undefined): boolean {
   if (!addr) {
     return false;
   }
   return (
     addr === "::1" ||
-    addr === "::ffff:127.0.0.1" ||
-    addr.startsWith("127.")
+    addr.startsWith("127.") ||
+    addr.startsWith("::ffff:127.")
   );
 }
 

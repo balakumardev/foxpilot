@@ -23,16 +23,44 @@ export function getControlSecret(opts: { dir?: string } = {}): string {
   }
   const dir = opts.dir ?? path.join(os.homedir(), ".foxpilot");
   const file = path.join(dir, "control-secret");
-  try {
-    const existing = fs.readFileSync(file, "utf8").trim();
-    if (existing.length > 0) {
-      return existing;
+
+  const readExisting = (): string | null => {
+    try {
+      const existing = fs.readFileSync(file, "utf8").trim();
+      if (existing.length > 0) {
+        // Harden perms on a file that may have been created with looser bits.
+        try {
+          fs.chmodSync(file, 0o600);
+        } catch {
+          /* best effort */
+        }
+        return existing;
+      }
+    } catch {
+      /* not created yet */
     }
-  } catch {
-    /* file does not exist yet — fall through and create it */
+    return null;
+  };
+
+  const existing = readExisting();
+  if (existing) {
+    return existing;
   }
+
   const secret = crypto.randomUUID();
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-  fs.writeFileSync(file, secret, { mode: 0o600 });
-  return secret;
+  try {
+    // Atomic create: the "wx" flag fails if another process won the race.
+    fs.writeFileSync(file, secret, { mode: 0o600, flag: "wx" });
+    return secret;
+  } catch {
+    // Lost the create race (EEXIST) or a transient error — prefer the
+    // already-persisted value so concurrent cold starts converge.
+    const raced = readExisting();
+    if (raced) {
+      return raced;
+    }
+    fs.writeFileSync(file, secret, { mode: 0o600 });
+    return secret;
+  }
 }

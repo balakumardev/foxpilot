@@ -695,7 +695,6 @@ export class BrowserAPI {
 
 function readConfig() {
   return {
-    secret: process.env.EXTENSION_SECRET,
     port: process.env.EXTENSION_PORT
       ? parseInt(process.env.EXTENSION_PORT, 10)
       : WS_DEFAULT_PORT,
