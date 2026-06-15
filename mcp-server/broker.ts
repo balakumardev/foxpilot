@@ -35,6 +35,54 @@ import type { HelloPayload } from "./broker-protocol";
 import { createSignature, verifySignature } from "./signing";
 import { getCommandTimeout } from "./timeouts";
 
+const EXTENSION_ORIGIN_RE = /^(?:chrome|moz)-extension:\/\/([^/]+)\/?$/i;
+
+/** Returns the extension id if `origin` is a browser-extension origin, else null. */
+export function parseExtensionOrigin(origin: string | undefined): string | null {
+  if (!origin) {
+    return null;
+  }
+  const m = EXTENSION_ORIGIN_RE.exec(origin.trim());
+  return m ? m[1] : null;
+}
+
+function isAllowedExtensionOrigin(
+  origin: string | undefined,
+  strictIds: string[] | undefined
+): boolean {
+  const id = parseExtensionOrigin(origin);
+  if (id === null) {
+    return false;
+  }
+  if (strictIds && strictIds.length > 0) {
+    return strictIds.includes(id);
+  }
+  return true;
+}
+
+/** True for loopback peers (127.0.0.0/8 and ::1, including IPv4-mapped). */
+function isLoopbackAddress(addr: string | undefined): boolean {
+  if (!addr) {
+    return false;
+  }
+  return (
+    addr === "::1" ||
+    addr === "::ffff:127.0.0.1" ||
+    addr.startsWith("127.")
+  );
+}
+
+type HelloDecision =
+  | {
+      kind: "admit";
+      browserId: string;
+      type: "chrome" | "firefox";
+      label: string;
+      authMode: "signed" | "origin";
+    }
+  | { kind: "reject"; reason: string }
+  | { kind: "ignore" };
+
 const DEFAULT_IDLE_TIMEOUT_MS = 5 * 60 * 1000;
 const DEFAULT_HANDSHAKE_TIMEOUT_MS = 10 * 1000;
 
@@ -45,6 +93,8 @@ interface ExtensionConn {
   transport: "ws" | "longpoll";
   type: "chrome" | "firefox";
   label: string;
+  /** How this connection authenticated; governs whether its frames are HMAC-signed. */
+  authMode: "signed" | "origin";
   /** Timestamp of the last frame from this browser; informational (not yet consumed by routing or health). */
   lastSeen: number;
 }
@@ -63,6 +113,18 @@ export interface BrokerServerOptions {
    * DEFAULT_HANDSHAKE_TIMEOUT_MS.
    */
   handshakeTimeoutMs?: number;
+  /**
+   * Optional allowlist of extension ids. When non-empty, only `/extension`
+   * connections whose Origin id is in this list are admitted via the origin
+   * path. Empty/undefined accepts any chrome-/moz-extension origin.
+   */
+  strictExtensionIds?: string[];
+  /**
+   * When true, origin-gating is disabled and ONLY a valid signed hello admits an
+   * extension. Set for remote/CONTAINERIZED deployments where loopback + Origin
+   * guarantees do not hold. Default false.
+   */
+  requireSignature?: boolean;
 }
 
 /** Distinguishes the extension's raw (unsigned) error frame from a signed response envelope. */
@@ -82,6 +144,8 @@ export class BrokerServer {
   private readonly onIdle?: () => void;
   private readonly idleTimeoutMs: number;
   private readonly handshakeTimeoutMs: number;
+  private readonly strictExtensionIds: string[] | undefined;
+  private readonly requireSignature: boolean;
 
   private readonly httpServer: http.Server;
   private readonly wss: WebSocketServer;
@@ -104,6 +168,8 @@ export class BrokerServer {
     this.idleTimeoutMs = opts.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS;
     this.handshakeTimeoutMs =
       opts.handshakeTimeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS;
+    this.strictExtensionIds = opts.strictExtensionIds;
+    this.requireSignature = opts.requireSignature ?? false;
 
     this.core = new BrokerCore({
       sendToExtension: (req) => this.sendToExtension(req),
@@ -112,7 +178,18 @@ export class BrokerServer {
     });
 
     this.httpServer = http.createServer((req, res) => this.handleHttp(req, res));
-    this.wss = new WebSocketServer({ server: this.httpServer });
+    this.wss = new WebSocketServer({
+      server: this.httpServer,
+      verifyClient: (info, cb) => {
+        // Loopback enforcement at the handshake (rejects with HTTP 403 before a
+        // socket exists). Skipped under requireSignature (remote/CONTAINERIZED).
+        if (!this.requireSignature && !isLoopbackAddress(info.req.socket.remoteAddress)) {
+          cb(false, 403, "Forbidden");
+          return;
+        }
+        cb(true);
+      },
+    });
     this.wss.on("connection", (ws, req) => this.onConnection(ws, req));
   }
 
@@ -172,13 +249,14 @@ export class BrokerServer {
   private onConnection(ws: WebSocket, req: http.IncomingMessage): void {
     const path = (req.url ?? "/").split("?")[0];
     if (path.startsWith("/extension")) {
-      this.onExtensionConnection(ws);
+      this.onExtensionConnection(ws, req);
     } else {
       this.onClientConnection(ws);
     }
   }
 
-  private onExtensionConnection(ws: WebSocket): void {
+  private onExtensionConnection(ws: WebSocket, req: http.IncomingMessage): void {
+    const origin = req.headers.origin;
     this.clearIdleTimer();
     let conn: ExtensionConn | null = null;
 
@@ -211,14 +289,39 @@ export class BrokerServer {
     ws.on("message", (data) => {
       const raw = data.toString();
       if (!conn) {
-        conn = this.tryRegisterHello(raw, ws);
-        if (conn) {
-          // Registered: the socket is no longer anonymous, disarm the timer.
+        const decision = this.evaluateHello(raw, origin);
+        if (decision.kind === "admit") {
+          // Register without broadcasting so the welcome ack lands first; the
+          // active-status broadcast (to this socket and any others) follows.
+          conn = this.registerExtension(
+            {
+              browserId: decision.browserId,
+              ws,
+              transport: "ws",
+              type: decision.type,
+              label: decision.label,
+              authMode: decision.authMode,
+              lastSeen: Date.now(),
+            },
+            false
+          );
           clearHandshakeTimer();
+          this.sendWelcome(ws, decision.browserId);
+          this.broadcastActiveStatus();
+        } else if (decision.kind === "reject") {
+          try {
+            ws.send(JSON.stringify({ type: "rejected", reason: decision.reason }));
+          } catch {
+            /* ignore */
+          }
+          try {
+            ws.close();
+          } catch {
+            /* ignore */
+          }
         } else {
-          // Invalid/absent hello — never admit; close without echoing. Leave the
-          // handshake timer armed (the close handler clears it) in case the peer
-          // keeps the socket open after the rejected frame.
+          // Malformed/non-hello frame: close silently, leave the handshake timer
+          // armed (the close handler clears it).
           try {
             ws.close();
           } catch {
@@ -228,7 +331,7 @@ export class BrokerServer {
         return;
       }
       conn.lastSeen = Date.now();
-      this.onExtensionMessage(raw);
+      this.onExtensionMessage(raw, conn);
     });
 
     ws.on("close", () => {
@@ -246,51 +349,81 @@ export class BrokerServer {
   }
 
   /**
-   * Verify a signed `hello` and register the connection. Returns the new
-   * ExtensionConn on success, or null if the frame is not a valid signed hello
-   * (caller closes the socket without admitting it).
+   * Decide how to handle the first frame on an anonymous /extension socket:
+   *  - "admit" via a valid signed hello (legacy/secured path), or
+   *  - "admit" via an allowed extension Origin (zero-config path), or
+   *  - "reject" a structurally-valid hello that is neither (typed reason), or
+   *  - "ignore" anything that is not a hello at all (caller closes silently).
    */
-  private tryRegisterHello(raw: string, ws: WebSocket): ExtensionConn | null {
+  private evaluateHello(raw: string, origin: string | undefined): HelloDecision {
     let decoded: { payload?: HelloPayload; signature?: string };
     try {
       decoded = JSON.parse(raw);
     } catch {
-      return null;
+      return { kind: "ignore" };
     }
     const payload = decoded?.payload;
     if (
       !payload ||
       payload.type !== "hello" ||
-      typeof payload.browserId !== "string" ||
-      typeof decoded.signature !== "string"
+      typeof payload.browserId !== "string"
     ) {
-      return null;
+      return { kind: "ignore" };
+    }
+    const base = {
+      browserId: payload.browserId,
+      type: (payload.browserType === "firefox" ? "firefox" : "chrome") as
+        | "chrome"
+        | "firefox",
+      label: payload.label || payload.browserType,
+    };
+    if (
+      this.secret &&
+      typeof decoded.signature === "string" &&
+      verifySignature(this.secret, JSON.stringify(payload), decoded.signature)
+    ) {
+      return { kind: "admit", ...base, authMode: "signed" };
     }
     if (
-      !verifySignature(
-        this.secret,
-        JSON.stringify(payload),
-        decoded.signature
-      )
+      !this.requireSignature &&
+      isAllowedExtensionOrigin(origin, this.strictExtensionIds)
     ) {
-      return null;
+      return { kind: "admit", ...base, authMode: "origin" };
     }
-    return this.registerExtension({
-      browserId: payload.browserId,
-      ws,
-      transport: "ws",
-      type: payload.browserType === "firefox" ? "firefox" : "chrome",
-      label: payload.label || payload.browserType,
-      lastSeen: Date.now(),
-    });
+    return { kind: "reject", reason: "origin_not_allowed" };
+  }
+
+  /** Send the unsigned admission ack with the current browser roster. */
+  private sendWelcome(ws: WebSocket, browserId: string): void {
+    const welcome = {
+      type: "welcome",
+      browserId,
+      activeBrowserId: this.activeBrowserId,
+      browsers: this.listBrowserInfo(),
+    };
+    try {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify(welcome));
+      }
+    } catch {
+      /* ignore */
+    }
   }
 
   /**
    * Register (or re-attach) a browser by browserId. A reconnect under the same
    * id replaces the stale socket without disturbing other browsers. Pushes the
    * active-status to every browser whenever the set changes.
+   *
+   * `broadcast` defaults to true. The WS admission flow passes false so it can
+   * send the `welcome` ack as the FIRST frame the joining socket sees, then
+   * broadcast active-status to everyone — otherwise the synchronous broadcast
+   * here would beat the welcome onto the wire.
    */
-  private registerExtension(conn: ExtensionConn): ExtensionConn {
+  private registerExtension(
+    conn: ExtensionConn,
+    broadcast = true
+  ): ExtensionConn {
     const prev = this.extensions.get(conn.browserId);
     if (prev && prev.ws && prev.ws !== conn.ws) {
       try {
@@ -301,7 +434,9 @@ export class BrokerServer {
     }
     this.extensions.set(conn.browserId, conn);
     this.clearIdleTimer();
-    this.broadcastActiveStatus();
+    if (broadcast) {
+      this.broadcastActiveStatus();
+    }
     return conn;
   }
 
@@ -336,7 +471,7 @@ export class BrokerServer {
 
   // ---- extension leg ----
 
-  private onExtensionMessage(raw: string): void {
+  private onExtensionMessage(raw: string, conn?: ExtensionConn): void {
     let decoded: unknown;
     try {
       decoded = JSON.parse(raw);
@@ -345,14 +480,40 @@ export class BrokerServer {
       return;
     }
 
-    // Extension keepalive frame from `chrome-extension/client.ts ping()`, sent
-    // on each SW alarm wake to keep the socket warm. Nothing to do server-side;
-    // recognized here so it isn't logged as a malformed envelope below.
+    // A connection that authed by Origin carries no shared secret; its frames
+    // are unsigned. Long-poll (no conn here) keeps the legacy signed contract.
+    const signed = conn ? conn.authMode === "signed" : true;
+
+    // Keepalive frame (chrome-extension/client.ts ping()). Nothing to do.
     if (
       decoded &&
       typeof decoded === "object" &&
       (decoded as { type?: unknown }).type === "ping"
     ) {
+      return;
+    }
+
+    // Honest-status probe from the options page. Reply over the same socket with
+    // a roster snapshot (unsigned — same leg).
+    if (
+      decoded &&
+      typeof decoded === "object" &&
+      (decoded as { type?: unknown }).type === "healthcheck"
+    ) {
+      if (conn?.ws && conn.ws.readyState === WebSocket.OPEN) {
+        try {
+          conn.ws.send(
+            JSON.stringify({
+              type: "healthcheck-result",
+              extensionConnected: this.extensionConnected(),
+              browsers: this.listBrowserInfo(),
+              activeBrowserId: this.activeBrowserId,
+            })
+          );
+        } catch {
+          /* ignore */
+        }
+      }
       return;
     }
 
@@ -375,34 +536,32 @@ export class BrokerServer {
           ws: null,
           transport: "longpoll",
           type:
-            maybeHello.payload.browserType === "firefox"
-              ? "firefox"
-              : "chrome",
+            maybeHello.payload.browserType === "firefox" ? "firefox" : "chrome",
           label: maybeHello.payload.label || maybeHello.payload.browserType,
+          authMode: "signed",
           lastSeen: Date.now(),
         });
       }
       return;
     }
 
-    // "Make this browser active" sent from the options page: a signed
-    // { type:"select-active", browserId } frame on the extension->broker channel,
-    // symmetric to the hello. Verify the signature, and only honor it if the
-    // named browser is actually connected (id-checked), then push the new state.
+    // "Make this browser active" from the options page. Signature is required
+    // only for signed connections; origin connections send it unsigned.
     const maybeSelect = decoded as {
       payload?: { type?: string; browserId?: string };
       signature?: string;
     };
-    if (
-      maybeSelect?.payload?.type === "select-active" &&
-      typeof maybeSelect.signature === "string"
-    ) {
+    if (maybeSelect?.payload?.type === "select-active") {
+      const sigOk = signed
+        ? typeof maybeSelect.signature === "string" &&
+          verifySignature(
+            this.secret,
+            JSON.stringify(maybeSelect.payload),
+            maybeSelect.signature
+          )
+        : true;
       if (
-        verifySignature(
-          this.secret,
-          JSON.stringify(maybeSelect.payload),
-          maybeSelect.signature
-        ) &&
+        sigOk &&
         maybeSelect.payload.browserId &&
         this.extensions.has(maybeSelect.payload.browserId)
       ) {
@@ -412,26 +571,32 @@ export class BrokerServer {
       return;
     }
 
-    // Error frames are sent raw (unsigned), matching the existing protocol.
+    // Error frames are sent raw (unsigned) in both modes.
     if (isExtensionErrorFrame(decoded)) {
       this.core.handleExtensionError(decoded);
       return;
     }
 
-    const envelope = decoded as { payload?: ExtensionMessage; signature?: string };
-    if (!envelope || !envelope.payload || typeof envelope.signature !== "string") {
+    const envelope = decoded as {
+      payload?: ExtensionMessage;
+      signature?: string;
+    };
+    if (!envelope || !envelope.payload) {
       console.error("Broker: malformed extension envelope");
       return;
     }
-    if (
-      !verifySignature(
-        this.secret,
-        JSON.stringify(envelope.payload),
-        envelope.signature
-      )
-    ) {
-      console.error("Broker: invalid extension message signature");
-      return;
+    if (signed) {
+      if (
+        typeof envelope.signature !== "string" ||
+        !verifySignature(
+          this.secret,
+          JSON.stringify(envelope.payload),
+          envelope.signature
+        )
+      ) {
+        console.error("Broker: invalid extension message signature");
+        return;
+      }
     }
     this.core.handleExtensionResponse(envelope.payload);
   }
