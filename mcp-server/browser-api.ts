@@ -48,6 +48,7 @@ import {
   BrowserInfo,
 } from "./broker-protocol";
 import { createSignature, verifySignature } from "./signing";
+import { getControlSecret } from "./control-secret";
 
 const WS_DEFAULT_PORT = 8089;
 const CONNECT_TIMEOUT_MS = 10000;
@@ -80,13 +81,10 @@ export class BrowserAPI {
   private readonly controlMap = new Map<string, ControlResolver>();
 
   async init() {
-    const { secret, port } = readConfig();
-    if (!secret) {
-      throw new Error(
-        "EXTENSION_SECRET env var missing. See the extension's options page."
-      );
-    }
-    this.secret = secret;
+    const { port } = readConfig();
+    // The extension leg is origin-gated; this secret only authenticates the
+    // control leg to the broker, and is auto-managed (env, else persisted file).
+    this.secret = getControlSecret();
     this.port = port;
     await this.ensureBrokerAndConnect();
   }

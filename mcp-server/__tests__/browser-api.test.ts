@@ -49,6 +49,16 @@ function startMockExtension(
     });
     ws.on("message", (data) => {
       const env = JSON.parse(data.toString());
+      // The broker now sends an unsigned `welcome` ack on admission and
+      // `active-status` broadcasts; neither is a tool request. Only dispatch
+      // real tool-request envelopes (a `payload` carrying a tool `cmd`).
+      if (env?.type === "welcome" || env?.type === "rejected") {
+        return;
+      }
+      const rawCmd = env?.payload?.cmd;
+      if (typeof rawCmd !== "string" || rawCmd === "active-status") {
+        return;
+      }
       const req = env.payload as ServerMessageRequest;
       const reply = replyFn(req);
       if ("error" in reply) {
