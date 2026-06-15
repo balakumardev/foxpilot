@@ -230,6 +230,17 @@
       animation: pulse 1.4s ease-in-out infinite;
     }
 
+    .conn[data-state="blocked"] {
+      color: #FECACA;
+      border-color: rgba(239, 68, 68, 0.4);
+      background: var(--danger-weak);
+    }
+
+    .conn[data-state="blocked"] .conn-dot {
+      background: var(--danger);
+      box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.18), 0 0 10px rgba(239, 68, 68, 0.7);
+    }
+
     @keyframes pulse {
 
       0%,
@@ -1180,7 +1191,7 @@
       <nav class="sidebar" id="sidebar" aria-label="Settings sections">
         <div class="nav-title">Settings</div>
         <a class="nav-item" data-target="section-setup"><svg class="icon" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/></svg>Setup</a>
-        <a class="nav-item" data-target="section-secret"><svg class="icon" viewBox="0 0 24 24"><path d="m15.5 7.5 2.3 2.3a1 1 0 0 0 1.4 0l2.1-2.1a1 1 0 0 0 0-1.4L21 4"/><path d="m21 2-9.6 9.6"/><circle cx="7.5" cy="15.5" r="5.5"/></svg>Secret Key</a>
+        <a class="nav-item" data-target="section-secret"><svg class="icon" viewBox="0 0 24 24"><path d="m15.5 7.5 2.3 2.3a1 1 0 0 0 1.4 0l2.1-2.1a1 1 0 0 0 0-1.4L21 4"/><path d="m21 2-9.6 9.6"/><circle cx="7.5" cy="15.5" r="5.5"/></svg>Advanced (Secret)</a>
         <a class="nav-item" data-target="section-ports"><svg class="icon" viewBox="0 0 24 24"><rect x="16" y="16" width="6" height="6" rx="1"/><rect x="2" y="16" width="6" height="6" rx="1"/><rect x="9" y="2" width="6" height="6" rx="1"/><path d="M5 16v-3a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v3"/><path d="M12 12V8"/></svg>Ports</a>
         <a class="nav-item" data-target="section-tools"><svg class="icon" viewBox="0 0 24 24"><line x1="4" x2="4" y1="21" y2="14"/><line x1="4" x2="4" y1="10" y2="3"/><line x1="12" x2="12" y1="21" y2="12"/><line x1="12" x2="12" y1="8" y2="3"/><line x1="20" x2="20" y1="21" y2="16"/><line x1="20" x2="20" y1="12" y2="3"/><line x1="2" x2="6" y1="14" y2="14"/><line x1="10" x2="14" y1="8" y2="8"/><line x1="18" x2="22" y1="16" y2="16"/></svg>Tools</a>
         <a class="nav-item" data-target="section-automation"><svg class="icon" viewBox="0 0 24 24"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/></svg>Automation</a>
@@ -1198,7 +1209,7 @@
             <span class="panel-icon"><svg class="icon" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/></svg></span>
             <div class="panel-head-text">
               <div class="panel-title">MCP Server Installation</div>
-              <div class="panel-sub">Install the local server, then connect it with your secret key</div>
+              <div class="panel-sub">Install the local server — then this browser connects automatically</div>
             </div>
           </div>
           <div class="panel-body">
@@ -1223,22 +1234,39 @@
             </div>
             <div class="note">
               <svg class="icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>
-              After installing the MCP server, configure it with the secret key shown below.
+              Zero-config: no secret to copy. Once the MCP server is running, this browser pairs with its broker
+              automatically over localhost. Use <strong>Test Connection</strong> below to confirm.
             </div>
+            <div class="subhead">Test connection</div>
+            <p style="font-size:12.5px;margin-top:0">Check whether the broker is reachable and this browser is admitted.
+            </p>
+            <div class="field-row">
+              <button class="btn btn-primary" id="test-connection-btn" type="button">
+                <svg class="icon" viewBox="0 0 24 24"><path d="M4.9 19.1C1 15.2 1 8.8 4.9 4.9"/><path d="M7.8 16.2c-2.3-2.3-2.3-6.1 0-8.5"/><circle cx="12" cy="12" r="2"/><path d="M16.2 7.8c2.3 2.3 2.3 6.1 0 8.5"/><path d="M19.1 4.9C23 8.8 23 15.1 19.1 19"/></svg>
+                Test Connection
+              </button>
+            </div>
+            <div class="status" id="test-connection-status"></div>
           </div>
         </section>
 
-        <!-- Secret Key -->
+        <!-- Advanced: manual secret (legacy / remote setups) -->
         <section class="panel" id="section-secret">
           <div class="panel-head">
             <span class="panel-icon"><svg class="icon" viewBox="0 0 24 24"><path d="m15.5 7.5 2.3 2.3a1 1 0 0 0 1.4 0l2.1-2.1a1 1 0 0 0 0-1.4L21 4"/><path d="m21 2-9.6 9.6"/><circle cx="7.5" cy="15.5" r="5.5"/></svg></span>
             <div class="panel-head-text">
-              <div class="panel-title">Secret Key</div>
-              <div class="panel-sub">Authenticates the MCP server to this extension</div>
+              <div class="panel-title">Advanced: Manual secret</div>
+              <div class="panel-sub">Legacy / remote setups only — not needed for local zero-config</div>
             </div>
           </div>
           <div class="panel-body">
-            <p>Auto-generated on install. Paste it into your MCP server configuration.</p>
+            <div class="note">
+              <svg class="icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>
+              You do <strong>not</strong> need a secret for the normal local setup — this browser pairs with the broker
+              automatically. Set a manual secret only for advanced/remote deployments where you run the broker with an
+              explicit <code>EXTENSION_SECRET</code> and want every browser to sign identically.
+            </div>
+            <div class="subhead">Current secret</div>
             <div class="secret-row">
               <div class="secret-value" id="secret-display">Loading…</div>
               <button class="icon-btn" id="secret-toggle" type="button" aria-label="Reveal secret" title="Reveal">
@@ -1252,7 +1280,7 @@
             <div class="subhead">Set a custom secret</div>
             <p style="font-size:12.5px;margin-top:0">Paste the <strong>same</strong> shared secret used by the broker's
               <code>EXTENSION_SECRET</code> and every other browser you connect, so all of them sign identically. Saving
-              reloads the extension.</p>
+              reloads the extension. Leave this empty to stay on zero-config pairing.</p>
             <div class="field-row">
               <input type="text" id="secret-input" class="field mono" placeholder="Paste the shared secret"
                 autocomplete="off" spellcheck="false" />
@@ -1407,6 +1435,8 @@
               }
             </style>
             <div id="connection-badge" class="badge standby">STANDBY</div>
+            <div id="connected-browsers" class="note" style="margin-top:14px">Only this browser is connected to the
+              broker.</div>
             <div style="margin-top:14px">
               <button class="btn btn-primary" id="make-active-btn">Make this browser active</button>
             </div>

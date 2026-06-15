@@ -50,6 +50,9 @@ export class WebsocketClient implements ExtensionTransport {
   private blocked = false;
   // The browserId echoed in the latest welcome, used to derive ACTIVE/STANDBY.
   private myBrowserId: string | null = null;
+  // The browser roster from the latest welcome, exposed to the options page so
+  // it can list the other connected browsers without an extra round-trip.
+  private lastRoster: BrokerBrowserInfo[] = [];
   // Pending healthcheck resolver, set while a probe is in flight.
   private healthcheckResolver:
     | ((result: HealthcheckResult) => void)
@@ -166,11 +169,26 @@ export class WebsocketClient implements ExtensionTransport {
   private handleWelcome(frame: WelcomeFrame): void {
     this.admitted = true;
     this.myBrowserId = frame.browserId;
+    this.lastRoster = Array.isArray(frame.browsers) ? frame.browsers : [];
     // Connected = admitted. This is the ONLY place we report it.
     this.onConnectionState?.("connected");
     // Derive ACTIVE/STANDBY immediately so a lone browser shows ACTIVE without
     // waiting for a separate active-status push.
     this.statusCallback?.(this.deriveActive(frame));
+  }
+
+  /**
+   * The browser roster + this browser's id from the most recent welcome, for
+   * the options page's connected-browsers list. null until the first welcome.
+   */
+  public getLastRoster(): {
+    browsers: BrokerBrowserInfo[];
+    browserId: string;
+  } | null {
+    if (!this.myBrowserId) {
+      return null;
+    }
+    return { browsers: this.lastRoster, browserId: this.myBrowserId };
   }
 
   /** Admission refused — the server is running but rejected this browser. */

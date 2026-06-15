@@ -147,7 +147,14 @@ chrome.runtime.onMessage.addListener(
       return;
     }
     if (msg?.type === "get-active-status") {
-      sendResponse({ active: lastActiveStatus });
+      // Include the connected-browser roster (from the last welcome) so the
+      // options page can list the other browsers and explain STANDBY.
+      const roster = activeClientRef?.getLastRoster?.() ?? null;
+      sendResponse({
+        active: lastActiveStatus,
+        browsers: roster?.browsers ?? [],
+        browserId: roster?.browserId,
+      });
       return true; // keep the channel open for the (synchronous) reply
     }
     if (msg?.type === "healthcheck") {

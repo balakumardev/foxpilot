@@ -72,6 +72,12 @@ export interface ExtensionTransport {
    * or does not answer in time.
    */
   healthcheck?(): Promise<HealthcheckResult>;
+  /**
+   * Optional: the most recent browser roster the broker reported (from the last
+   * `welcome`), plus this browser's id. Lets the options page list the other
+   * connected browsers without a round-trip. null until the first welcome.
+   */
+  getLastRoster?(): { browsers: BrokerBrowserInfo[]; browserId: string } | null;
   sendResourceToServer(resource: ExtensionMessage): Promise<void>;
   sendErrorToServer(correlationId: string, errorMessage: string): Promise<void>;
   disconnect(): void;
