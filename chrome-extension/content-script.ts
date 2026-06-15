@@ -12,10 +12,10 @@ import { runHumanInput, HumanInputDeps } from "./humanize/run-human-input";
 import { mousePath, typingPlan, Point } from "./humanize/motion-model";
 import {
   buildEvalPageScript,
-  buildUploadPageScript,
   buildDialogPageScript,
   buildEmulatePageScript,
 } from "./injected/page-world";
+import { performFileUpload } from "./injected/upload-script";
 
 // Guard against duplicate injection in the same isolated world.
 if ((window as any).__bcmcpContentScriptLoaded) {
@@ -311,17 +311,16 @@ if ((window as any).__bcmcpContentScriptLoaded) {
           }
 
           case "uploadFile": {
-            const result = await runInPageWorld(
-              buildUploadPageScript(
-                message.uid,
-                message.filename,
-                message.mimeType,
-                message.base64,
-                message.resultAttr
-              ),
-              message.resultAttr,
-              message.timeoutMs
-            );
+            // Run the upload in THIS isolated content-script world — no page-world
+            // <script> injection — so a strict page CSP can't block it. Resolves
+            // the file input from the uid (input or its drop zone) and assigns it
+            // via DataTransfer; events on the shared DOM node reach page listeners.
+            const result = performFileUpload(document, {
+              uid: message.uid,
+              filename: message.filename,
+              mimeType: message.mimeType,
+              base64: message.base64,
+            });
             sendResponse(result);
             break;
           }

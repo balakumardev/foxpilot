@@ -1588,16 +1588,14 @@ describe("MessageHandler", () => {
       (browser.permissions.contains as jest.Mock).mockResolvedValue(true);
     });
 
-    it("injects the page-world upload script, polls the result, and replies action-result ok:true", async () => {
-      // First executeScript call is the injector (returns [true]); the next is
-      // the poller, which returns the serialized in-page envelope. The real
-      // File/DataTransfer/input.files assignment is browser-only (jsdom's
-      // DataTransfer + file-input handling is incomplete), so the injected page
-      // script is exercised through the mock here and via the builder's
-      // structural tests in page-world.test.ts.
-      (browser.tabs.executeScript as jest.Mock)
-        .mockResolvedValueOnce([true])
-        .mockResolvedValueOnce([JSON.stringify({ ok: true })]);
+    it("runs the isolated-world upload function (no page <script>) and replies action-result ok:true", async () => {
+      // upload-file runs `performFileUpload` directly in the isolated
+      // content-script world via a single executeScript call (no page-world
+      // <script> injection, so a strict page CSP can't block it) and reads the
+      // {ok,error} envelope from results[0]. The real File/DataTransfer assignment
+      // is browser-only (jsdom is incomplete), so it is mocked here and exercised
+      // directly in upload-script.test.ts.
+      (browser.tabs.executeScript as jest.Mock).mockResolvedValue([{ ok: true }]);
 
       const request: ServerMessageRequest = {
         cmd: "upload-file",
@@ -1611,15 +1609,17 @@ describe("MessageHandler", () => {
 
       await messageHandler.handleDecodedMessage(request);
 
-      // The injector executeScript carries the page-world upload script, which
-      // embeds the uid, filename, and base64. They are nested two JSON layers
-      // deep (page script inside injector), so assert on recognizable content.
-      const injectorCode = (browser.tabs.executeScript as jest.Mock).mock
-        .calls[0][1].code;
-      expect(injectorCode).toContain("createElement('script')");
-      expect(injectorCode).toContain("DataTransfer");
-      expect(injectorCode).toContain("report.pdf");
-      expect(injectorCode).toContain("QUJD");
+      // Exactly one executeScript call, carrying the isolated-world upload
+      // function and the embedded args — and NOT an injected page <script>.
+      expect(
+        (browser.tabs.executeScript as jest.Mock).mock.calls.length
+      ).toBe(1);
+      const code = (browser.tabs.executeScript as jest.Mock).mock.calls[0][1]
+        .code;
+      expect(code).toContain("performFileUpload");
+      expect(code).toContain("report.pdf");
+      expect(code).toContain("QUJD");
+      expect(code).not.toContain("createElement('script')");
 
       expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
         resource: "action-result",
@@ -1630,14 +1630,12 @@ describe("MessageHandler", () => {
     });
 
     it("replies action-result ok:false with the error when the uid is not found", async () => {
-      (browser.tabs.executeScript as jest.Mock)
-        .mockResolvedValueOnce([true])
-        .mockResolvedValueOnce([
-          JSON.stringify({
-            ok: false,
-            error: "Element uid 'e9' not found — take a fresh snapshot.",
-          }),
-        ]);
+      (browser.tabs.executeScript as jest.Mock).mockResolvedValue([
+        {
+          ok: false,
+          error: "Element uid 'e9' not found — take a fresh snapshot.",
+        },
+      ]);
 
       const request: ServerMessageRequest = {
         cmd: "upload-file",
