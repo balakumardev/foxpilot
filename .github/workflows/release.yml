@@ -1,9 +1,11 @@
 name: Release
 
 # Release on every push to main: bump the version, tag, cut a GitHub Release
-# with the DXT + extension zip attached, publish the MCP server to npm, and
-# republish the Firefox add-on to AMO. The bot's own bump commit is tagged
-# "[skip ci]" so it never re-triggers this workflow.
+# with the DXT + extension zips attached, publish the MCP server to npm,
+# republish the Firefox add-on to AMO, and publish the Chrome extension to the
+# Chrome Web Store. The bot's own bump commit is tagged "[skip ci]" so it never
+# re-triggers this workflow. The npm / AMO / Chrome publish steps each self-skip
+# when their credentials are absent, so the release never fails for a missing key.
 
 on:
   push:
@@ -47,7 +49,8 @@ jobs:
           VERSION=$(node -p "require('./package.json').version")
           npm version "$VERSION" --no-git-tag-version --allow-same-version --prefix mcp-server
           npm version "$VERSION" --no-git-tag-version --allow-same-version --prefix firefox-extension
-          for m in mcp-server/manifest.json firefox-extension/manifest.json; do
+          npm version "$VERSION" --no-git-tag-version --allow-same-version --prefix chrome-extension
+          for m in mcp-server/manifest.json firefox-extension/manifest.json chrome-extension/manifest.json; do
             tmp=$(mktemp); jq --arg v "$VERSION" '.version = $v' "$m" > "$tmp" && mv "$tmp" "$m"
           done
           echo "VERSION=$VERSION" >> "$GITHUB_OUTPUT"
@@ -72,6 +75,11 @@ jobs:
                 firefox-extension/dist firefox-extension/assets build/ext/
           (cd build/ext && zip -r -X ../../foxpilot-extension.zip . >/dev/null)
 
+      - name: Package Chrome extension zip (stable name for releases/latest)
+        run: |
+          node chrome-extension/scripts/package.mjs
+          cp chrome-extension/web-ext-artifacts/foxpilot-chrome-*.zip foxpilot-chrome-extension.zip
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -80,6 +88,7 @@ jobs:
           files: |
             mcp-server/foxpilot-mcp.dxt
             foxpilot-extension.zip
+            foxpilot-chrome-extension.zip
 
       - name: Publish MCP server to npm
         if: steps.secrets.outputs.npm == 'true'
@@ -142,3 +151,47 @@ jobs:
         env:
           AMO_JWT_ISSUER: ${{ secrets.AMO_JWT_ISSUER }}
           AMO_JWT_SECRET: ${{ secrets.AMO_JWT_SECRET }}
+
+  publish-chrome:
+    # Build + publish the Chrome extension to the Chrome Web Store on every commit.
+    # Skipped unless all four CWS_* credentials are configured. Like the npm/AMO
+    # jobs, a throttled or listing-incomplete publish must not fail the release
+    # (the first publish of a brand-new item needs its store listing completed in
+    # the Web Store dashboard before it can go public).
+    needs: release
+    runs-on: ubuntu-latest
+    if: "!contains(github.event.head_commit.message, '[skip ci]')"
+    steps:
+      - name: Check Chrome Web Store credentials
+        id: cws
+        run: echo "ok=${{ secrets.CWS_CLIENT_ID != '' && secrets.CWS_CLIENT_SECRET != '' && secrets.CWS_REFRESH_TOKEN != '' && secrets.CWS_EXTENSION_ID != '' }}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        if: steps.cws.outputs.ok == 'true'
+        with:
+          ref: main
+
+      - uses: actions/setup-node@v4
+        if: steps.cws.outputs.ok == 'true'
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        if: steps.cws.outputs.ok == 'true'
+        run: npm install
+
+      - name: Build + package Chrome extension
+        if: steps.cws.outputs.ok == 'true'
+        run: npm run package --prefix chrome-extension
+
+      - name: Publish to Chrome Web Store
+        if: steps.cws.outputs.ok == 'true'
+        continue-on-error: true
+        uses: mobilefirstllc/cws-publish@latest
+        with:
+          action: publish
+          client_id: ${{ secrets.CWS_CLIENT_ID }}
+          client_secret: ${{ secrets.CWS_CLIENT_SECRET }}
+          refresh_token: ${{ secrets.CWS_REFRESH_TOKEN }}
+          extension_id: ${{ secrets.CWS_EXTENSION_ID }}
+          zip_file: chrome-extension/web-ext-artifacts/foxpilot-chrome-${{ needs.release.outputs.version }}.zip
