@@ -41,7 +41,8 @@
       "title": "Extension Secret (optional, advanced)",
       "description": "Optional. Leave blank for normal use — the browser extension pairs with the local server automatically. Only set this for advanced/remote (containerized) deployments, and use the same value in the extension's Advanced settings.",
       "sensitive": true,
-      "required": false
+      "required": false,
+      "default": ""
     },
     "port": {
       "type": "string",

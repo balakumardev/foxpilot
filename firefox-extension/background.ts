@@ -10,6 +10,7 @@ import {
   getConfig,
   getTransport,
   setBrokerStatus,
+  migrateStaleSecret,
 } from "./extension-config";
 import { initConsoleCapture } from "./console-capture";
 import { initNetworkCapture } from "./network-capture";
@@ -174,6 +175,12 @@ async function initExtension() {
   // We do NOT auto-generate a secret or force-open the options page anymore. A
   // user who wants the legacy signed/remote setup can set a custom secret in the
   // options page's Advanced section.
+  //
+  // One-time migration: a pre-zero-config build may have auto-generated a
+  // per-install secret that the origin-gated broker can't match (an endless
+  // "Invalid message signature" loop). Drop any secret the user didn't set so
+  // this install falls back to origin mode before we connect.
+  await migrateStaleSecret();
   return getConfig();
 }
 

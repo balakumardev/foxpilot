@@ -1,4 +1,4 @@
-import { buildHello } from "../hello";
+import { buildHello, HELLO_PROTOCOL_VERSION } from "../hello";
 import { getMessageSignature } from "../auth";
 
 describe("buildHello", () => {
@@ -24,6 +24,7 @@ describe("buildHello", () => {
       browserId: "bid-1",
       browserType: "firefox",
       label: "My Firefox",
+      protocolVersion: HELLO_PROTOCOL_VERSION,
     });
     const expectedSig = await getMessageSignature(
       JSON.stringify(parsed.payload),
@@ -51,6 +52,7 @@ describe("buildHello", () => {
       browserId: "bid-1",
       browserType: "firefox",
       label: "My Firefox",
+      protocolVersion: HELLO_PROTOCOL_VERSION,
     });
     // ...but NO signature field — the broker admits by Origin, and signing an
     // empty secret would throw (auth.getMessageSignature rejects "").

@@ -32,11 +32,25 @@ export interface SignedEnvelope<T> {
  * (which is keyed on `resource`/`correlationId`), so it is unambiguous on the
  * extension leg.
  */
+/**
+ * Hello protocol version on the extension <-> broker handshake. Bump when the
+ * hello/frame wire format changes incompatibly. The broker rejects a hello
+ * whose `protocolVersion` is present and outside
+ * [MIN_SUPPORTED_PROTOCOL_VERSION, PROTOCOL_VERSION] with a typed reason, so a
+ * mismatched extension/server pair surfaces a readable "update both" error
+ * instead of failing silently. A hello that omits the field (a legacy,
+ * pre-versioning build) is still admitted for backward compatibility.
+ */
+export const PROTOCOL_VERSION = 1;
+export const MIN_SUPPORTED_PROTOCOL_VERSION = 1;
+
 export interface HelloPayload {
   type: "hello";
   browserId: string;
   browserType: "chrome" | "firefox";
   label: string;
+  /** Hello protocol version; absent on legacy (pre-versioning) extensions. */
+  protocolVersion?: number;
 }
 
 // ===== Broker control protocol (client -> broker) =====

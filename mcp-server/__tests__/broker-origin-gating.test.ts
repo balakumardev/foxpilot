@@ -15,6 +15,22 @@ function unsignedHello(browserId: string): string {
   return JSON.stringify({ payload });
 }
 
+// A Firefox extension's hello: the `ws` client sends NO Origin header unless the
+// `origin` option is passed, mirroring Firefox's `Origin: null` on background
+// WebSockets. browserType is "firefox" so the null-origin branch applies.
+function firefoxHello(browserId: string, protocolVersion?: number): string {
+  const payload: Record<string, unknown> = {
+    type: "hello",
+    browserId,
+    browserType: "firefox",
+    label: "Firefox",
+  };
+  if (protocolVersion !== undefined) {
+    payload.protocolVersion = protocolVersion;
+  }
+  return JSON.stringify({ payload });
+}
+
 function waitOpen(ws: WebSocket): Promise<void> {
   return new Promise((resolve, reject) => {
     ws.on("open", () => resolve());
@@ -176,6 +192,97 @@ describe("BrokerServer origin gating", () => {
     const result = await resultPromise;
     expect(result).toMatchObject({ type: "healthcheck-result", extensionConnected: true });
     expect(Array.isArray(result.browsers)).toBe(true);
+    ext.close();
+  }, 10000);
+
+  it("admits a Firefox extension that sends no Origin (Origin: null) over loopback", async () => {
+    // No `origin` option => the ws client sends no Origin header, exactly like a
+    // Firefox background-script WebSocket (Origin: null).
+    const ext = new WebSocket(`ws://127.0.0.1:${port}/extension`);
+    await waitOpen(ext);
+    const welcomePromise = nextMessage(ext);
+    ext.send(firefoxHello("ff-null-1"));
+    const welcome = await welcomePromise;
+    expect(welcome).toMatchObject({ type: "welcome", browserId: "ff-null-1" });
+    const health = await getHealth(port);
+    expect(health.browsers).toBe(1);
+    ext.close();
+  }, 10000);
+
+  it("rejects a null-Origin hello that does not claim Firefox", async () => {
+    const ext = new WebSocket(`ws://127.0.0.1:${port}/extension`);
+    await waitOpen(ext);
+    const msgPromise = nextMessage(ext);
+    ext.send(unsignedHello("chrome-null-1")); // browserType chrome, no Origin
+    expect(await msgPromise).toMatchObject({
+      type: "rejected",
+      reason: "origin_not_allowed",
+    });
+    const health = await getHealth(port);
+    expect(health.browsers).toBe(0);
+  }, 10000);
+
+  it("does not admit a null-Origin Firefox hello when strictExtensionIds is set", async () => {
+    server.close();
+    server = new BrokerServer({
+      port: 0,
+      host: "127.0.0.1",
+      secret: SECRET,
+      strictExtensionIds: ["allowed-id"],
+    });
+    await server.listen();
+    port = server.getPort();
+
+    const ext = new WebSocket(`ws://127.0.0.1:${port}/extension`);
+    await waitOpen(ext);
+    const msgPromise = nextMessage(ext);
+    ext.send(firefoxHello("ff-strict-1"));
+    expect(await msgPromise).toMatchObject({ type: "rejected" });
+  }, 10000);
+
+  it("rejects a hello whose protocolVersion the broker can't speak", async () => {
+    const ext = new WebSocket(`ws://127.0.0.1:${port}/extension`, {
+      origin: "chrome-extension://abcdefghijklmnop",
+    });
+    await waitOpen(ext);
+    const msgPromise = nextMessage(ext);
+    ext.send(
+      JSON.stringify({
+        payload: {
+          type: "hello",
+          browserId: "v999",
+          browserType: "chrome",
+          label: "Chrome",
+          protocolVersion: 999,
+        },
+      })
+    );
+    expect(await msgPromise).toMatchObject({
+      type: "rejected",
+      reason: "protocol_version_unsupported",
+    });
+    const health = await getHealth(port);
+    expect(health.browsers).toBe(0);
+  }, 10000);
+
+  it("admits a current-version hello (protocolVersion in range)", async () => {
+    const ext = new WebSocket(`ws://127.0.0.1:${port}/extension`, {
+      origin: "chrome-extension://abcdefghijklmnop",
+    });
+    await waitOpen(ext);
+    const welcomePromise = nextMessage(ext);
+    ext.send(
+      JSON.stringify({
+        payload: {
+          type: "hello",
+          browserId: "v1",
+          browserType: "chrome",
+          label: "Chrome",
+          protocolVersion: 1,
+        },
+      })
+    );
+    expect(await welcomePromise).toMatchObject({ type: "welcome", browserId: "v1" });
     ext.close();
   }, 10000);
 });

@@ -18,7 +18,10 @@ import * as path from "path";
 
 export function getControlSecret(opts: { dir?: string } = {}): string {
   const envSecret = process.env.EXTENSION_SECRET;
-  if (envSecret && envSecret.length > 0) {
+  // Ignore an unexpanded manifest placeholder (e.g. a host that didn't
+  // substitute "${user_config.extension_secret}"): it would otherwise be used
+  // verbatim as the control secret, which is confusing to diagnose.
+  if (envSecret && envSecret.length > 0 && !envSecret.includes("${")) {
     return envSecret;
   }
   const dir = opts.dir ?? path.join(os.homedir(), ".foxpilot");
@@ -48,19 +51,27 @@ export function getControlSecret(opts: { dir?: string } = {}): string {
   }
 
   const secret = crypto.randomUUID();
-  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   try {
-    // Atomic create: the "wx" flag fails if another process won the race.
-    fs.writeFileSync(file, secret, { mode: 0o600, flag: "wx" });
-    return secret;
-  } catch {
-    // Lost the create race (EEXIST) or a transient error — prefer the
-    // already-persisted value so concurrent cold starts converge.
-    const raced = readExisting();
-    if (raced) {
-      return raced;
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    try {
+      // Atomic create: the "wx" flag fails if another process won the race.
+      fs.writeFileSync(file, secret, { mode: 0o600, flag: "wx" });
+      return secret;
+    } catch {
+      // Lost the create race (EEXIST) or a transient error — prefer the
+      // already-persisted value so concurrent cold starts converge.
+      const raced = readExisting();
+      if (raced) {
+        return raced;
+      }
+      fs.writeFileSync(file, secret, { mode: 0o600 });
+      return secret;
     }
-    fs.writeFileSync(file, secret, { mode: 0o600 });
+  } catch {
+    // Read-only / sandboxed HOME: the secret can't be persisted. Fall back to an
+    // in-memory value rather than aborting init — the MCP server passes this same
+    // secret to the broker it spawns via EXTENSION_SECRET, so the control leg
+    // still agrees within this process tree (it just won't survive a restart).
     return secret;
   }
 }

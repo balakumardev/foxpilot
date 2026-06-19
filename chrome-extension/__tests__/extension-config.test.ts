@@ -4,6 +4,7 @@ import {
   getBrowserLabel,
   setSecret,
   getSecret,
+  migrateStaleSecret,
   getBrokerConnected,
   getBrokerStatus,
   setBrokerStatus,
@@ -126,5 +127,49 @@ describe("broker status mirror", () => {
       [BROKER_STATUS_STORAGE_KEY]: { connected: true, state: "connected" },
     });
     expect(await getBrokerConnected()).toBe(true);
+  });
+});
+
+describe("zero-config secret migration", () => {
+  function statefulStore(initial: any) {
+    const store: any = { config: initial };
+    (browser.storage.local.get as jest.Mock).mockImplementation(async () => store);
+    (browser.storage.local.set as jest.Mock).mockImplementation(async (v: any) => {
+      Object.assign(store, v);
+    });
+    return store;
+  }
+
+  beforeEach(() => jest.clearAllMocks());
+
+  it("clears a stale auto-generated secret (no userSetSecret flag)", async () => {
+    const store = statefulStore({ secret: "auto-generated-uuid", ports: [8089] });
+    await migrateStaleSecret();
+    expect(store.config.secret).toBe("");
+    expect(await getSecret()).toBe("");
+  });
+
+  it("preserves a deliberately user-set secret", async () => {
+    const store = statefulStore({
+      secret: "remote-secret",
+      userSetSecret: true,
+      ports: [8089],
+    });
+    await migrateStaleSecret();
+    expect(store.config.secret).toBe("remote-secret");
+  });
+
+  it("is a no-op on a fresh install (no secret to clear)", async () => {
+    statefulStore({ secret: "", ports: [8089] });
+    await migrateStaleSecret();
+    expect(browser.storage.local.set).not.toHaveBeenCalled();
+  });
+
+  it("setSecret marks the secret user-set so migration won't clear it", async () => {
+    const store = statefulStore({ secret: "", ports: [8089] });
+    await setSecret("my-remote-secret");
+    expect(store.config.userSetSecret).toBe(true);
+    await migrateStaleSecret();
+    expect(store.config.secret).toBe("my-remote-secret");
   });
 });

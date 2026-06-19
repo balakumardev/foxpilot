@@ -283,6 +283,13 @@ export interface ExtensionConfig {
   browserId?: string;
   /** User-editable display label; defaults to the browser type. */
   browserLabel?: string;
+  /**
+   * True only when the user deliberately set a secret via the options page.
+   * Distinguishes an intentional advanced/remote secret from one auto-generated
+   * by a pre-zero-config build (which must be migrated away — see
+   * migrateStaleSecret).
+   */
+  userSetSecret?: boolean;
 }
 
 /**
@@ -400,7 +407,32 @@ export async function setBrowserLabel(label: string): Promise<void> {
 export async function setSecret(secret: string): Promise<void> {
   const config = await getConfig();
   config.secret = secret;
+  // Mark a non-empty secret as user-intended so the zero-config migration never
+  // clears it; clearing the field clears the flag too.
+  config.userSetSecret = secret.length > 0;
   await saveConfig(config);
+}
+
+/**
+ * One-time zero-config migration. Pre-zero-config builds auto-generated a
+ * per-install secret, putting the extension in signed mode. The origin-gated
+ * broker can't match that secret, so an upgraded install loops forever on
+ * "Invalid message signature - extension and server not in sync". Clear any
+ * stored secret the user did not deliberately set (tracked by userSetSecret),
+ * dropping the extension back to origin mode. Idempotent and safe to call on
+ * every startup: a fresh install has no secret, and a deliberately-set
+ * advanced/remote secret carries the flag and is preserved.
+ */
+export async function migrateStaleSecret(): Promise<void> {
+  const config = await getConfig();
+  if (
+    config.secret &&
+    config.secret.length > 0 &&
+    config.userSetSecret !== true
+  ) {
+    config.secret = "";
+    await saveConfig(config);
+  }
 }
 
 /**

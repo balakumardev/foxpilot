@@ -30,6 +30,8 @@ import {
   BrokerControlResult,
   BrokerServerFrame,
   BrowserInfo,
+  MIN_SUPPORTED_PROTOCOL_VERSION,
+  PROTOCOL_VERSION,
 } from "./broker-protocol";
 import type { HelloPayload } from "./broker-protocol";
 import { createSignature, verifySignature } from "./signing";
@@ -58,6 +60,19 @@ function isAllowedExtensionOrigin(
     return strictIds.includes(id);
   }
   return true;
+}
+
+/**
+ * True when the WebSocket handshake carried no usable Origin. Firefox sends
+ * `Origin: null` (or omits it) on WebSockets opened from a background script —
+ * it hides the per-install moz-extension UUID for privacy (bugzilla 1257989) —
+ * so a Firefox extension cannot be origin-matched the way Chrome/Edge can.
+ */
+export function isNullOrigin(origin: string | undefined): boolean {
+  if (origin === undefined || origin === "") {
+    return true;
+  }
+  return origin.trim().toLowerCase() === "null";
 }
 
 /** True for loopback peers (127.0.0.0/8 and ::1, including IPv4-mapped). */
@@ -453,6 +468,17 @@ export class BrokerServer {
         | "firefox",
       label: payload.label || payload.browserType,
     };
+    // Reject an explicitly-versioned hello whose protocol the broker can't speak
+    // so a mismatched extension/server pair gets a readable "update both" error
+    // instead of a silent never-admit. A legacy hello that omits the field is
+    // still allowed through (it falls to the signed/origin checks below).
+    if (
+      typeof payload.protocolVersion === "number" &&
+      (payload.protocolVersion < MIN_SUPPORTED_PROTOCOL_VERSION ||
+        payload.protocolVersion > PROTOCOL_VERSION)
+    ) {
+      return { kind: "reject", reason: "protocol_version_unsupported" };
+    }
     if (
       this.secret &&
       typeof decoded.signature === "string" &&
@@ -460,11 +486,26 @@ export class BrokerServer {
     ) {
       return { kind: "admit", ...base, authMode: "signed" };
     }
-    if (
-      !this.requireSignature &&
-      isAllowedExtensionOrigin(origin, this.strictExtensionIds)
-    ) {
-      return { kind: "admit", ...base, authMode: "origin" };
+    if (!this.requireSignature) {
+      // Zero-config admission over loopback. The upgrade handler already
+      // rejected non-loopback peers; CONTAINERIZED (the only exception) forces
+      // requireSignature=true, so this branch never runs off-host.
+      if (isAllowedExtensionOrigin(origin, this.strictExtensionIds)) {
+        return { kind: "admit", ...base, authMode: "origin" };
+      }
+      // Firefox background-script WebSockets send `Origin: null` (see
+      // isNullOrigin), so there is no extension origin to match — admit such a
+      // hello when no strict allowlist is configured. Residual risk: a
+      // sandboxed/null-origin local page over plain http could also present a
+      // null Origin, so set FOXPILOT_STRICT_EXTENSION_IDS or an EXTENSION_SECRET
+      // to harden a shared/multi-user machine.
+      if (
+        base.type === "firefox" &&
+        isNullOrigin(origin) &&
+        !(this.strictExtensionIds && this.strictExtensionIds.length > 0)
+      ) {
+        return { kind: "admit", ...base, authMode: "origin" };
+      }
     }
     return { kind: "reject", reason: "origin_not_allowed" };
   }

@@ -12,6 +12,16 @@ import { getControlSecret } from "./control-secret";
 
 const WS_DEFAULT_PORT = 8089;
 
+/** Treats unset/""/"0"/"false" as false so `CONTAINERIZED=0` doesn't enable remote mode. */
+function envFlag(value: string | undefined): boolean {
+  return (
+    value !== undefined &&
+    value !== "" &&
+    value !== "0" &&
+    value.toLowerCase() !== "false"
+  );
+}
+
 function readBrokerConfig() {
   const strict = (process.env.FOXPILOT_STRICT_EXTENSION_IDS ?? "")
     .split(",")
@@ -22,7 +32,7 @@ function readBrokerConfig() {
     port: process.env.EXTENSION_PORT
       ? parseInt(process.env.EXTENSION_PORT, 10)
       : WS_DEFAULT_PORT,
-    requireSignature: !!process.env.CONTAINERIZED,
+    requireSignature: envFlag(process.env.CONTAINERIZED),
     strictExtensionIds: strict.length > 0 ? strict : undefined,
   };
 }
@@ -31,7 +41,7 @@ async function main() {
   const { secret, port, requireSignature, strictExtensionIds } =
     readBrokerConfig();
 
-  const host = process.env.CONTAINERIZED ? "0.0.0.0" : "localhost";
+  const host = envFlag(process.env.CONTAINERIZED) ? "0.0.0.0" : "localhost";
   const server = new BrokerServer({
     port,
     host,

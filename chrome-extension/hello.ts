@@ -1,11 +1,15 @@
 import { getOrCreateBrowserId, getBrowserType, getBrowserLabel } from "./extension-config";
 import { getMessageSignature } from "./auth";
 
+/** Keep in sync with PROTOCOL_VERSION in mcp-server/broker-protocol.ts. */
+export const HELLO_PROTOCOL_VERSION = 1;
+
 export interface HelloPayload {
   type: "hello";
   browserId: string;
   browserType: "chrome" | "firefox";
   label: string;
+  protocolVersion: number;
 }
 
 /**
@@ -28,6 +32,7 @@ export async function buildHello(secret: string): Promise<string> {
     browserId: await getOrCreateBrowserId(),
     browserType: await getBrowserType(),
     label: await getBrowserLabel(),
+    protocolVersion: HELLO_PROTOCOL_VERSION,
   };
   if (!secret) {
     return JSON.stringify({ payload });

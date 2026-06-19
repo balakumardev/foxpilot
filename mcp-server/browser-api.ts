@@ -79,6 +79,8 @@ export class BrowserAPI {
   private requestCounter = 0;
   private readonly requestMap = new Map<string, RequestResolver>();
   private readonly controlMap = new Map<string, ControlResolver>();
+  /** Dedupes concurrent reconnect attempts triggered from the send path. */
+  private connecting: Promise<void> | null = null;
 
   async init() {
     const { port } = readConfig();
@@ -125,6 +127,30 @@ export class BrowserAPI {
     throw new Error(
       `Could not connect to or start the FoxPilot broker on port ${this.port}.`
     );
+  }
+
+  /**
+   * Best-effort (re)connect from the command path. The broker is a detached
+   * daemon that idle-exits when nothing is attached, and an MV3 service-worker
+   * sleep can drop the extension and let it go — so a command can arrive after
+   * our socket has closed. Re-establish it (auto-spawning the broker if needed)
+   * before giving up, deduping concurrent attempts. Errors are swallowed; the
+   * caller re-checks the socket and reports "Not connected" if still down.
+   */
+  private async ensureConnectedForSend(): Promise<void> {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      return;
+    }
+    if (!this.connecting) {
+      this.connecting = this.ensureBrokerAndConnect().finally(() => {
+        this.connecting = null;
+      });
+    }
+    try {
+      await this.connecting;
+    } catch {
+      /* re-checked by the caller */
+    }
   }
 
   /**
@@ -267,9 +293,12 @@ export class BrowserAPI {
     }
   }
 
-  private sendTool<T extends ExtensionMessage>(
+  private async sendTool<T extends ExtensionMessage>(
     message: ServerMessage
   ): Promise<T> {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      await this.ensureConnectedForSend();
+    }
     return new Promise<T>((resolve, reject) => {
       if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
         reject(new Error("Not connected to the broker"));
@@ -296,9 +325,12 @@ export class BrowserAPI {
     });
   }
 
-  private sendControl(
+  private async sendControl(
     control: BrokerControlRequest
   ): Promise<BrokerControlResult> {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      await this.ensureConnectedForSend();
+    }
     return new Promise<BrokerControlResult>((resolve, reject) => {
       if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
         reject(new Error("Not connected to the broker"));
