@@ -112,6 +112,29 @@ describe("initConsoleCapture wiring", () => {
     ]);
   });
 
+  it("buffers every entry from a batched (bcmcp-console-batch) message", () => {
+    initConsoleCapture();
+    const onMessage = lastListener(
+      browser.runtime.onMessage.addListener as jest.Mock
+    );
+    onMessage(
+      {
+        type: "bcmcp-console-batch",
+        entries: [
+          { level: "log", text: "a", timestamp: 1 },
+          { level: "warn", text: "b", timestamp: 2 },
+          { level: "error", text: "c", timestamp: 3 },
+        ],
+      },
+      { tab: { id: 561 } }
+    );
+    expect(getConsoleEntries(561)).toEqual([
+      { level: "log", text: "a", timestamp: 1 },
+      { level: "warn", text: "b", timestamp: 2 },
+      { level: "error", text: "c", timestamp: 3 },
+    ]);
+  });
+
   it("clamps an oversized entry text to the 2000-char cap on the message path", () => {
     const MAX_ENTRY_TEXT = 2000;
     initConsoleCapture();
@@ -200,6 +223,8 @@ describe("registerCaptureScript world split", () => {
 
     for (const r of regs) {
       expect(r.runAt).toBe("document_start");
+      // All frames captured; batching (not frame-count limiting) is what
+      // bounds IPC, so iframe console is not dropped.
       expect(r.allFrames).toBe(true);
       expect(r.matches).toEqual(["<all_urls>"]);
     }
@@ -209,6 +234,28 @@ describe("registerCaptureScript world split", () => {
   it("is idempotent across repeated calls", async () => {
     await registerCaptureScript();
     await registerCaptureScript();
+    expect(browser.scripting.registerContentScripts).toHaveBeenCalledTimes(1);
+    await unregisterCaptureScript();
+  });
+
+  it("clears a stale registration before re-registering (no Duplicate script ID)", async () => {
+    (
+      browser.scripting.getRegisteredContentScripts as jest.Mock
+    ).mockResolvedValueOnce([
+      { id: "bcmcp-console-capture-main" },
+      { id: "bcmcp-console-capture-bridge" },
+    ]);
+    await registerCaptureScript();
+    expect(browser.scripting.unregisterContentScripts).toHaveBeenCalled();
+    const unregArg = (
+      browser.scripting.unregisterContentScripts as jest.Mock
+    ).mock.calls.pop()![0];
+    expect(unregArg.ids).toEqual(
+      expect.arrayContaining([
+        "bcmcp-console-capture-main",
+        "bcmcp-console-capture-bridge",
+      ])
+    );
     expect(browser.scripting.registerContentScripts).toHaveBeenCalledTimes(1);
     await unregisterCaptureScript();
   });

@@ -141,6 +141,41 @@ describe("WebsocketClient zero-config protocol", () => {
     expect(states).toContain("connected");
   });
 
+  it("dials 127.0.0.1 first, fails over to [::1] when a socket never opens, then pins the host that worked", async () => {
+    const client = new WebsocketClient(8089, "");
+    client.connect();
+    expect(lastInstance().url).toBe("ws://127.0.0.1:8089/extension");
+
+    // 127.0.0.1 refused: the socket closes without ever opening -> next attempt
+    // must use the other loopback stack.
+    lastInstance().close();
+    client.connect();
+    expect(lastInstance().url).toBe("ws://[::1]:8089/extension");
+
+    // [::1] is the broker: it opens and admits us -> the host pins to [::1].
+    const ws = lastInstance();
+    ws.open();
+    await flush();
+    ws.receive(welcome());
+    await flush();
+    // A later drop (AFTER being admitted) must NOT fail over — it stays on [::1].
+    ws.close();
+    client.connect();
+    expect(lastInstance().url).toBe("ws://[::1]:8089/extension");
+  });
+
+  it("keeps using 127.0.0.1 across reconnects once a socket has opened", async () => {
+    const client = new WebsocketClient(8089, "");
+    client.connect();
+    expect(lastInstance().url).toBe("ws://127.0.0.1:8089/extension");
+    const ws = lastInstance();
+    ws.open(); // reachable (broker is on the dual-stack default)
+    await flush();
+    ws.close(); // dropped after opening -> no failover
+    client.connect();
+    expect(lastInstance().url).toBe("ws://127.0.0.1:8089/extension");
+  });
+
   it("reports blocked with the broker reason on a rejected frame", async () => {
     const events: { state: ConnectionState; detail?: ConnectionStateDetail }[] =
       [];

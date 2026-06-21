@@ -167,6 +167,27 @@ describe("initConsoleCapture wiring", () => {
     ]);
   });
 
+  it("buffers every entry from a batched (bcmcp-console-batch) message", () => {
+    initConsoleCapture();
+    const onMessage = lastListener(
+      browser.runtime.onMessage.addListener as jest.Mock
+    );
+    onMessage(
+      {
+        type: "bcmcp-console-batch",
+        entries: [
+          { level: "log", text: "a", timestamp: 1 },
+          { level: "warn", text: "b", timestamp: 2 },
+        ],
+      },
+      { tab: { id: 562 } }
+    );
+    expect(getConsoleEntries(562)).toEqual([
+      { level: "log", text: "a", timestamp: 1 },
+      { level: "warn", text: "b", timestamp: 2 },
+    ]);
+  });
+
   it("clamps an oversized entry text to the cap on the runtime.onMessage path", async () => {
     // Defense in depth: even though the page-world wrapper clamps text, a forged
     // or buggy content-script message could carry an over-long string. The
@@ -236,6 +257,7 @@ describe("initConsoleCapture wiring", () => {
     const arg = (browser.contentScripts.register as jest.Mock).mock.calls[0][0];
     expect(arg.matches).toEqual(["<all_urls>"]);
     expect(arg.runAt).toBe("document_start");
+    expect(arg.allFrames).toBe(true);
     expect(arg.js[0].code).toBe(CAPTURE_CONTENT_SCRIPT);
   });
 
@@ -387,8 +409,18 @@ describe("CAPTURE_CONTENT_SCRIPT structure", () => {
     expect(CAPTURE_CONTENT_SCRIPT).toContain('addEventListener("error"');
     expect(CAPTURE_CONTENT_SCRIPT).toContain("unhandledrejection");
     // The content script bridges page-world postMessage to the background and
-    // tags entries with the capture message type the background listens for.
-    expect(CAPTURE_CONTENT_SCRIPT).toContain("bcmcp-console-entry");
+    // tags batches with the capture message type the background listens for.
+    expect(CAPTURE_CONTENT_SCRIPT).toContain("bcmcp-console-batch");
+  });
+
+  it("coalesces entries into timed batches and rate-limits at the source", () => {
+    // The bridge must buffer + flush on a timer (one message per interval), not
+    // one runtime.sendMessage per console line, and the page-world wrapper must
+    // rate-limit — together these bound the IPC a chatty page can generate and
+    // keep it off the browser IO thread.
+    expect(CAPTURE_CONTENT_SCRIPT).toContain("setTimeout");
+    expect(CAPTURE_CONTENT_SCRIPT).toContain("entries:");
+    expect(CAPTURE_CONTENT_SCRIPT).toContain("RATE_MAX_PER_SEC");
   });
 
   it("forge-guards the bridge: only forwards same-window messages (e.source === window)", () => {

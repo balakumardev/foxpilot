@@ -36,8 +36,21 @@ export const CONSOLE_BUFFER_CAP = 200;
 // re-clamped here as defense in depth against a forged content-script message).
 const MAX_ENTRY_TEXT = 2000;
 
-// The runtime message type used by the content-script bridge.
+// The runtime message types used by the content-script bridge.
 const CONSOLE_MESSAGE_TYPE = "bcmcp-console-entry";
+const CONSOLE_BATCH_TYPE = "bcmcp-console-batch";
+
+function normalizeEntry(raw: Partial<ConsoleEntry> | undefined): ConsoleEntry {
+  return {
+    level: raw && typeof raw.level === "string" ? raw.level : "log",
+    text:
+      raw && typeof raw.text === "string"
+        ? raw.text.slice(0, MAX_ENTRY_TEXT)
+        : String(raw?.text ?? ""),
+    timestamp:
+      raw && typeof raw.timestamp === "number" ? raw.timestamp : Date.now(),
+  };
+}
 
 // Per-tab ring buffer. Keyed by tabId.
 const buffers = new Map<number, ConsoleEntry[]>();
@@ -125,6 +138,9 @@ export async function registerCaptureScript(): Promise<void> {
       matches: ["<all_urls>"],
       runAt: "document_start",
       js: [{ code: CAPTURE_CONTENT_SCRIPT }],
+      // Capture all frames, including iframes. Per-frame batching + the
+      // source-side rate limit bound IPC per frame, so iframe-heavy pages no
+      // longer flood the messaging channel.
       allFrames: true,
     })) as unknown as { unregister: () => void };
     if (!desiredRegistered) {
@@ -172,25 +188,29 @@ export async function unregisterCaptureScript(): Promise<void> {
 export function initConsoleCapture(): void {
   // 1) Receive entries forwarded by the content-script bridge.
   browser.runtime.onMessage.addListener((message: unknown, sender: unknown) => {
-    const msg = message as { type?: string; entry?: Partial<ConsoleEntry> } | null;
-    if (!msg || msg.type !== CONSOLE_MESSAGE_TYPE || !msg.entry) {
+    const msg = message as
+      | {
+          type?: string;
+          entry?: Partial<ConsoleEntry>;
+          entries?: Array<Partial<ConsoleEntry>>;
+        }
+      | null;
+    if (!msg) {
       return;
     }
     const tabId = (sender as { tab?: { id?: number } } | undefined)?.tab?.id;
     if (typeof tabId !== "number") {
       return;
     }
-    const raw = msg.entry;
-    const entry: ConsoleEntry = {
-      level: typeof raw.level === "string" ? raw.level : "log",
-      text:
-        typeof raw.text === "string"
-          ? raw.text.slice(0, MAX_ENTRY_TEXT)
-          : String(raw.text ?? ""),
-      timestamp:
-        typeof raw.timestamp === "number" ? raw.timestamp : Date.now(),
-    };
-    addConsoleEntry(tabId, entry);
+    if (msg.type === CONSOLE_BATCH_TYPE && Array.isArray(msg.entries)) {
+      for (const raw of msg.entries) {
+        addConsoleEntry(tabId, normalizeEntry(raw));
+      }
+      return;
+    }
+    if (msg.type === CONSOLE_MESSAGE_TYPE && msg.entry) {
+      addConsoleEntry(tabId, normalizeEntry(msg.entry));
+    }
   });
 
   // 2) Drop a tab's buffer when the tab goes away.
@@ -249,6 +269,16 @@ export const CAPTURE_CONTENT_SCRIPT = String.raw`
       window.__bcmcpConsoleHooked = true;
 
       var MAX = 2000;
+      var RATE_MAX_PER_SEC = 300;
+      var RATE_WINDOW_MS = 1000;
+      var winStart = Date.now();
+      var winCount = 0;
+      var winDropped = 0;
+      function rawPost(level, text) {
+        try {
+          window.postMessage({ __bcmcp_console: { level: level, text: text } }, "*");
+        } catch (e) { /* ignore */ }
+      }
       function stringifyArg(a) {
         try {
           if (typeof a === "string") { return a; }
@@ -260,13 +290,22 @@ export const CAPTURE_CONTENT_SCRIPT = String.raw`
         }
       }
       function post(level, args) {
+        var now = Date.now();
+        if (now - winStart >= RATE_WINDOW_MS) {
+          if (winDropped > 0) {
+            rawPost("warn", "[FoxPilot] dropped " + winDropped + " console entries (rate limit)");
+            winDropped = 0;
+          }
+          winStart = now;
+          winCount = 0;
+        }
+        if (winCount >= RATE_MAX_PER_SEC) { winDropped++; return; }
+        winCount++;
         var parts = [];
         for (var i = 0; i < args.length; i++) { parts.push(stringifyArg(args[i])); }
         var text = parts.join(" ");
         if (text.length > MAX) { text = text.slice(0, MAX); }
-        try {
-          window.postMessage({ __bcmcp_console: { level: level, text: text } }, "*");
-        } catch (e) { /* ignore */ }
+        rawPost(level, text);
       }
 
       var levels = ["log", "info", "warn", "error", "debug"];
@@ -307,21 +346,44 @@ export const CAPTURE_CONTENT_SCRIPT = String.raw`
     (document.documentElement || document.head || document.body).appendChild(s);
     s.remove();
 
-    // (b) Bridge page-world messages to the background.
+    // (b) Bridge page-world messages to the background, COALESCED into batches
+    //     on a short timer. One runtime.sendMessage per console line across
+    //     <all_urls> floods the IO thread on chatty pages (and can crash the
+    //     browser); batching caps outgoing IPC at ~one message per
+    //     FLUSH_INTERVAL_MS for this frame, however much the page logs.
+    var FLUSH_INTERVAL_MS = 250;
+    var BUFFER_CAP = 500;
+    var pending = [];
+    var droppedSinceFlush = 0;
+    var flushTimer = null;
+    function flushBatch() {
+      flushTimer = null;
+      if (pending.length === 0 && droppedSinceFlush === 0) { return; }
+      var entries = pending;
+      pending = [];
+      if (droppedSinceFlush > 0) {
+        entries.push({ level: "warn", text: "[FoxPilot] dropped " + droppedSinceFlush + " console entries (buffer cap)", timestamp: Date.now() });
+        droppedSinceFlush = 0;
+      }
+      try {
+        browser.runtime.sendMessage({ type: "bcmcp-console-batch", entries: entries });
+      } catch (err) { /* ignore */ }
+    }
+    function scheduleFlush() {
+      if (flushTimer === null) { flushTimer = setTimeout(flushBatch, FLUSH_INTERVAL_MS); }
+    }
     window.addEventListener("message", function (e) {
       if (e.source === window && e.data && e.data.__bcmcp_console) {
-        try {
-          browser.runtime.sendMessage({
-            type: "bcmcp-console-entry",
-            entry: {
-              level: e.data.__bcmcp_console.level,
-              text: e.data.__bcmcp_console.text,
-              timestamp: Date.now()
-            }
-          });
-        } catch (err) { /* ignore */ }
+        if (pending.length >= BUFFER_CAP) { pending.shift(); droppedSinceFlush++; }
+        pending.push({
+          level: e.data.__bcmcp_console.level,
+          text: e.data.__bcmcp_console.text,
+          timestamp: Date.now()
+        });
+        scheduleFlush();
       }
     });
+    window.addEventListener("pagehide", flushBatch);
   } catch (err) {
     // Never throw out of an injected content script.
   }

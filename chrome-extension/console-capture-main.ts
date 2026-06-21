@@ -7,6 +7,12 @@
  * directly — it posts a window message that the isolated bridge
  * (console-capture-bridge.ts) forwards. Keep this file free of any chrome.*
  * usage.
+ *
+ * Source-side rate limit: a tight console.log loop (or a chatty session-replay
+ * SDK) can emit thousands of lines/second. We cap how many entries this frame
+ * posts to the bridge per second; the bridge additionally coalesces outgoing
+ * IPC. Together these bound the firehose that would otherwise flood the
+ * browser-process IO thread.
  */
 
 (function () {
@@ -17,6 +23,20 @@
     (window as any).__bcmcpConsoleHooked = true;
 
     const MAX = 2000;
+    const RATE_MAX_PER_SEC = 300;
+    const RATE_WINDOW_MS = 1000;
+    let winStart = Date.now();
+    let winCount = 0;
+    let winDropped = 0;
+
+    function rawPost(level: string, text: string) {
+      try {
+        window.postMessage({ __bcmcp_console: { level, text } }, "*");
+      } catch (e) {
+        /* ignore */
+      }
+    }
+
     function stringifyArg(a: any) {
       try {
         if (typeof a === "string") {
@@ -37,7 +57,29 @@
         }
       }
     }
+
     function post(level: string, args: any[]) {
+      const now = Date.now();
+      if (now - winStart >= RATE_WINDOW_MS) {
+        if (winDropped > 0) {
+          rawPost(
+            "warn",
+            "[FoxPilot] dropped " +
+              winDropped +
+              " console entr" +
+              (winDropped === 1 ? "y" : "ies") +
+              " (rate limit)"
+          );
+          winDropped = 0;
+        }
+        winStart = now;
+        winCount = 0;
+      }
+      if (winCount >= RATE_MAX_PER_SEC) {
+        winDropped++;
+        return;
+      }
+      winCount++;
       const parts = [];
       for (let i = 0; i < args.length; i++) {
         parts.push(stringifyArg(args[i]));
@@ -46,11 +88,7 @@
       if (text.length > MAX) {
         text = text.slice(0, MAX);
       }
-      try {
-        window.postMessage({ __bcmcp_console: { level, text } }, "*");
-      } catch (e) {
-        /* ignore */
-      }
+      rawPost(level, text);
     }
 
     const levels = ["log", "info", "warn", "error", "debug"];

@@ -18,6 +18,19 @@ export type { ConsoleEntry };
 export const CONSOLE_BUFFER_CAP = 200;
 const MAX_ENTRY_TEXT = 2000;
 const CONSOLE_MESSAGE_TYPE = "bcmcp-console-entry";
+const CONSOLE_BATCH_TYPE = "bcmcp-console-batch";
+
+function normalizeEntry(raw: Partial<ConsoleEntry> | undefined): ConsoleEntry {
+  return {
+    level: raw && typeof raw.level === "string" ? raw.level : "log",
+    text:
+      raw && typeof raw.text === "string"
+        ? raw.text.slice(0, MAX_ENTRY_TEXT)
+        : String(raw?.text ?? ""),
+    timestamp:
+      raw && typeof raw.timestamp === "number" ? raw.timestamp : Date.now(),
+  };
+}
 
 const buffers = new Map<number, ConsoleEntry[]>();
 
@@ -69,6 +82,25 @@ export async function registerCaptureScript(): Promise<void> {
   }
   registering = true;
   try {
+    // Idempotent registration: a prior registration can persist across
+    // service-worker restarts, and re-registering the same IDs throws
+    // "Duplicate script ID". Clear any stale registration first.
+    try {
+      const existing = await (
+        browser.scripting as any
+      ).getRegisteredContentScripts({ ids: [MAIN_ID, BRIDGE_ID] });
+      if (existing && existing.length > 0) {
+        await browser.scripting.unregisterContentScripts({
+          ids: existing.map((s: { id: string }) => s.id),
+        });
+      }
+    } catch (e) {
+      /* getRegisteredContentScripts unsupported or failed — fall through */
+    }
+    // Capture all frames, including iframes. The per-frame batching (one
+    // coalesced message per flush interval) plus the source-side rate limit
+    // bound IPC per frame, so all-frames capture no longer floods the IO thread
+    // the way the old unbatched per-line IPC did.
     await browser.scripting.registerContentScripts([
       {
         id: MAIN_ID,
@@ -117,24 +149,29 @@ export async function unregisterCaptureScript(): Promise<void> {
 
 export function initConsoleCapture(): void {
   browser.runtime.onMessage.addListener((message: unknown, sender: unknown) => {
-    const msg = message as { type?: string; entry?: Partial<ConsoleEntry> } | null;
-    if (!msg || msg.type !== CONSOLE_MESSAGE_TYPE || !msg.entry) {
+    const msg = message as
+      | {
+          type?: string;
+          entry?: Partial<ConsoleEntry>;
+          entries?: Array<Partial<ConsoleEntry>>;
+        }
+      | null;
+    if (!msg) {
       return;
     }
     const tabId = (sender as { tab?: { id?: number } } | undefined)?.tab?.id;
     if (typeof tabId !== "number") {
       return;
     }
-    const raw = msg.entry;
-    const entry: ConsoleEntry = {
-      level: typeof raw.level === "string" ? raw.level : "log",
-      text:
-        typeof raw.text === "string"
-          ? raw.text.slice(0, MAX_ENTRY_TEXT)
-          : String(raw.text ?? ""),
-      timestamp: typeof raw.timestamp === "number" ? raw.timestamp : Date.now(),
-    };
-    addConsoleEntry(tabId, entry);
+    if (msg.type === CONSOLE_BATCH_TYPE && Array.isArray(msg.entries)) {
+      for (const raw of msg.entries) {
+        addConsoleEntry(tabId, normalizeEntry(raw));
+      }
+      return;
+    }
+    if (msg.type === CONSOLE_MESSAGE_TYPE && msg.entry) {
+      addConsoleEntry(tabId, normalizeEntry(msg.entry));
+    }
   });
 
   browser.tabs.onRemoved.addListener((tabId: number) => {

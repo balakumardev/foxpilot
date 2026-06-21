@@ -48,6 +48,17 @@ export class WebsocketClient implements ExtensionTransport {
   // preserve "blocked" instead of clobbering it with "disconnected". Reset on
   // every (re)connect.
   private blocked = false;
+  // Loopback dial candidates. We prefer IPv4 127.0.0.1 — the broker binds it on
+  // the dual-stack default — which also sidesteps a proxy that may occupy IPv6
+  // [::1] (e.g. OrbStack/Docker on macOS, where `localhost` resolves to [::1]
+  // first). We fail over to [::1] only when a socket never opens (covering an
+  // older broker that bound a single stack), and stick with whichever host
+  // actually reaches the broker.
+  private static readonly LOOPBACK_HOSTS = ["127.0.0.1", "[::1]"];
+  private hostIndex = 0;
+  // Whether the CURRENT socket ever fired "open" (host was reachable). Reset on
+  // each connect; the close handler uses it to decide failover.
+  private opened = false;
   // The browserId echoed in the latest welcome, used to derive ACTIVE/STANDBY.
   private myBrowserId: string | null = null;
   // The browser roster from the latest welcome, exposed to the options page so
@@ -86,13 +97,22 @@ export class WebsocketClient implements ExtensionTransport {
     // A new socket is unproven (and not yet blocked) until the broker responds.
     this.admitted = false;
     this.blocked = false;
+    this.opened = false;
 
     // Connect to the broker daemon's extension leg. The broker owns the single
-    // browser connection and fans many MCP-client sessions in/out of it.
-    this.socket = new WebSocket(`ws://localhost:${this.port}/extension`);
+    // browser connection and fans many MCP-client sessions in/out of it. Dial an
+    // explicit loopback host (127.0.0.1, with [::1] failover) rather than the
+    // ambiguous `localhost`, which on some machines resolves to an IPv6 stack a
+    // local proxy has taken over.
+    const host =
+      WebsocketClient.LOOPBACK_HOSTS[
+        this.hostIndex % WebsocketClient.LOOPBACK_HOSTS.length
+      ];
+    this.socket = new WebSocket(`ws://${host}:${this.port}/extension`);
 
     this.socket.addEventListener("open", async () => {
       console.log("Connected to WebSocket server at port", this.port);
+      this.opened = true;
       this.connectionAttempts = 0;
       // Identity first: the broker decides admission from this first frame (a
       // valid signed hello in signed mode, or the extension Origin in origin
@@ -119,6 +139,13 @@ export class WebsocketClient implements ExtensionTransport {
       this.admitted = false;
       if (!this.blocked) {
         this.onConnectionState?.("disconnected");
+      }
+      // Failover: a socket that never opened means this loopback host was
+      // unreachable (e.g. the broker bound only the other stack). Alternate to
+      // the other host on the next reconnect. If it opened — broker reached,
+      // even if it then rejected or dropped us — keep this host.
+      if (!this.opened) {
+        this.hostIndex++;
       }
     });
 

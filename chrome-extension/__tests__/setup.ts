@@ -98,6 +98,7 @@ const mockBrowser: any = {
   scripting: {
     registerContentScripts: jest.fn().mockResolvedValue(undefined),
     unregisterContentScripts: jest.fn().mockResolvedValue(undefined),
+    getRegisteredContentScripts: jest.fn().mockResolvedValue([]),
     executeScript: jest.fn().mockResolvedValue([]),
   },
   offscreen: {
