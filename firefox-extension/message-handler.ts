@@ -407,6 +407,7 @@ export class MessageHandler {
 
     const tab = await browser.tabs.create({
       url,
+      active: false,
     });
 
     await this.client.sendResourceToServer({
@@ -989,16 +990,29 @@ export class MessageHandler {
     const format: ImageFormat = opts.format === "jpeg" ? "jpeg" : "png";
 
     // captureVisibleTab only captures the active tab of the window, so activate
-    // the target tab first.
+    // the target tab first. Record the currently-active tab so we can restore the
+    // user's foreground tab after the capture (and even if it throws).
+    const [prevActive] = await browser.tabs.query({
+      active: true,
+      windowId: tab.windowId,
+    });
     await browser.tabs.update(tabId, { active: true });
 
     let result: { mimeType: string; base64: string };
-    if (opts.uid) {
-      result = await this.captureElement(tabId, tab.windowId, opts.uid, format);
-    } else if (opts.fullPage) {
-      result = await this.captureFullPage(tabId, tab.windowId, format);
-    } else {
-      result = await this.captureViewport(tab.windowId, format);
+    try {
+      if (opts.uid) {
+        result = await this.captureElement(tabId, tab.windowId, opts.uid, format);
+      } else if (opts.fullPage) {
+        result = await this.captureFullPage(tabId, tab.windowId, format);
+      } else {
+        result = await this.captureViewport(tab.windowId, format);
+      }
+    } finally {
+      // Restore the previously-active tab so automation never steals the user's
+      // foreground tab. Skip if the target was already the active tab.
+      if (prevActive?.id != null && prevActive.id !== tabId) {
+        await browser.tabs.update(prevActive.id, { active: true });
+      }
     }
 
     await this.client.sendResourceToServer({

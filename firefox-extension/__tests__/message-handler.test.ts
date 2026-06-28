@@ -117,9 +117,11 @@ describe("MessageHandler", () => {
         // Act
         await messageHandler.handleDecodedMessage(request);
 
-        // Assert
+        // Assert — new tabs open in the background so automation never steals
+        // the user's foreground tab.
         expect(browser.tabs.create).toHaveBeenCalledWith({
           url: "https://example.com",
+          active: false,
         });
         expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
           resource: "opened-tab-id",
@@ -213,6 +215,7 @@ describe("MessageHandler", () => {
         // Assert
         expect(browser.tabs.create).toHaveBeenCalledWith({
           url: "https://allowed.com",
+          active: false,
         });
         expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
           resource: "opened-tab-id",
@@ -1463,6 +1466,8 @@ describe("MessageHandler", () => {
         url: "https://example.com",
         windowId: 7,
       });
+      // The target tab is already the active tab, so no restore should occur.
+      (browser.tabs.query as jest.Mock).mockResolvedValue([{ id: 123 }]);
       (browser.tabs.update as jest.Mock).mockResolvedValue(undefined);
       (browser.permissions.contains as jest.Mock).mockResolvedValue(true);
       (browser.tabs.captureVisibleTab as jest.Mock).mockResolvedValue(
@@ -1480,6 +1485,8 @@ describe("MessageHandler", () => {
       // The active tab is the only one captureVisibleTab can grab, so the tab
       // must be activated before the capture.
       expect(browser.tabs.update).toHaveBeenCalledWith(123, { active: true });
+      // Target was already active, so it is the only tabs.update call (no restore).
+      expect(browser.tabs.update).toHaveBeenCalledTimes(1);
       expect(browser.tabs.captureVisibleTab).toHaveBeenCalledWith(7, {
         format: "png",
         quality: 90,
@@ -1501,6 +1508,7 @@ describe("MessageHandler", () => {
         url: "https://example.com",
         windowId: 7,
       });
+      (browser.tabs.query as jest.Mock).mockResolvedValue([{ id: 123 }]);
       (browser.tabs.update as jest.Mock).mockResolvedValue(undefined);
       (browser.permissions.contains as jest.Mock).mockResolvedValue(true);
       (browser.tabs.captureVisibleTab as jest.Mock).mockResolvedValue(
@@ -1525,6 +1533,83 @@ describe("MessageHandler", () => {
         correlationId: "test-correlation-id",
         mimeType: "image/jpeg",
         base64: "/9j/4AAQ",
+      });
+    });
+
+    it("re-activates the previously-active tab when it differs from the target", async () => {
+      (browser.storage.local.get as jest.Mock).mockResolvedValue({
+        config: automationConfig,
+      });
+      (browser.tabs.get as jest.Mock).mockResolvedValue({
+        id: 123,
+        url: "https://example.com",
+        windowId: 7,
+      });
+      // A different tab (id 99) is the user's foreground tab.
+      (browser.tabs.query as jest.Mock).mockResolvedValue([{ id: 99 }]);
+      (browser.tabs.update as jest.Mock).mockResolvedValue(undefined);
+      (browser.permissions.contains as jest.Mock).mockResolvedValue(true);
+      (browser.tabs.captureVisibleTab as jest.Mock).mockResolvedValue(
+        "data:image/png;base64,AAAA"
+      );
+
+      const request: ServerMessageRequest = {
+        cmd: "take-screenshot",
+        tabId: 123,
+        correlationId: "test-correlation-id",
+      };
+
+      await messageHandler.handleDecodedMessage(request);
+
+      // Target activated for the capture, then the prior tab restored afterwards.
+      expect(browser.tabs.update).toHaveBeenNthCalledWith(1, 123, {
+        active: true,
+      });
+      expect(browser.tabs.update).toHaveBeenNthCalledWith(2, 99, {
+        active: true,
+      });
+      // The reply still goes out unchanged.
+      expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+        resource: "screenshot",
+        correlationId: "test-correlation-id",
+        mimeType: "image/png",
+        base64: "AAAA",
+      });
+    });
+
+    it("restores the previously-active tab even when the capture throws", async () => {
+      (browser.storage.local.get as jest.Mock).mockResolvedValue({
+        config: automationConfig,
+      });
+      (browser.tabs.get as jest.Mock).mockResolvedValue({
+        id: 123,
+        url: "https://example.com",
+        windowId: 7,
+      });
+      (browser.tabs.query as jest.Mock).mockResolvedValue([{ id: 99 }]);
+      (browser.tabs.update as jest.Mock).mockResolvedValue(undefined);
+      (browser.permissions.contains as jest.Mock).mockResolvedValue(true);
+      // The capture itself fails.
+      (browser.tabs.captureVisibleTab as jest.Mock).mockRejectedValue(
+        new Error("capture failed")
+      );
+
+      const request: ServerMessageRequest = {
+        cmd: "take-screenshot",
+        tabId: 123,
+        correlationId: "test-correlation-id",
+      };
+
+      await expect(
+        messageHandler.handleDecodedMessage(request)
+      ).rejects.toThrow("capture failed");
+
+      // Even on failure, the user's foreground tab is restored.
+      expect(browser.tabs.update).toHaveBeenNthCalledWith(1, 123, {
+        active: true,
+      });
+      expect(browser.tabs.update).toHaveBeenNthCalledWith(2, 99, {
+        active: true,
       });
     });
 
@@ -1729,6 +1814,7 @@ describe("MessageHandler", () => {
       await messageHandler.handleDecodedMessage(request);
       expect(browser.tabs.create).toHaveBeenCalledWith({
         url: "https://example.com",
+        active: false,
       });
     });
   });
