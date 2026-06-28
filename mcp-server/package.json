@@ -1,6 +1,6 @@
 {
   "name": "foxpilot-mcp",
-  "version": "1.0.10",
+  "version": "1.0.11",
   "description": "FoxPilot MCP Server — drive Firefox from an MCP client (tabs, history, content + opt-in page automation)",
   "main": "dist/server.js",
   "bin": {

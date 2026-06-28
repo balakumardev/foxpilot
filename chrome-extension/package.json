@@ -1,6 +1,6 @@
 {
   "name": "chrome-extension",
-  "version": "1.0.10",
+  "version": "1.0.11",
   "main": "dist/background.js",
   "scripts": {
     "build": "esbuild background.ts --bundle --outfile=dist/background.js --format=iife && esbuild options.ts --bundle --outfile=dist/options.js --format=iife && esbuild content-script.ts --bundle --outfile=dist/content-script.js --format=iife && esbuild console-capture-main.ts --bundle --outfile=dist/console-capture-main.js --format=iife && esbuild console-capture-bridge.ts --bundle --outfile=dist/console-capture-bridge.js --format=iife && esbuild offscreen.ts --bundle --outfile=dist/offscreen.js --format=iife",
