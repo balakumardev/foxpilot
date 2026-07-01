@@ -12,6 +12,15 @@ import {
   getSecret,
 } from "./extension-config";
 import { applyUserAgentRule, clearUserAgentRule } from "./emulate";
+import {
+  getCookies,
+  browserFetch,
+  startStream,
+  pollStream,
+  closeStream,
+  type BrowserFetchParams,
+  type StreamStartParams,
+} from "./browser-http";
 import { NativeInputClient } from "./native-input-client";
 import { NativeGesture, NativeWaypoint, NativeInputResponse } from "@foxpilot/common";
 import {
@@ -23,7 +32,13 @@ import {
   type ImageFormat,
 } from "./injected/screenshot-script";
 import { getConsoleEntries } from "./console-capture";
-import { getNetworkRequests } from "./network-capture";
+import {
+  getNetworkRequests,
+  setBodyCaptureEnabled,
+  attachDebugger,
+  detachDebugger,
+  isDebuggerAttached,
+} from "./network-capture";
 import { Point, mousePath, typingPlan } from "./humanize/motion-model";
 
 type InputActionArgs =
@@ -330,6 +345,32 @@ export class MessageHandler {
           limit: req.limit,
           includeBody: req.includeBody,
         });
+        break;
+      case "get-cookies":
+        await this.getCookiesForServer(req.correlationId, {
+          url: req.url,
+          domain: req.domain,
+          name: req.name,
+        });
+        break;
+      case "browser-fetch":
+        await this.browserFetchForServer(req.correlationId, req);
+        break;
+      case "stream-start":
+        await this.streamStartForServer(req.correlationId, req);
+        break;
+      case "stream-poll":
+        await this.streamPollForServer(
+          req.correlationId,
+          req.streamId,
+          req.sinceIndex
+        );
+        break;
+      case "stream-close":
+        await this.streamCloseForServer(req.correlationId, req.streamId);
+        break;
+      case "capture-response-bodies":
+        await this.setResponseBodyCapture(req.correlationId, req);
         break;
       default:
         const _exhaustiveCheck: never = req;
@@ -1011,6 +1052,12 @@ export class MessageHandler {
     tabId: number,
     opts: { filter?: string; limit?: number; includeBody?: boolean }
   ): Promise<void> {
+    // `includeBody` toggles best-effort REQUEST-body capture (covert, via the
+    // onBeforeRequest `requestBody` extraInfoSpec). Bodies are captured at
+    // request time, so this only affects FUTURE requests.
+    if (opts.includeBody !== undefined) {
+      setBodyCaptureEnabled(opts.includeBody);
+    }
     const requests = getNetworkRequests(tabId, {
       filter: opts.filter,
       limit: opts.limit,
@@ -1019,10 +1066,182 @@ export class MessageHandler {
       resource: "network-requests",
       correlationId,
       requests,
-      // Response-body capture needs chrome.debugger and is out of scope in MV3.
-      // When the caller asked for bodies, say so honestly rather than silently
-      // returning records without a `body`.
-      ...(opts.includeBody ? { bodyCaptureSupported: false } : {}),
+      // RESPONSE-body capture needs the opt-in chrome.debugger path. When the
+      // caller asked for bodies, report whether that tab is currently attached so
+      // the tool can be honest about whether `body` will be populated (request
+      // bodies ride along covertly regardless).
+      ...(opts.includeBody
+        ? { bodyCaptureSupported: isDebuggerAttached(tabId) }
+        : {}),
+    });
+  }
+
+  // Opt-in DEEP response-body capture via chrome.debugger (Chrome/Edge). Attaches
+  // the debugger to the tab (shows the "started debugging" banner, detectable by
+  // the site) so RESPONSE bodies land in the same per-tab buffer the covert
+  // webRequest path uses; `enabled:false` detaches. The deny-list + host-permission
+  // gate throws propagate (opening the grant UI); an attach/detach failure is
+  // reported as ok:false rather than thrown.
+  private async setResponseBodyCapture(
+    correlationId: string,
+    req: { tabId: number; enabled: boolean }
+  ): Promise<void> {
+    const tab = await browser.tabs.get(req.tabId);
+    if (tab.url && (await isDomainInDenyList(tab.url))) {
+      throw new Error(`Domain in tab URL is in the deny list`);
+    }
+    await this.checkForUrlPermission(tab.url);
+
+    try {
+      if (req.enabled) {
+        await attachDebugger(req.tabId);
+      } else {
+        await detachDebugger(req.tabId);
+      }
+      await this.client.sendResourceToServer({
+        resource: "response-body-capture",
+        correlationId,
+        ok: true,
+        enabled: req.enabled,
+        supported: true,
+      });
+    } catch (error) {
+      await this.client.sendResourceToServer({
+        resource: "response-body-capture",
+        correlationId,
+        ok: false,
+        enabled: false,
+        supported: true,
+        error: String((error as any)?.message ?? error),
+      });
+    }
+  }
+
+  // --- Privileged background-context HTTP + cookie tools ---
+  // These run in the service worker (not the page world), so they are immune to
+  // the visited page's CSP and use the real cookie jar. They gate on a URL when
+  // one is derivable (deny-list + host permission); the gate throws propagate so
+  // the permission-grant UI opens. Operational failures from the browser-http
+  // helper are reported as `ok:false` rather than thrown.
+
+  private async getCookiesForServer(
+    correlationId: string,
+    opts: { url?: string; domain?: string; name?: string }
+  ): Promise<void> {
+    const gateUrl =
+      opts.url ?? (opts.domain ? `https://${opts.domain}/` : undefined);
+    if (gateUrl) {
+      if (await isDomainInDenyList(gateUrl)) {
+        throw new Error("Domain in user defined deny list");
+      }
+      await this.checkForUrlPermission(gateUrl);
+    }
+
+    try {
+      const cookies = await getCookies(opts);
+      await this.client.sendResourceToServer({
+        resource: "cookies",
+        correlationId,
+        ok: true,
+        cookies,
+      });
+    } catch (error) {
+      await this.client.sendResourceToServer({
+        resource: "cookies",
+        correlationId,
+        ok: false,
+        error: String((error as any)?.message ?? error),
+      });
+    }
+  }
+
+  private async browserFetchForServer(
+    correlationId: string,
+    params: BrowserFetchParams
+  ): Promise<void> {
+    if (await isDomainInDenyList(params.url)) {
+      throw new Error("Domain in user defined deny list");
+    }
+    await this.checkForUrlPermission(params.url);
+
+    try {
+      const result = await browserFetch(params);
+      await this.client.sendResourceToServer({
+        resource: "browser-fetch-result",
+        correlationId,
+        ...result,
+      });
+    } catch (error) {
+      await this.client.sendResourceToServer({
+        resource: "browser-fetch-result",
+        correlationId,
+        ok: false,
+        error: String((error as any)?.message ?? error),
+      });
+    }
+  }
+
+  private async streamStartForServer(
+    correlationId: string,
+    params: StreamStartParams
+  ): Promise<void> {
+    if (await isDomainInDenyList(params.url)) {
+      throw new Error("Domain in user defined deny list");
+    }
+    await this.checkForUrlPermission(params.url);
+
+    try {
+      const result = await startStream(params);
+      await this.client.sendResourceToServer({
+        resource: "stream-started",
+        correlationId,
+        ...result,
+      });
+    } catch (error) {
+      await this.client.sendResourceToServer({
+        resource: "stream-started",
+        correlationId,
+        ok: false,
+        error: String((error as any)?.message ?? error),
+      });
+    }
+  }
+
+  private async streamPollForServer(
+    correlationId: string,
+    streamId: string,
+    sinceIndex?: number
+  ): Promise<void> {
+    try {
+      const result = await pollStream(streamId, sinceIndex ?? 0);
+      await this.client.sendResourceToServer({
+        resource: "stream-frames",
+        correlationId,
+        ...result,
+      });
+    } catch (error) {
+      await this.client.sendResourceToServer({
+        resource: "stream-frames",
+        correlationId,
+        ok: false,
+        streamId,
+        frames: [],
+        nextIndex: sinceIndex ?? 0,
+        done: true,
+        error: String((error as any)?.message ?? error),
+      });
+    }
+  }
+
+  private async streamCloseForServer(
+    correlationId: string,
+    streamId: string
+  ): Promise<void> {
+    await closeStream(streamId);
+    await this.client.sendResourceToServer({
+      resource: "stream-closed",
+      correlationId,
+      ok: true,
     });
   }
 

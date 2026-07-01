@@ -1,18 +1,21 @@
 /**
- * Tests for the background network-capture module.
+ * Tests for the Chrome MV3 background network-capture module.
  *
- * NOTE on scope: the live `webRequest` event flow and the `filterResponseData`
- * response-body capture are browser-only — jsdom has no `webRequest` engine and
- * `browser.webRequest.filterResponseData` does not actually stream bytes. So
- * these tests cover the parts that run as plain logic in the background's
- * isolated world:
+ * NOTE on scope: the live `webRequest` event flow is browser-only (jsdom has no
+ * `webRequest` engine). So these tests cover the parts that run as plain logic
+ * in the service-worker's isolated world:
  *   - the pure updater functions (onBeforeRequest/onSendHeaders/
  *     onHeadersReceived/onCompleted/onErrorOccurred) driven with synthetic
  *     `details` objects through a full request lifecycle,
+ *   - REQUEST-body capture (covert, via the onBeforeRequest `requestBody`
+ *     extraInfoSpec) for both the `formData` and `raw` byte-part shapes,
  *   - the per-tab ring buffer (cap / isolation / clear-on-removal),
  *   - `getNetworkRequests` filtering (url substring + resourceType) and limit,
- *   - registration toggling as Automation Mode flips via `storage.onChanged`.
- * The actual byte interception is verified manually in a real Firefox profile.
+ *   - registration toggling as Automation Mode flips via `storage.onChanged`,
+ *     including the extraInfoSpec wiring (requestBody + extraHeaders).
+ *
+ * Chrome MV3 cannot read RESPONSE bodies covertly (that needs chrome.debugger),
+ * so there is no `filterResponseData`-style body test here (unlike Firefox).
  */
 
 import {
@@ -28,6 +31,9 @@ import {
   registerNetworkListeners,
   unregisterNetworkListeners,
   setBodyCaptureEnabled,
+  attachDebugger,
+  detachDebugger,
+  isDebuggerAttached,
   NETWORK_BUFFER_CAP,
 } from "../network-capture";
 
@@ -55,9 +61,17 @@ function details(over: Record<string, unknown>): any {
   };
 }
 
+// Encode a string to a standalone ArrayBuffer (as Chrome hands us in
+// `requestBody.raw[i].bytes`). `TextEncoder` is installed by the jest setup.
+function bytesOf(text: string): ArrayBuffer {
+  const u8 = new TextEncoder().encode(text);
+  return u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength) as ArrayBuffer;
+}
+
 describe("network-capture lifecycle (pure updaters)", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    setBodyCaptureEnabled(false);
     // Clear buffers for the tabs used here so suites don't leak into each other.
     [1, 2, 3, 10, 11, 12].forEach(clearNetworkRequests);
   });
@@ -114,6 +128,8 @@ describe("network-capture lifecycle (pure updaters)", () => {
       { name: "Content-Length", value: "1234" },
     ]);
     expect(rec.error).toBeUndefined();
+    // No body captured when body capture is disabled (the default here).
+    expect(rec.requestBody).toBeUndefined();
   });
 
   it("prefers details.responseSize over the Content-Length header when present", () => {
@@ -137,21 +153,19 @@ describe("network-capture lifecycle (pure updaters)", () => {
       details({
         requestId: "rE",
         tabId: 11,
-        error: "NS_ERROR_NET_RESET",
+        error: "net::ERR_CONNECTION_RESET",
         timeStamp: 1080,
       })
     );
 
     const recs = getNetworkRequests(11);
     expect(recs).toHaveLength(1);
-    expect(recs[0].error).toBe("NS_ERROR_NET_RESET");
+    expect(recs[0].error).toBe("net::ERR_CONNECTION_RESET");
     expect(recs[0].durationMs).toBe(80);
     expect(recs[0].statusCode).toBeUndefined();
   });
 
   it("finalizes a completed request even if beforeRequest was missed", () => {
-    // onCompleted for a requestId never seen in-flight should still produce a
-    // record (synthesized from the completed details) rather than be dropped.
     onCompletedRecord(
       details({
         requestId: "rOrphan",
@@ -215,13 +229,139 @@ describe("network-capture lifecycle (pure updaters)", () => {
     onCompletedRecord(
       details({ requestId: "noTab", tabId: -1, statusCode: 200 })
     );
-    // Nothing should land in any of the tab buffers we track.
     expect(getNetworkRequests(-1)).toEqual([]);
+  });
+});
+
+describe("request-body capture (covert, via onBeforeRequest requestBody)", () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    clearAllNetworkState();
+    setBodyCaptureEnabled(false);
+  });
+
+  afterEach(() => {
+    setBodyCaptureEnabled(false);
+    clearAllNetworkState();
+  });
+
+  it("does NOT capture a request body when body capture is disabled", () => {
+    onBeforeRequestRecord(
+      details({
+        requestId: "nb",
+        tabId: 50,
+        method: "POST",
+        requestBody: { formData: { username: ["alice"] } },
+      })
+    );
+    onCompletedRecord(details({ requestId: "nb", tabId: 50, statusCode: 200 }));
+    expect(getNetworkRequests(50)[0].requestBody).toBeUndefined();
+  });
+
+  it("serializes formData to JSON when body capture is enabled", () => {
+    setBodyCaptureEnabled(true);
+    const formData = { username: ["alice"], token: ["secret-value"] };
+    onBeforeRequestRecord(
+      details({
+        requestId: "fd",
+        tabId: 51,
+        method: "POST",
+        requestBody: { formData },
+      })
+    );
+    onCompletedRecord(details({ requestId: "fd", tabId: 51, statusCode: 200 }));
+    expect(getNetworkRequests(51)[0].requestBody).toBe(JSON.stringify(formData));
+  });
+
+  it("decodes raw byte parts as UTF-8 when body capture is enabled", () => {
+    setBodyCaptureEnabled(true);
+    const payload = '{"q":"hello world","n":42}';
+    onBeforeRequestRecord(
+      details({
+        requestId: "raw",
+        tabId: 52,
+        method: "POST",
+        requestBody: { raw: [{ bytes: bytesOf(payload) }] },
+      })
+    );
+    onCompletedRecord(details({ requestId: "raw", tabId: 52, statusCode: 200 }));
+    expect(getNetworkRequests(52)[0].requestBody).toBe(payload);
+  });
+
+  it("concatenates multiple raw byte parts in order", () => {
+    setBodyCaptureEnabled(true);
+    onBeforeRequestRecord(
+      details({
+        requestId: "raw2",
+        tabId: 53,
+        method: "POST",
+        requestBody: {
+          raw: [{ bytes: bytesOf("hello ") }, { bytes: bytesOf("world") }],
+        },
+      })
+    );
+    onCompletedRecord(details({ requestId: "raw2", tabId: 53, statusCode: 200 }));
+    expect(getNetworkRequests(53)[0].requestBody).toBe("hello world");
+  });
+
+  it("prefers formData over raw when both are present", () => {
+    setBodyCaptureEnabled(true);
+    const formData = { a: ["1"] };
+    onBeforeRequestRecord(
+      details({
+        requestId: "both",
+        tabId: 54,
+        method: "POST",
+        requestBody: { formData, raw: [{ bytes: bytesOf("ignored") }] },
+      })
+    );
+    onCompletedRecord(details({ requestId: "both", tabId: 54, statusCode: 200 }));
+    expect(getNetworkRequests(54)[0].requestBody).toBe(JSON.stringify(formData));
+  });
+
+  it("skips raw parts without bytes (file uploads) and stores nothing when only files", () => {
+    setBodyCaptureEnabled(true);
+    onBeforeRequestRecord(
+      details({
+        requestId: "file",
+        tabId: 55,
+        method: "POST",
+        requestBody: { raw: [{ file: "blob:https://x/abc-123" }] },
+      })
+    );
+    onCompletedRecord(details({ requestId: "file", tabId: 55, statusCode: 200 }));
+    expect(getNetworkRequests(55)[0].requestBody).toBeUndefined();
+  });
+
+  it("caps the stored request body at ~64KB", () => {
+    setBodyCaptureEnabled(true);
+    const CAP = 64 * 1024;
+    // Two 50KB ASCII parts => 100KB total, over the cap.
+    const part = "a".repeat(50 * 1024);
+    onBeforeRequestRecord(
+      details({
+        requestId: "big",
+        tabId: 56,
+        method: "POST",
+        requestBody: { raw: [{ bytes: bytesOf(part) }, { bytes: bytesOf(part) }] },
+      })
+    );
+    onCompletedRecord(details({ requestId: "big", tabId: 56, statusCode: 200 }));
+    // ASCII => 1 byte == 1 char; the stored snippet is clamped to CAP.
+    expect(getNetworkRequests(56)[0].requestBody!.length).toBe(CAP);
+  });
+
+  it("captures nothing (no throw) for an absent/empty requestBody", () => {
+    setBodyCaptureEnabled(true);
+    onBeforeRequestRecord(details({ requestId: "empty", tabId: 57, method: "POST" }));
+    onCompletedRecord(details({ requestId: "empty", tabId: 57, statusCode: 200 }));
+    expect(getNetworkRequests(57)[0].requestBody).toBeUndefined();
   });
 });
 
 describe("getNetworkRequests filtering and limit", () => {
   beforeEach(() => {
+    setBodyCaptureEnabled(false);
     clearNetworkRequests(20);
     function add(
       requestId: string,
@@ -268,7 +408,6 @@ describe("getNetworkRequests filtering and limit", () => {
 
   it("applies the most-recent limit after filtering", () => {
     const recs = getNetworkRequests(20, { filter: "example.com", limit: 2 });
-    // All 4 match the host; the 2 most-recent are f3 and f4.
     expect(recs.map((r) => r.requestId)).toEqual(["f3", "f4"]);
   });
 });
@@ -305,7 +444,7 @@ describe("initNetworkCapture wiring", () => {
     expect(getNetworkRequests(30)).toEqual([]);
   });
 
-  it("registers the webRequest listeners on init when Automation Mode is already on", async () => {
+  it("registers the webRequest listeners with the right extraInfoSpecs when Automation Mode is already on", async () => {
     (browser.storage.local.get as jest.Mock).mockResolvedValue({
       config: { secret: "s", ports: [8089], automationMode: true },
     });
@@ -316,15 +455,25 @@ describe("initNetworkCapture wiring", () => {
     expect(browser.webRequest.onHeadersReceived.addListener).toHaveBeenCalledTimes(1);
     expect(browser.webRequest.onCompleted.addListener).toHaveBeenCalledTimes(1);
     expect(browser.webRequest.onErrorOccurred.addListener).toHaveBeenCalledTimes(1);
-    // onSendHeaders/onHeadersReceived must request the header extra info specs.
+
+    // onBeforeRequest must request the requestBody extraInfoSpec (covert request
+    // bodies), on all URLs.
+    const beforeArgs = (browser.webRequest.onBeforeRequest.addListener as jest.Mock)
+      .mock.calls[0];
+    expect(beforeArgs[1]).toEqual({ urls: ["<all_urls>"] });
+    expect(beforeArgs[2]).toEqual(["requestBody"]);
+
+    // Header events must include "extraHeaders" so Chrome surfaces
+    // Cookie/Set-Cookie/Authorization (omitted from the default header lists).
     const sendArgs = (browser.webRequest.onSendHeaders.addListener as jest.Mock)
       .mock.calls[0];
-    expect(sendArgs[2]).toEqual(["requestHeaders"]);
+    expect(sendArgs[2]).toEqual(["requestHeaders", "extraHeaders"]);
     const recvArgs = (browser.webRequest.onHeadersReceived.addListener as jest.Mock)
       .mock.calls[0];
-    expect(recvArgs[2]).toEqual(["responseHeaders"]);
-    // The url filter should be all-URLs.
-    expect(sendArgs[1]).toEqual({ urls: ["<all_urls>"] });
+    expect(recvArgs[2]).toEqual(["responseHeaders", "extraHeaders"]);
+    const completedArgs = (browser.webRequest.onCompleted.addListener as jest.Mock)
+      .mock.calls[0];
+    expect(completedArgs[2]).toEqual(["responseHeaders", "extraHeaders"]);
   });
 
   it("does NOT register the webRequest listeners on init when Automation Mode is off", async () => {
@@ -402,281 +551,6 @@ describe("registerNetworkListeners idempotency and error handling", () => {
   });
 });
 
-// A stand-in for Firefox's StreamFilter returned by
-// `browser.webRequest.filterResponseData(requestId)`. jsdom has no real
-// `webRequest` byte-streaming engine, so we hand the module a fake filter and
-// drive its `ondata`/`onstop`/`onerror` callbacks by hand, exactly as the
-// browser would, to exercise the otherwise browser-only body-capture path.
-interface FakeFilter {
-  write: jest.Mock;
-  disconnect: jest.Mock;
-  close: jest.Mock;
-  ondata: ((event: { data: ArrayBuffer }) => void) | null;
-  onstop: (() => void) | null;
-  onerror: (() => void) | null;
-}
-
-function makeFakeFilter(): FakeFilter {
-  return {
-    write: jest.fn(),
-    disconnect: jest.fn(),
-    close: jest.fn(),
-    ondata: null,
-    onstop: null,
-    onerror: null,
-  };
-}
-
-// Encode a string to an ArrayBuffer for feeding `ondata`. `TextEncoder` is
-// installed as a global by the jest setup (jsdom omits it; real Firefox has it).
-function bytesOf(text: string): ArrayBuffer {
-  const u8 = new TextEncoder().encode(text);
-  // Return a standalone ArrayBuffer (not a view) like the browser hands us.
-  return u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength) as ArrayBuffer;
-}
-
-describe("attachBodyFilter response-body capture (fake StreamFilter)", () => {
-  beforeEach(async () => {
-    await unregisterNetworkListeners();
-    jest.clearAllMocks();
-    clearAllNetworkState();
-    setBodyCaptureEnabled(false);
-  });
-
-  afterEach(async () => {
-    await unregisterNetworkListeners();
-    setBodyCaptureEnabled(false);
-    clearAllNetworkState();
-  });
-
-  // Register the real listeners and return the onBeforeRequest handler the
-  // module installed (which is what calls attachBodyFilter when body capture
-  // is on). Also installs `filterResponseData` to return our fake filter.
-  async function setupWithFilter(
-    filter: FakeFilter
-  ): Promise<(details: any) => any> {
-    (browser.webRequest as any).filterResponseData = jest
-      .fn()
-      .mockReturnValue(filter);
-    await registerNetworkListeners();
-    return lastListener(
-      browser.webRequest.onBeforeRequest.addListener as jest.Mock
-    );
-  }
-
-  it("attaches no filter when body capture is DISABLED", async () => {
-    const filter = makeFakeFilter();
-    const onBeforeRequest = await setupWithFilter(filter);
-
-    // Body capture is off (default in beforeEach).
-    onBeforeRequest(details({ requestId: "nb", tabId: 40 }));
-
-    expect((browser.webRequest as any).filterResponseData).not.toHaveBeenCalled();
-    expect(filter.write).not.toHaveBeenCalled();
-  });
-
-  it("re-emits each chunk, disconnects on stop, and decodes the body onto the record", async () => {
-    setBodyCaptureEnabled(true);
-    const filter = makeFakeFilter();
-    const onBeforeRequest = await setupWithFilter(filter);
-
-    onBeforeRequest(details({ requestId: "bc", tabId: 41, url: "https://x/y" }));
-
-    // The module should have requested a stream filter for this request.
-    expect((browser.webRequest as any).filterResponseData).toHaveBeenCalledWith(
-      "bc"
-    );
-    expect(typeof filter.ondata).toBe("function");
-    expect(typeof filter.onstop).toBe("function");
-
-    // Drive two chunks of bytes, then stop.
-    const chunk1 = bytesOf("hello ");
-    const chunk2 = bytesOf("world");
-    filter.ondata!({ data: chunk1 });
-    filter.ondata!({ data: chunk2 });
-
-    // (a) The page still receives BOTH chunks unchanged.
-    expect(filter.write).toHaveBeenCalledTimes(2);
-    expect(filter.write).toHaveBeenNthCalledWith(1, chunk1);
-    expect(filter.write).toHaveBeenNthCalledWith(2, chunk2);
-
-    // The body is not finalized until stop.
-    filter.onstop!();
-    // (b) disconnect is called on stop so the stream completes for the page.
-    expect(filter.disconnect).toHaveBeenCalledTimes(1);
-
-    // Finalize the request so the record lands in the tab buffer.
-    onCompletedRecord(
-      details({ requestId: "bc", tabId: 41, url: "https://x/y", statusCode: 200 })
-    );
-
-    // (c) The decoded body text lands on the record.
-    const recs = getNetworkRequests(41);
-    expect(recs).toHaveLength(1);
-    expect(recs[0].body).toBe("hello world");
-  });
-
-  it("caps the stored body at ~64KB but still re-emits every (over-cap) chunk to the page", async () => {
-    setBodyCaptureEnabled(true);
-    const filter = makeFakeFilter();
-    const onBeforeRequest = await setupWithFilter(filter);
-
-    onBeforeRequest(details({ requestId: "big", tabId: 42, url: "https://x/big" }));
-
-    // 64KB cap. Send 50KB then another 50KB (total 100KB > cap).
-    const CAP = 64 * 1024;
-    const part = "a".repeat(50 * 1024);
-    const chunkA = bytesOf(part);
-    const chunkB = bytesOf(part);
-    filter.ondata!({ data: chunkA });
-    filter.ondata!({ data: chunkB });
-    filter.onstop!();
-
-    // Page integrity: BOTH chunks are written out even though the stored body
-    // is capped — we must never starve the page of bytes to save memory.
-    expect(filter.write).toHaveBeenCalledTimes(2);
-    expect(filter.write).toHaveBeenNthCalledWith(1, chunkA);
-    expect(filter.write).toHaveBeenNthCalledWith(2, chunkB);
-    expect(filter.disconnect).toHaveBeenCalledTimes(1);
-
-    onCompletedRecord(
-      details({ requestId: "big", tabId: 42, url: "https://x/big", statusCode: 200 })
-    );
-    const rec = getNetworkRequests(42)[0];
-    // Body is ASCII so 1 byte == 1 char; the stored snippet is clamped to CAP.
-    expect(rec.body!.length).toBe(CAP);
-  });
-
-  it("re-emits the chunk to the page EVEN IF the capture logic throws (write in finally)", async () => {
-    // This guards the robustness fix: a capture error must never truncate the
-    // page's response. We feed `ondata` an event whose `data` is not a valid
-    // ArrayBuffer, so `new Uint8Array(event.data)` throws inside the capture
-    // block — and assert the chunk was still written out to the page.
-    setBodyCaptureEnabled(true);
-    const filter = makeFakeFilter();
-    const onBeforeRequest = await setupWithFilter(filter);
-
-    onBeforeRequest(details({ requestId: "thr", tabId: 43 }));
-
-    const hostileData = { byteLength: 5 } as unknown as ArrayBuffer; // not a real buffer
-    expect(() => filter.ondata!({ data: hostileData })).not.toThrow();
-    // The page still got its bytes despite the capture throwing.
-    expect(filter.write).toHaveBeenCalledTimes(1);
-    expect(filter.write).toHaveBeenCalledWith(hostileData);
-
-    // Stop still disconnects so the page's stream completes.
-    filter.onstop!();
-    expect(filter.disconnect).toHaveBeenCalledTimes(1);
-  });
-
-  it("disconnects on filter error without throwing", async () => {
-    setBodyCaptureEnabled(true);
-    const filter = makeFakeFilter();
-    const onBeforeRequest = await setupWithFilter(filter);
-
-    onBeforeRequest(details({ requestId: "err", tabId: 44 }));
-    expect(typeof filter.onerror).toBe("function");
-    expect(() => filter.onerror!()).not.toThrow();
-    expect(filter.disconnect).toHaveBeenCalledTimes(1);
-  });
-});
-
-describe("request-body capture (covert, no debugger)", () => {
-  beforeEach(() => {
-    jest.clearAllMocks();
-    clearAllNetworkState();
-    setBodyCaptureEnabled(false);
-  });
-
-  afterEach(() => {
-    setBodyCaptureEnabled(false);
-    clearAllNetworkState();
-  });
-
-  // Complete the request so its in-flight record lands in the tab buffer, then
-  // return the captured request body (or undefined) for assertions.
-  function bodyAfter(requestId: string, tabId: number): string | undefined {
-    onCompletedRecord(
-      details({ requestId, tabId, statusCode: 200, timeStamp: 1100 })
-    );
-    const recs = getNetworkRequests(tabId);
-    return recs[recs.length - 1].requestBody;
-  }
-
-  it("does NOT capture a request body when body capture is DISABLED", () => {
-    // Body capture off (default from beforeEach): requestBody must be ignored.
-    onBeforeRequestRecord(
-      details({
-        requestId: "rbOff",
-        tabId: 50,
-        method: "POST",
-        requestBody: { formData: { a: ["1"] } },
-      })
-    );
-    expect(bodyAfter("rbOff", 50)).toBeUndefined();
-  });
-
-  it("serializes formData to JSON when body capture is enabled", () => {
-    setBodyCaptureEnabled(true);
-    onBeforeRequestRecord(
-      details({
-        requestId: "rbForm",
-        tabId: 51,
-        method: "POST",
-        requestBody: { formData: { user: ["alice"], tags: ["x", "y"] } },
-      })
-    );
-    expect(bodyAfter("rbForm", 51)).toBe(
-      JSON.stringify({ user: ["alice"], tags: ["x", "y"] })
-    );
-  });
-
-  it("decodes a raw ArrayBuffer part to a UTF-8 string when body capture is enabled", () => {
-    setBodyCaptureEnabled(true);
-    onBeforeRequestRecord(
-      details({
-        requestId: "rbRaw",
-        tabId: 52,
-        method: "POST",
-        requestBody: { raw: [{ bytes: bytesOf('{"q":"hi"}') }] },
-      })
-    );
-    expect(bodyAfter("rbRaw", 52)).toBe('{"q":"hi"}');
-  });
-
-  it("concatenates raw byte parts and skips file-upload parts (no bytes)", () => {
-    setBodyCaptureEnabled(true);
-    onBeforeRequestRecord(
-      details({
-        requestId: "rbMulti",
-        tabId: 53,
-        method: "POST",
-        requestBody: {
-          raw: [
-            { bytes: bytesOf("hello ") },
-            { file: "/tmp/upload.bin" }, // file-upload part: no bytes, skipped
-            { bytes: bytesOf("world") },
-          ],
-        },
-      })
-    );
-    expect(bodyAfter("rbMulti", 53)).toBe("hello world");
-  });
-
-  it("captures nothing for a pure file upload (all parts lack bytes)", () => {
-    setBodyCaptureEnabled(true);
-    onBeforeRequestRecord(
-      details({
-        requestId: "rbFile",
-        tabId: 54,
-        method: "POST",
-        requestBody: { raw: [{ file: "/tmp/a.png" }, { file: "/tmp/b.png" }] },
-      })
-    );
-    expect(bodyAfter("rbFile", 54)).toBeUndefined();
-  });
-});
-
 describe("in-flight map eviction (never-completing requests cannot leak)", () => {
   beforeEach(() => {
     jest.clearAllMocks();
@@ -688,12 +562,6 @@ describe("in-flight map eviction (never-completing requests cannot leak)", () =>
   });
 
   it("bounds the in-flight map at its cap, evicting the oldest, as requests pile up uncompleted", () => {
-    // Start far more requests than the 1000 in-flight cap and never complete
-    // them, so the eviction path runs. We probe in-flight membership via
-    // `onSendHeadersRecord`, which attaches its headers ONLY when the request is
-    // still in-flight: the oldest started request must have been evicted (so no
-    // probe header survives onto its later-synthesized record), while the most
-    // recent one is still in-flight (so its probe header is retained).
     const CAP = 1000;
     const EXTRA = 50;
     const tabId = 70;
@@ -709,9 +577,6 @@ describe("in-flight map eviction (never-completing requests cannot leak)", () =>
       });
     }
 
-    // The oldest started request (if0) was evicted from in-flight, so
-    // onSendHeaders for it is a no-op (its probe header is dropped), while a
-    // recent one (the very last) is still in-flight and DOES get the header.
     onSendHeadersRecord({
       requestId: "if0",
       tabId,
@@ -746,11 +611,8 @@ describe("in-flight map eviction (never-completing requests cannot leak)", () =>
     const old = recs.find((r) => r.requestId === "if0");
     const recent = recs.find((r) => r.requestId === `if${CAP + EXTRA - 1}`);
 
-    // if0 was evicted from in-flight before completion: completion synthesized a
-    // fresh record (tabId >= 0), so it has NO probe header attached.
     expect(old).toBeDefined();
     expect(old!.requestHeaders).toBeUndefined();
-    // The most-recent request survived in-flight, so its probe header is present.
     expect(recent).toBeDefined();
     expect(recent!.requestHeaders).toEqual([{ name: "X-Probe", value: "new" }]);
   });
@@ -782,8 +644,6 @@ describe("clearing all state when Automation Mode turns OFF", () => {
 
     expect(getNetworkRequests(80)).toEqual([]);
     expect(getNetworkRequests(81)).toEqual([]);
-    // The in-flight p2 is gone too: completing it now synthesizes a fresh record
-    // rather than finding a buffered in-flight one (proves in-flight was cleared).
     onSendHeadersRecord(
       details({ requestId: "p2", tabId: 81, requestHeaders: [{ name: "A", value: "1" }] })
     );
@@ -797,8 +657,6 @@ describe("clearing all state when Automation Mode turns OFF", () => {
       browser.storage.onChanged.addListener as jest.Mock
     );
 
-    // Flip Automation Mode ON so the webRequest listeners are actually
-    // registered (otherwise the OFF path's unregister is a no-op).
     onChanged(
       {
         config: {
@@ -811,12 +669,10 @@ describe("clearing all state when Automation Mode turns OFF", () => {
     await flushPromises();
     expect(browser.webRequest.onBeforeRequest.addListener).toHaveBeenCalledTimes(1);
 
-    // Some captured activity from this (on) session.
     onBeforeRequestRecord(details({ requestId: "s1", tabId: 82 }));
     onCompletedRecord(details({ requestId: "s1", tabId: 82, statusCode: 200 }));
     expect(getNetworkRequests(82)).toHaveLength(1);
 
-    // Flip Automation Mode OFF.
     onChanged(
       {
         config: {
@@ -828,8 +684,188 @@ describe("clearing all state when Automation Mode turns OFF", () => {
     );
     await flushPromises();
 
-    // Listeners unregistered AND the buffer cleared.
     expect(browser.webRequest.onBeforeRequest.removeListener).toHaveBeenCalledTimes(1);
     expect(getNetworkRequests(82)).toEqual([]);
+  });
+});
+
+describe("chrome.debugger (CDP) deep-capture path", () => {
+  let dbg: any;
+  // The module registers its onEvent/onDetach listeners exactly once (guarded by
+  // a module flag), so capture them on the first attach in beforeAll — later
+  // clearAllMocks() calls wipe the mock's call log but not these references.
+  let onEvent: (source: any, method: string, params: any) => any;
+  let onDetach: (source: any, reason: string) => void;
+
+  const TABS = [999, 900, 901, 902, 903, 904, 905, 906, 907];
+
+  beforeAll(async () => {
+    dbg = (chrome as any).debugger;
+    await attachDebugger(999);
+    onEvent = lastListener(dbg.onEvent.addListener as jest.Mock);
+    onDetach = lastListener(dbg.onDetach.addListener as jest.Mock);
+    await detachDebugger(999);
+  });
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    clearAllNetworkState();
+    // Re-establish deterministic defaults (clearAllMocks keeps implementations,
+    // so reset sendCommand to shed any per-test getResponseBody stub).
+    dbg.attach.mockResolvedValue(undefined);
+    dbg.detach.mockResolvedValue(undefined);
+    dbg.sendCommand.mockReset();
+    dbg.sendCommand.mockResolvedValue({});
+  });
+
+  afterEach(async () => {
+    // Never leave a tab attached — it would suppress the covert path in later
+    // suites via the dedup guard. detachDebugger is idempotent.
+    for (const t of TABS) {
+      await detachDebugger(t);
+    }
+    clearAllNetworkState();
+  });
+
+  it("attaches, enables the Network domain, and reports the tab attached", async () => {
+    expect(isDebuggerAttached(900)).toBe(false);
+    await attachDebugger(900);
+    expect(isDebuggerAttached(900)).toBe(true);
+    expect(dbg.attach).toHaveBeenCalledWith({ tabId: 900 }, "1.3");
+    expect(dbg.sendCommand).toHaveBeenCalledWith({ tabId: 900 }, "Network.enable");
+  });
+
+  it("detaches and clears the attached flag", async () => {
+    await attachDebugger(901);
+    expect(isDebuggerAttached(901)).toBe(true);
+    await detachDebugger(901);
+    expect(isDebuggerAttached(901)).toBe(false);
+    expect(dbg.detach).toHaveBeenCalledWith({ tabId: 901 });
+  });
+
+  it("captures headers, request body, response headers, and body from CDP events", async () => {
+    await attachDebugger(902);
+    dbg.sendCommand.mockImplementation((_t: any, method: string) =>
+      method === "Network.getResponseBody"
+        ? Promise.resolve({ body: '{"ok":true}', base64Encoded: false })
+        : Promise.resolve({})
+    );
+    const src = { tabId: 902 };
+    await onEvent(src, "Network.requestWillBeSent", {
+      requestId: "cdp-1",
+      type: "XHR",
+      timestamp: 2,
+      request: {
+        url: "https://example.com/api",
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: "Bearer x",
+        },
+        postData: '{"q":"hi"}',
+      },
+    });
+    await onEvent(src, "Network.responseReceived", {
+      requestId: "cdp-1",
+      response: {
+        status: 200,
+        headers: { "Content-Type": "application/json", "Set-Cookie": "a=b" },
+        encodedDataLength: 321,
+      },
+    });
+    await onEvent(src, "Network.loadingFinished", { requestId: "cdp-1" });
+
+    const recs = getNetworkRequests(902);
+    expect(recs).toHaveLength(1);
+    const rec = recs[0];
+    expect(rec.requestId).toBe("cdp-1");
+    expect(rec.url).toBe("https://example.com/api");
+    expect(rec.method).toBe("POST");
+    expect(rec.type).toBe("XHR");
+    expect(rec.statusCode).toBe(200);
+    expect(rec.responseSize).toBe(321);
+    expect(rec.requestHeaders).toEqual(
+      expect.arrayContaining([
+        { name: "Content-Type", value: "application/json" },
+        { name: "Authorization", value: "Bearer x" },
+      ])
+    );
+    // CDP response headers include Set-Cookie (unlike Chrome's default lists).
+    expect(rec.responseHeaders).toEqual(
+      expect.arrayContaining([{ name: "Set-Cookie", value: "a=b" }])
+    );
+    expect(rec.requestBody).toBe('{"q":"hi"}');
+    expect(rec.body).toBe('{"ok":true}');
+  });
+
+  it("marks a base64-encoded response body with a [base64] prefix", async () => {
+    await attachDebugger(903);
+    dbg.sendCommand.mockImplementation((_t: any, method: string) =>
+      method === "Network.getResponseBody"
+        ? Promise.resolve({ body: "AAAA", base64Encoded: true })
+        : Promise.resolve({})
+    );
+    const src = { tabId: 903 };
+    await onEvent(src, "Network.requestWillBeSent", {
+      requestId: "b64",
+      type: "Image",
+      timestamp: 1,
+      request: { url: "https://x/i.png", method: "GET", headers: {} },
+    });
+    await onEvent(src, "Network.loadingFinished", { requestId: "b64" });
+    expect(getNetworkRequests(903)[0].body).toBe("[base64] AAAA");
+  });
+
+  it("still records the request when getResponseBody throws (e.g. redirects)", async () => {
+    await attachDebugger(904);
+    dbg.sendCommand.mockImplementation((_t: any, method: string) =>
+      method === "Network.getResponseBody"
+        ? Promise.reject(new Error("No resource with given identifier found"))
+        : Promise.resolve({})
+    );
+    const src = { tabId: 904 };
+    await onEvent(src, "Network.requestWillBeSent", {
+      requestId: "nb",
+      type: "Document",
+      timestamp: 1,
+      request: { url: "https://x/", method: "GET", headers: {} },
+    });
+    await onEvent(src, "Network.loadingFinished", { requestId: "nb" });
+    const recs = getNetworkRequests(904);
+    expect(recs).toHaveLength(1);
+    expect(recs[0].body).toBeUndefined();
+  });
+
+  it("records a loadingFailed event with the error text", async () => {
+    await attachDebugger(905);
+    const src = { tabId: 905 };
+    await onEvent(src, "Network.requestWillBeSent", {
+      requestId: "f1",
+      type: "XHR",
+      timestamp: 1,
+      request: { url: "https://x/f", method: "GET", headers: {} },
+    });
+    await onEvent(src, "Network.loadingFailed", {
+      requestId: "f1",
+      errorText: "net::ERR_FAILED",
+    });
+    const recs = getNetworkRequests(905);
+    expect(recs).toHaveLength(1);
+    expect(recs[0].error).toBe("net::ERR_FAILED");
+  });
+
+  it("skips the covert webRequest path for a debugger-owned tab (no double-record)", async () => {
+    await attachDebugger(906);
+    // Both the create path and the completed/synthesize path must be suppressed.
+    onBeforeRequestRecord(details({ requestId: "wr", tabId: 906 }));
+    onCompletedRecord(details({ requestId: "wr", tabId: 906, statusCode: 200 }));
+    expect(getNetworkRequests(906)).toEqual([]);
+  });
+
+  it("clears the attached flag when the debugger detaches externally (banner dismissed)", async () => {
+    await attachDebugger(907);
+    expect(isDebuggerAttached(907)).toBe(true);
+    onDetach({ tabId: 907 }, "target_closed");
+    expect(isDebuggerAttached(907)).toBe(false);
   });
 });

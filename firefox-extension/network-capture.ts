@@ -42,6 +42,9 @@ const INFLIGHT_CAP = 1000;
 // Maximum number of UTF-8 bytes of a response body we retain (best-effort).
 const MAX_BODY_BYTES = 64 * 1024;
 
+// Maximum number of bytes of a raw request body we decode/retain (best-effort).
+const MAX_REQUEST_BODY_BYTES = 64 * 1024;
+
 // Per-tab ring buffer of finalized records. Keyed by tabId.
 const buffers = new Map<number, NetworkRecord[]>();
 
@@ -77,6 +80,14 @@ interface WebRequestDetails {
   responseSize?: number;
   requestHeaders?: NetworkHeader[];
   responseHeaders?: NetworkHeader[];
+  // Present only when the onBeforeRequest listener requests the "requestBody"
+  // extra info spec. `formData` holds parsed form/urlencoded fields; `raw` holds
+  // the raw byte parts (file-upload parts carry `file` but no `bytes`).
+  requestBody?: {
+    formData?: Record<string, string[]>;
+    raw?: Array<{ bytes?: ArrayBuffer; file?: string }>;
+    error?: string;
+  };
 }
 
 /**
@@ -95,6 +106,17 @@ export function onBeforeRequestRecord(details: WebRequestDetails): void {
     type: details.type ?? "other",
     timeStamp: typeof details.timeStamp === "number" ? details.timeStamp : Date.now(),
   };
+  // Covert (webRequest-based, no debugger) request-body capture. Gated behind
+  // the same opt-in flag as response bodies, so the default path stays light and
+  // only requests made after enabling are captured. Best-effort:
+  // decodeRequestBody never throws and yields undefined when there is nothing
+  // usable to store (e.g. a pure file upload).
+  if (bodyCaptureEnabled) {
+    const rb = decodeRequestBody(details.requestBody);
+    if (rb) {
+      record.requestBody = rb;
+    }
+  }
   // Stash the owning tab so finalize can route it without re-reading details.
   recordTabId.set(details.requestId, details.tabId);
   inFlight.set(details.requestId, record);
@@ -197,6 +219,58 @@ function takeOrSynthesize(details: WebRequestDetails): NetworkRecord | null {
     type: details.type ?? "other",
     timeStamp: typeof details.timeStamp === "number" ? details.timeStamp : Date.now(),
   };
+}
+
+// Decode an onBeforeRequest `requestBody` into a best-effort UTF-8 snippet.
+// Form submissions (`formData`) are serialized to JSON; raw byte parts (`raw`,
+// typically fetch/XHR/JSON bodies) are concatenated up to a cap and decoded as
+// UTF-8. Parts without `bytes` (file uploads) are skipped. Returns undefined on
+// failure or when there is nothing usable to store. Best-effort: never throws,
+// so request-body capture can never break a request.
+function decodeRequestBody(
+  rb: WebRequestDetails["requestBody"]
+): string | undefined {
+  if (!rb) {
+    return undefined;
+  }
+  try {
+    if (rb.formData) {
+      return JSON.stringify(rb.formData);
+    }
+    if (rb.raw && rb.raw.length > 0) {
+      const chunks: Uint8Array[] = [];
+      let total = 0;
+      for (const part of rb.raw) {
+        if (total >= MAX_REQUEST_BODY_BYTES) {
+          break;
+        }
+        // Skip file-upload parts, which carry a `file` reference but no bytes.
+        if (!part || !part.bytes) {
+          continue;
+        }
+        const bytes = new Uint8Array(part.bytes);
+        const remaining = MAX_REQUEST_BODY_BYTES - total;
+        chunks.push(
+          remaining >= bytes.length ? bytes : bytes.subarray(0, remaining)
+        );
+        total += bytes.length;
+      }
+      if (chunks.length === 0) {
+        return undefined;
+      }
+      const merged = new Uint8Array(Math.min(total, MAX_REQUEST_BODY_BYTES));
+      let offset = 0;
+      for (const c of chunks) {
+        merged.set(c, offset);
+        offset += c.length;
+      }
+      const text = new TextDecoder("utf-8", { fatal: false }).decode(merged);
+      return text.length > 0 ? text : undefined;
+    }
+  } catch (e) {
+    /* best-effort: request-body capture must never break the request */
+  }
+  return undefined;
 }
 
 // Compute the response size, preferring the engine-reported `responseSize`,
@@ -370,8 +444,10 @@ export async function registerNetworkListeners(): Promise<void> {
       onBeforeRequest,
       allUrls,
       // "blocking" is required for filterResponseData to be usable in the
-      // handler; harmless for the no-body path.
-      ["blocking"]
+      // handler; harmless for the no-body path. "requestBody" makes the covert
+      // request-body bytes/formData available on `details.requestBody` (decoded
+      // only when body capture is enabled).
+      ["blocking", "requestBody"]
     );
     browser.webRequest.onSendHeaders.addListener(onSendHeaders, allUrls, [
       "requestHeaders",

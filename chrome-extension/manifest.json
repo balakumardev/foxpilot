@@ -20,7 +20,9 @@
     "activeTab",
     "offscreen",
     "alarms",
-    "declarativeNetRequest"
+    "declarativeNetRequest",
+    "cookies",
+    "debugger"
   ],
   "host_permissions": [
     "http://localhost/*",

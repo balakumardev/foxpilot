@@ -645,14 +645,15 @@ mcpServer.tool(
 
 mcpServer.tool(
   "get-network-requests",
-  "Get the network requests captured for a browser tab (URL, method, status, resource type, timing, sizes). Requires Automation Mode, and only captures requests made AFTER Automation Mode was enabled (reload the page if you see nothing). Pass 'filter' to keep only requests whose URL contains it (case-insensitive) or whose resource type matches it exactly, 'limit' to return only the most recent N, and 'includeBody' to request best-effort response-body snippets for FUTURE requests (browser-dependent: captured on Firefox; Chrome MV3 cannot capture bodies and returns metadata only).",
+  "Get the network requests captured for a browser tab (URL, method, status, resource type, timing, size). Requires Automation Mode, and only captures requests made AFTER Automation Mode was enabled (reload the page if you see nothing). Pass 'filter' to keep only requests whose URL contains it (case-insensitive) or whose resource type matches it exactly, 'limit' to return only the most recent N, 'includeHeaders' to also print each request's captured request/response headers (credential-bearing values — Cookie/Authorization/Set-Cookie — are redacted), and 'includeBody' to request best-effort response-body snippets for FUTURE requests (browser-dependent: captured on Firefox; Chrome MV3 cannot capture bodies via webRequest and returns metadata only).",
   {
     tabId: z.number(),
     filter: z.string().optional(),
     limit: z.number().optional(),
+    includeHeaders: z.boolean().optional(),
     includeBody: z.boolean().optional(),
   },
-  async ({ tabId, filter, limit, includeBody }) => {
+  async ({ tabId, filter, limit, includeHeaders, includeBody }) => {
     const { requests, bodyCaptureSupported } =
       await browserApi.getNetworkRequests(tabId, {
         filter,
@@ -669,6 +670,25 @@ mcpServer.tool(
         ],
       };
     }
+    // Redact credential-bearing headers so captured traffic never leaks the
+    // session token into tool output.
+    const SENSITIVE_HEADER =
+      /^(cookie|set-cookie|authorization|proxy-authorization)$/i;
+    const formatHeaders = (
+      label: string,
+      headers?: { name: string; value?: string }[]
+    ): string => {
+      if (!headers || headers.length === 0) return "";
+      const lines = headers
+        .map((h) => {
+          const value = SENSITIVE_HEADER.test(h.name)
+            ? `<redacted:${(h.value ?? "").length} chars>`
+            : h.value ?? "";
+          return `      ${h.name}: ${value}`;
+        })
+        .join("\n");
+      return `\n    ${label}:\n${lines}`;
+    };
     const content = requests.map((req) => {
       const status = req.error
         ? `ERR ${req.error}`
@@ -677,12 +697,27 @@ mcpServer.tool(
         : "?";
       const duration =
         req.durationMs !== undefined ? `, ${req.durationMs} ms` : "";
-      let text = `${req.method} ${req.url} -> ${status} (${req.type}${duration})`;
+      const size =
+        req.responseSize !== undefined ? `, ${req.responseSize} B` : "";
+      let text = `${req.method} ${req.url} -> ${status} (${req.type}${duration}${size})`;
+      if (includeHeaders) {
+        text += formatHeaders("request headers", req.requestHeaders);
+        text += formatHeaders("response headers", req.responseHeaders);
+      }
+      if (req.requestBody) {
+        // Request bodies are arbitrary (may contain form credentials); truncate
+        // and pass through verbatim rather than pretty-printing.
+        const snippet =
+          req.requestBody.length > 2000
+            ? `${req.requestBody.slice(0, 2000)}…`
+            : req.requestBody;
+        text += `\n    request body: ${snippet}`;
+      }
       if (req.body) {
         // Keep the snippet bounded in the text output.
         const snippet =
           req.body.length > 2000 ? `${req.body.slice(0, 2000)}…` : req.body;
-        text += `\n  body: ${snippet}`;
+        text += `\n    response body: ${snippet}`;
       }
       return { type: "text" as const, text };
     });
@@ -697,6 +732,228 @@ mcpServer.tool(
       });
     }
     return { content };
+  }
+);
+
+mcpServer.tool(
+  "get-cookies",
+  "Read the browser's cookie jar INCLUDING httpOnly cookies (which document.cookie cannot see). Runs in the extension background, so the visited page's CSP does not apply. Narrow the results with 'url', 'domain', and/or 'name'; omit all three to return every cookie the extension is permitted to see. Requires the user to enable Automation Mode and grant host permission for the domain. Note: cookie values are sensitive credentials — handle them with care.",
+  {
+    url: z.string().optional(),
+    domain: z.string().optional(),
+    name: z.string().optional(),
+  },
+  async ({ url, domain, name }) => {
+    const result = await browserApi.getCookies({ url, domain, name });
+    if (!result.ok) {
+      // API unavailable or host permission not granted — surface a recoverable,
+      // non-throwing error so the model can prompt the user to grant access.
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Failed to read cookies: ${result.error ?? "unknown error"}`,
+          },
+        ],
+        isError: true,
+      };
+    }
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify(result.cookies ?? [], null, 2),
+        },
+      ],
+    };
+  }
+);
+
+mcpServer.tool(
+  "browser-fetch",
+  'A privileged fetch issued from the extension background context. Because it runs at the extension origin it is immune to the visited page\'s Content-Security-Policy, it uses the browser\'s real session (credentials:"include" attaches that site\'s cookies, including httpOnly, when host permission is granted), and it is browser-originated so it passes WAFs that block curl. Provide EITHER "body" (UTF-8 text) or "bodyBase64" (binary). Requires Automation Mode + host permission for the target; there is a ~60s hard ceiling. IMPORTANT: a non-2xx status (e.g. 403) is a SUCCESSFUL result, not an error — only a network failure/timeout/permission denial is an error.',
+  {
+    url: z.string(),
+    method: z.string().optional(),
+    headers: z.record(z.string(), z.string()).optional(),
+    body: z.string().optional(),
+    bodyBase64: z.string().optional(),
+    credentials: z.enum(["include", "omit", "same-origin"]).optional(),
+    useSessionCookies: z.boolean().optional(),
+    redirect: z.enum(["follow", "manual", "error"]).optional(),
+    timeoutMs: z.number().optional(),
+    maxBytes: z.number().optional(),
+  },
+  async (params) => {
+    const result = await browserApi.browserFetch(params);
+    if (!result.ok) {
+      // Only a transport-level failure (network/timeout/permission/abort) is an
+      // error; a non-2xx HTTP status is handled as success below.
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Fetch failed: ${result.error ?? "unknown error"}`,
+          },
+        ],
+        isError: true,
+      };
+    }
+    const statusLine = `${result.status ?? "?"} ${result.statusText ?? ""}  ${
+      result.finalUrl ?? params.url
+    }`;
+    const headersBlock = JSON.stringify(result.headers ?? {}, null, 2);
+    const bodyBlock =
+      result.bodyText !== undefined
+        ? result.bodyText
+        : `[binary body: base64 length ${result.bodyBase64?.length ?? 0}]`;
+    const truncatedNote = result.truncated ? "\n(truncated)" : "";
+    return {
+      content: [
+        {
+          type: "text",
+          text: `${statusLine}\n\n${headersBlock}\n\n${bodyBlock}${truncatedNote}`,
+        },
+      ],
+    };
+  }
+);
+
+mcpServer.tool(
+  "stream-start",
+  "Open an SSE/chunked-transfer request from the extension background and return a streamId once the response HEADERS arrive (NOT once the body completes — a streaming body never completes). The streamId model exists because a single MCP call cannot stream. Same privileged fetch semantics as browser-fetch (CSP-immune, real session, credentials/useSessionCookies/redirect). After it returns, drain buffered frames with stream-poll (pass the streamId and a sinceIndex cursor) and call stream-close when you are done. Requires Automation Mode + host permission.",
+  {
+    url: z.string(),
+    method: z.string().optional(),
+    headers: z.record(z.string(), z.string()).optional(),
+    body: z.string().optional(),
+    bodyBase64: z.string().optional(),
+    credentials: z.enum(["include", "omit", "same-origin"]).optional(),
+    useSessionCookies: z.boolean().optional(),
+    redirect: z.enum(["follow", "manual", "error"]).optional(),
+    maxFrames: z.number().optional(),
+    maxBytes: z.number().optional(),
+    idleTimeoutMs: z.number().optional(),
+    totalTimeoutMs: z.number().optional(),
+  },
+  async (params) => {
+    const result = await browserApi.streamStart(params);
+    if (!result.ok) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Stream failed to start: ${result.error ?? "unknown error"}`,
+          },
+        ],
+        isError: true,
+      };
+    }
+    const headersBlock = JSON.stringify(result.headers ?? {}, null, 2);
+    return {
+      content: [
+        {
+          type: "text",
+          text:
+            `Stream started. streamId=${result.streamId}, status=${
+              result.status ?? "?"
+            }\n\n${headersBlock}\n\n` +
+            `Poll with stream-poll: pass streamId="${result.streamId}" and sinceIndex (start at 0, then advance it to the nextIndex returned by each poll). ` +
+            `Call stream-close with this streamId once you are done.`,
+        },
+      ],
+    };
+  }
+);
+
+mcpServer.tool(
+  "stream-poll",
+  "Drain the stream's buffered frames after a cursor. Pass the 'streamId' from stream-start and 'sinceIndex' (the cursor; start at 0, then pass the nextIndex returned by the previous poll). done:true means the stream ended — stop polling. An error result means the stream expired or the streamId is unknown (e.g. the MV3 service worker was recycled).",
+  {
+    streamId: z.string(),
+    sinceIndex: z.number().optional(),
+  },
+  async ({ streamId, sinceIndex }) => {
+    const result = await browserApi.streamPoll(streamId, sinceIndex);
+    if (!result.ok) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Stream poll failed: ${
+              result.error ?? "stream expired or unknown streamId"
+            }`,
+          },
+        ],
+        isError: true,
+      };
+    }
+    const frames = result.frames ?? [];
+    const errorNote = result.error ? `\nerror: ${result.error}` : "";
+    return {
+      content: [
+        {
+          type: "text",
+          text:
+            `${frames.length} frame(s), done=${result.done}, nextIndex=${
+              result.nextIndex ?? sinceIndex ?? 0
+            } (pass nextIndex as sinceIndex on your next stream-poll)${errorNote}\n\n` +
+            JSON.stringify(frames, null, 2),
+        },
+      ],
+    };
+  }
+);
+
+mcpServer.tool(
+  "stream-close",
+  "Abort a stream and free its buffer. Pass the 'streamId' from stream-start. Idempotent — closing an already-closed or unknown stream is a harmless no-op.",
+  { streamId: z.string() },
+  async ({ streamId }) => {
+    await browserApi.streamClose(streamId);
+    return {
+      content: [{ type: "text", text: `Closed stream ${streamId}` }],
+    };
+  }
+);
+
+mcpServer.tool(
+  "capture-response-bodies",
+  "Attach or detach the Chrome/Edge DEBUGGER on a tab to capture RESPONSE bodies, which the covert get-network-requests path CANNOT read on Chrome/Edge (MV3). Use this ONLY when you specifically need response bodies. WARNING: enabling it shows a 'FoxPilot started debugging this browser' banner and is DETECTABLE by the page — it BREAKS covert observation. Set enabled:false to detach and return to covert capture as soon as you're done. Typical flow: capture-response-bodies(tabId,true) → reload the page → get-network-requests(tabId, includeBody:true) now returns response bodies → capture-response-bodies(tabId,false). No-op on Firefox, which already captures response bodies covertly via get-network-requests includeBody (it reports supported:false).",
+  { tabId: z.number(), enabled: z.boolean() },
+  async ({ tabId, enabled }) => {
+    const result = await browserApi.captureResponseBodies(tabId, enabled);
+    if (!result.ok) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `capture-response-bodies failed: ${result.error ?? "unknown error"}`,
+          },
+        ],
+        isError: true,
+      };
+    }
+    if (!result.supported) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: "Response-body debugger capture is not supported on this browser (Firefox). Response bodies are already captured covertly — just call get-network-requests with includeBody:true.",
+          },
+        ],
+      };
+    }
+    return {
+      content: [
+        {
+          type: "text",
+          text: enabled
+            ? `Debugger attached to tab ${tabId}: response bodies will now be captured (a debugging banner is showing — detectable by the page). Reload the page, then call get-network-requests with includeBody:true. Call capture-response-bodies with enabled:false when done.`
+            : `Debugger detached from tab ${tabId}: back to covert capture.`,
+        },
+      ],
+    };
   }
 );
 

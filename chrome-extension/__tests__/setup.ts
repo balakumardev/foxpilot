@@ -8,11 +8,23 @@
 
 import { TextDecoder as NodeTextDecoder, TextEncoder as NodeTextEncoder } from "util";
 import { webcrypto as nodeWebcrypto } from "crypto";
+import { ReadableStream as NodeReadableStream } from "stream/web";
 if (typeof (global as any).TextDecoder === "undefined") {
   (global as any).TextDecoder = NodeTextDecoder;
 }
 if (typeof (global as any).TextEncoder === "undefined") {
   (global as any).TextEncoder = NodeTextEncoder;
+}
+
+// jsdom provides AbortController/atob/btoa/Headers/TextDecoder but NOT `fetch`
+// or `ReadableStream`. The background-context HTTP tools (browser-http.ts) need
+// both: `fetch` is mocked per-test, and `ReadableStream` backs the streaming
+// pump's response body. Bridge them from Node's implementations when absent.
+if (typeof (global as any).ReadableStream === "undefined") {
+  (global as any).ReadableStream = NodeReadableStream;
+}
+if (typeof (global as any).fetch === "undefined") {
+  (global as any).fetch = jest.fn();
 }
 
 // jsdom does not provide the Web Crypto API. `auth.ts` (HMAC signing) and
@@ -124,6 +136,9 @@ const mockBrowser: any = {
     updateSessionRules: jest.fn().mockResolvedValue(undefined),
     getSessionRules: jest.fn().mockResolvedValue([]),
   },
+  cookies: {
+    getAll: jest.fn().mockResolvedValue([]),
+  },
   webRequest: {
     onBeforeRequest: { addListener: jest.fn(), removeListener: jest.fn() },
     onBeforeSendHeaders: { addListener: jest.fn(), removeListener: jest.fn() },
@@ -131,6 +146,15 @@ const mockBrowser: any = {
     onHeadersReceived: { addListener: jest.fn(), removeListener: jest.fn() },
     onCompleted: { addListener: jest.fn(), removeListener: jest.fn() },
     onErrorOccurred: { addListener: jest.fn(), removeListener: jest.fn() },
+  },
+  // chrome.debugger (CDP) mock for the opt-in response-body deep-capture path.
+  // Chrome exposes it only on `chrome`, but this mock backs both globals.
+  debugger: {
+    attach: jest.fn().mockResolvedValue(undefined),
+    detach: jest.fn().mockResolvedValue(undefined),
+    sendCommand: jest.fn().mockResolvedValue({}),
+    onEvent: { addListener: jest.fn(), removeListener: jest.fn() },
+    onDetach: { addListener: jest.fn(), removeListener: jest.fn() },
   },
 };
 

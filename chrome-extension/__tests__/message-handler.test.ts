@@ -210,4 +210,101 @@ describe("MessageHandler (chrome) — foreground-tab preservation", () => {
       });
     });
   });
+
+  describe("capture-response-bodies command (chrome.debugger deep capture)", () => {
+    const automationConfig = { ...baseConfig, automationMode: true };
+    const dbg = (): any => (chrome as any).debugger;
+
+    beforeEach(() => {
+      (browser.storage.local.get as jest.Mock).mockResolvedValue({
+        config: automationConfig,
+      });
+      (browser.permissions.contains as jest.Mock).mockResolvedValue(true);
+      (browser.tabs.get as jest.Mock).mockResolvedValue({
+        id: 42,
+        url: "https://example.com",
+        windowId: 1,
+      });
+      dbg().attach.mockReset().mockResolvedValue(undefined);
+      dbg().detach.mockReset().mockResolvedValue(undefined);
+      dbg().sendCommand.mockReset().mockResolvedValue({});
+    });
+
+    afterEach(async () => {
+      // The real network-capture module is used here; never leave tab 42 attached.
+      const { detachDebugger } = require("../network-capture");
+      await detachDebugger(42);
+    });
+
+    it("attaches the debugger and replies supported/enabled on enable", async () => {
+      await messageHandler.handleDecodedMessage({
+        cmd: "capture-response-bodies",
+        tabId: 42,
+        enabled: true,
+        correlationId: "cb1",
+      } as ServerMessageRequest);
+
+      expect(dbg().attach).toHaveBeenCalledWith({ tabId: 42 }, "1.3");
+      expect(dbg().sendCommand).toHaveBeenCalledWith(
+        { tabId: 42 },
+        "Network.enable"
+      );
+      expect(transport.sendResourceToServer).toHaveBeenCalledWith({
+        resource: "response-body-capture",
+        correlationId: "cb1",
+        ok: true,
+        enabled: true,
+        supported: true,
+      });
+    });
+
+    it("detaches the debugger and replies enabled:false on disable", async () => {
+      // Attach first so the disable actually detaches.
+      await messageHandler.handleDecodedMessage({
+        cmd: "capture-response-bodies",
+        tabId: 42,
+        enabled: true,
+        correlationId: "on",
+      } as ServerMessageRequest);
+      dbg().detach.mockClear();
+
+      await messageHandler.handleDecodedMessage({
+        cmd: "capture-response-bodies",
+        tabId: 42,
+        enabled: false,
+        correlationId: "cb2",
+      } as ServerMessageRequest);
+
+      expect(dbg().detach).toHaveBeenCalledWith({ tabId: 42 });
+      expect(transport.sendResourceToServer).toHaveBeenLastCalledWith({
+        resource: "response-body-capture",
+        correlationId: "cb2",
+        ok: true,
+        enabled: false,
+        supported: true,
+      });
+    });
+
+    it("replies ok:false with the error when attach rejects (DevTools already open)", async () => {
+      dbg().attach.mockRejectedValue(
+        new Error("Another debugger is already attached")
+      );
+
+      await messageHandler.handleDecodedMessage({
+        cmd: "capture-response-bodies",
+        tabId: 42,
+        enabled: true,
+        correlationId: "cb3",
+      } as ServerMessageRequest);
+
+      expect(transport.sendResourceToServer).toHaveBeenCalledWith({
+        resource: "response-body-capture",
+        correlationId: "cb3",
+        ok: false,
+        enabled: false,
+        supported: true,
+        error: "Another debugger is already attached",
+      });
+    });
+  });
 });

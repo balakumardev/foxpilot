@@ -17,6 +17,13 @@ const COMMAND_TIMEOUTS: Record<string, number> = {
   "take-screenshot": 45000,
   "evaluate-script": 30000,
   "upload-file": 30000,
+  // Privileged background fetch has a ~60s ceiling upstream; keep the broker
+  // budget just under the 60000ms client cap so a slow response still returns.
+  "browser-fetch": 45000,
+  // stream-start resolves when response HEADERS arrive, not on body completion.
+  "stream-start": 30000,
+  // stream-poll returns promptly after draining buffered frames.
+  "stream-poll": 20000,
 };
 
 /**

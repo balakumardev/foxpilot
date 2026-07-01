@@ -229,6 +229,99 @@ export interface GetNetworkRequestsServerMessage extends ServerMessageBase {
   includeBody?: boolean;
 }
 
+// --- Privileged background-context HTTP + cookie tools ---
+// These run in the extension BACKGROUND context (Chrome MV3 service worker /
+// Firefox MV2 persistent page), NOT the page world, so they are immune to the
+// visited page's Content-Security-Policy and can use the browser's real cookie
+// jar (including httpOnly cookies) and its cross-origin host privileges. They
+// intentionally carry NO `tabId` — they act on a URL/origin — so the broker does
+// not serialize them per-tab and multiple calls run concurrently.
+
+// Read cookies from the browser's cookie jar. Returns httpOnly cookies too
+// (unlike document.cookie). Narrow by `url`, `domain`, and/or `name`; omit all
+// to return every cookie the extension is permitted to see.
+export interface GetCookiesServerMessage extends ServerMessageBase {
+  cmd: "get-cookies";
+  url?: string;
+  domain?: string;
+  name?: string;
+}
+
+// A privileged one-shot fetch executed from the extension background context.
+// Because it runs at the extension origin (not the page), the visited page's CSP
+// does NOT apply. With host permission for the target and credentials:"include"
+// the browser attaches that site's cookies (incl. httpOnly) automatically, and
+// the request looks browser-originated (passing WAFs that reject curl). Provide
+// EITHER `body` (UTF-8 text) or `bodyBase64` (binary). `useSessionCookies` opts
+// into injecting a `Cookie` header from the jar (the default credentialed request
+// can miss SameSite=Strict cookies); it is applied via a declarativeNetRequest
+// session rule (Chrome) or a blocking webRequest listener (Firefox) because
+// `Cookie` is a forbidden header for fetch() and would otherwise be dropped.
+export interface BrowserFetchServerMessage extends ServerMessageBase {
+  cmd: "browser-fetch";
+  url: string;
+  method?: string;
+  headers?: Record<string, string>;
+  body?: string;
+  bodyBase64?: string;
+  credentials?: "include" | "omit" | "same-origin";
+  useSessionCookies?: boolean;
+  redirect?: "follow" | "manual" | "error";
+  timeoutMs?: number;
+  maxBytes?: number;
+}
+
+// Open a streaming/SSE request in the background and buffer decoded frames. A
+// single MCP call cannot stream through the one-response-per-request broker, so
+// streaming is modeled as three correlated round-trips: `stream-start` opens the
+// request and returns a `streamId` once response headers arrive (NOT once the
+// body completes — an SSE body never completes); `stream-poll` drains buffered
+// frames after a cursor; `stream-close` aborts and frees the buffer. Same fetch
+// semantics as browser-fetch (credentials / useSessionCookies / redirect).
+export interface StreamStartServerMessage extends ServerMessageBase {
+  cmd: "stream-start";
+  url: string;
+  method?: string;
+  headers?: Record<string, string>;
+  body?: string;
+  bodyBase64?: string;
+  credentials?: "include" | "omit" | "same-origin";
+  useSessionCookies?: boolean;
+  redirect?: "follow" | "manual" | "error";
+  maxFrames?: number;
+  maxBytes?: number;
+  idleTimeoutMs?: number;
+  totalTimeoutMs?: number;
+}
+
+// Drain buffered frames produced since `sinceIndex` (a cursor; default 0). The
+// handler may wait briefly for the first new frame, then returns promptly so it
+// stays under the broker's per-command timeout. `done` is true once the stream
+// has ended (server closed, `[DONE]`, error, or close).
+export interface StreamPollServerMessage extends ServerMessageBase {
+  cmd: "stream-poll";
+  streamId: string;
+  sinceIndex?: number;
+}
+
+// Abort the stream and free its buffer. Idempotent.
+export interface StreamCloseServerMessage extends ServerMessageBase {
+  cmd: "stream-close";
+  streamId: string;
+}
+
+// Opt-in DEEP network capture via chrome.debugger (Chrome/Edge only). Attaching
+// the debugger is the ONLY way MV3 can read RESPONSE bodies, but it shows a
+// "started debugging this browser" banner and is detectable by the page — it
+// BREAKS covert observation. `enabled:true` attaches to the tab; `enabled:false`
+// detaches and returns to the covert webRequest path. No-op on Firefox (which
+// already captures response bodies covertly via get-network-requests includeBody).
+export interface CaptureResponseBodiesServerMessage extends ServerMessageBase {
+  cmd: "capture-response-bodies";
+  tabId: number;
+  enabled: boolean;
+}
+
 export type ServerMessage =
   | OpenTabServerMessage
   | CloseTabsServerMessage
@@ -258,6 +351,12 @@ export type ServerMessage =
   | HandleDialogServerMessage
   | EmulateServerMessage
   | GetConsoleMessagesServerMessage
-  | GetNetworkRequestsServerMessage;
+  | GetNetworkRequestsServerMessage
+  | GetCookiesServerMessage
+  | BrowserFetchServerMessage
+  | StreamStartServerMessage
+  | StreamPollServerMessage
+  | StreamCloseServerMessage
+  | CaptureResponseBodiesServerMessage;
 
 export type ServerMessageRequest = ServerMessage & { correlationId: string };

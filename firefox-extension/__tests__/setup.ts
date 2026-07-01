@@ -43,6 +43,28 @@ if (typeof (global as any).WebSocket === "undefined") {
   };
 }
 
+// jsdom has no network `fetch`; back it with a jest mock the browser-http tests
+// configure per-case. (Tests reassign `global.fetch = jest.fn()...` themselves.)
+if (typeof (global as any).fetch === "undefined") {
+  (global as any).fetch = jest.fn();
+}
+
+// AbortController is a standard global in real Firefox and modern Node, but
+// polyfill a minimal shape if the test env lacks it so browser-http's timeout /
+// abort wiring runs. The mocked fetch ignores the signal, so a no-op is enough.
+if (typeof (global as any).AbortController === "undefined") {
+  (global as any).AbortController = class {
+    signal: any = {
+      aborted: false,
+      addEventListener() {},
+      removeEventListener() {},
+    };
+    abort(): void {
+      this.signal.aborted = true;
+    }
+  };
+}
+
 // Mock the browser API completely
 const mockBrowser = {
   tabs: {
@@ -85,6 +107,9 @@ const mockBrowser = {
       addListener: jest.fn(),
       removeListener: jest.fn(),
     },
+  },
+  cookies: {
+    getAll: jest.fn(),
   },
   permissions: {
     contains: jest.fn(),

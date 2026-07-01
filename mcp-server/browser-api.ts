@@ -39,6 +39,15 @@ import type {
   ConsoleMessagesExtensionMessage,
   NetworkRecord,
   NetworkRequestsExtensionMessage,
+  CookieRecord,
+  CookiesExtensionMessage,
+  BrowserFetchServerMessage,
+  BrowserFetchResultExtensionMessage,
+  StreamStartServerMessage,
+  StreamStartedExtensionMessage,
+  StreamFramesExtensionMessage,
+  StreamClosedExtensionMessage,
+  ResponseBodyCaptureExtensionMessage,
 } from "@foxpilot/common";
 import {
   BrokerClientFrame,
@@ -713,6 +722,81 @@ export class BrowserAPI {
       requests: message.requests,
       bodyCaptureSupported: message.bodyCaptureSupported,
     };
+  }
+
+  async getCookies(opts: {
+    url?: string;
+    domain?: string;
+    name?: string;
+  }): Promise<CookiesExtensionMessage> {
+    // Reads the browser's cookie jar via the extension background (sees httpOnly
+    // cookies document.cookie cannot). Does NOT throw on failure — returns the
+    // message so server.ts formats the ok:false case (API unavailable or host
+    // permission not granted).
+    return await this.sendTool<CookiesExtensionMessage>({
+      cmd: "get-cookies",
+      ...opts,
+    });
+  }
+
+  async browserFetch(
+    params: Omit<BrowserFetchServerMessage, "cmd">
+  ): Promise<BrowserFetchResultExtensionMessage> {
+    // A privileged one-shot fetch from the extension background (immune to the
+    // page's CSP, uses the browser's real session). Returned unchanged: a non-2xx
+    // status is still ok:true; only ok:false (network/permission/timeout/abort)
+    // is a failure, and server.ts decides how to present each.
+    return await this.sendTool<BrowserFetchResultExtensionMessage>({
+      cmd: "browser-fetch",
+      ...params,
+    });
+  }
+
+  async streamStart(
+    params: Omit<StreamStartServerMessage, "cmd">
+  ): Promise<StreamStartedExtensionMessage> {
+    // Opens a streaming/SSE request and resolves once response HEADERS arrive,
+    // returning a streamId the caller then drains with streamPoll. Returned
+    // as-is (ok:false carries the error).
+    return await this.sendTool<StreamStartedExtensionMessage>({
+      cmd: "stream-start",
+      ...params,
+    });
+  }
+
+  async streamPoll(
+    streamId: string,
+    sinceIndex?: number
+  ): Promise<StreamFramesExtensionMessage> {
+    // Drains buffered frames produced after `sinceIndex` (a cursor). Returned
+    // unchanged: frames/nextIndex/done, or ok:false when the streamId is
+    // unknown/expired.
+    return await this.sendTool<StreamFramesExtensionMessage>({
+      cmd: "stream-poll",
+      streamId,
+      sinceIndex,
+    });
+  }
+
+  async streamClose(streamId: string): Promise<StreamClosedExtensionMessage> {
+    // Aborts the stream and frees its buffer. Idempotent; returns the ack.
+    return await this.sendTool<StreamClosedExtensionMessage>({
+      cmd: "stream-close",
+      streamId,
+    });
+  }
+
+  async captureResponseBodies(
+    tabId: number,
+    enabled: boolean
+  ): Promise<ResponseBodyCaptureExtensionMessage> {
+    // Opt-in deep capture (Chrome/Edge chrome.debugger). Returns the resulting
+    // state; server.ts decides how to surface supported/enabled/error.
+    return await this.sendTool<ResponseBodyCaptureExtensionMessage>({
+      cmd: "capture-response-bodies",
+      tabId,
+      enabled,
+    });
   }
 
   async listBrowsers(): Promise<BrowserInfo[]> {

@@ -29,6 +29,20 @@ import {
   getNetworkRequests,
   setBodyCaptureEnabled,
 } from "./network-capture";
+import {
+  getCookies,
+  browserFetch,
+  startStream,
+  pollStream,
+  closeStream,
+} from "./browser-http";
+import type {
+  GetCookiesServerMessage,
+  BrowserFetchServerMessage,
+  StreamStartServerMessage,
+  StreamPollServerMessage,
+  StreamCloseServerMessage,
+} from "@foxpilot/common";
 
 // The argument shape accepted by the injected `performInputAction` function.
 type InputActionArgs = Parameters<typeof performInputAction>[1];
@@ -361,6 +375,33 @@ export class MessageHandler {
           filter: req.filter,
           limit: req.limit,
           includeBody: req.includeBody,
+        });
+        break;
+      case "get-cookies":
+        await this.handleGetCookies(req.correlationId, req);
+        break;
+      case "browser-fetch":
+        await this.handleBrowserFetch(req.correlationId, req);
+        break;
+      case "stream-start":
+        await this.handleStreamStart(req.correlationId, req);
+        break;
+      case "stream-poll":
+        await this.handleStreamPoll(req.correlationId, req);
+        break;
+      case "stream-close":
+        await this.handleStreamClose(req.correlationId, req);
+        break;
+      case "capture-response-bodies":
+        // Firefox has no chrome.debugger; response bodies are already captured
+        // covertly via get-network-requests includeBody (filterResponseData).
+        // Report unsupported so the model knows to just use includeBody here.
+        await this.client.sendResourceToServer({
+          resource: "response-body-capture",
+          correlationId: req.correlationId,
+          ok: true,
+          enabled: false,
+          supported: false,
         });
         break;
       default:
@@ -1278,6 +1319,167 @@ export class MessageHandler {
       correlationId,
       requests,
     });
+  }
+
+  // --- Privileged background-context HTTP + cookie handlers ---
+  // These run in the background page (not the page world), so they are immune to
+  // the visited page's CSP and can use the real cookie jar. They act on a
+  // URL/origin (no tabId). The gate mirrors the other handlers: deny-list and
+  // missing-permission THROW (propagating so the outer handler surfaces the
+  // grant UI / error); only operational failures come back as an `ok:false`
+  // resource. Cookie values and response bodies are never logged.
+
+  // Derive the host-gating URL for a get-cookies request: an explicit `url`,
+  // else a synthetic https origin from `domain`, else none (a jar-wide read).
+  private async gateHttpUrl(url: string | undefined): Promise<void> {
+    if (url) {
+      if (await isDomainInDenyList(url)) {
+        throw new Error(`Domain in URL "${url}" is in the deny list`);
+      }
+      await this.checkForUrlPermission(url);
+    }
+  }
+
+  private async handleGetCookies(
+    correlationId: string,
+    req: GetCookiesServerMessage
+  ): Promise<void> {
+    const gateUrl =
+      req.url ?? (req.domain ? `https://${req.domain}/` : undefined);
+    await this.gateHttpUrl(gateUrl);
+    try {
+      const cookies = await getCookies({
+        url: req.url,
+        domain: req.domain,
+        name: req.name,
+      });
+      await this.client.sendResourceToServer({
+        resource: "cookies",
+        correlationId,
+        ok: true,
+        cookies,
+      });
+    } catch (error) {
+      await this.client.sendResourceToServer({
+        resource: "cookies",
+        correlationId,
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  private async handleBrowserFetch(
+    correlationId: string,
+    req: BrowserFetchServerMessage
+  ): Promise<void> {
+    await this.gateHttpUrl(req.url);
+    try {
+      const result = await browserFetch({
+        url: req.url,
+        method: req.method,
+        headers: req.headers,
+        body: req.body,
+        bodyBase64: req.bodyBase64,
+        credentials: req.credentials,
+        useSessionCookies: req.useSessionCookies,
+        redirect: req.redirect,
+        timeoutMs: req.timeoutMs,
+        maxBytes: req.maxBytes,
+      });
+      await this.client.sendResourceToServer({
+        resource: "browser-fetch-result",
+        correlationId,
+        ...result,
+      });
+    } catch (error) {
+      await this.client.sendResourceToServer({
+        resource: "browser-fetch-result",
+        correlationId,
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  private async handleStreamStart(
+    correlationId: string,
+    req: StreamStartServerMessage
+  ): Promise<void> {
+    await this.gateHttpUrl(req.url);
+    try {
+      const result = await startStream({
+        url: req.url,
+        method: req.method,
+        headers: req.headers,
+        body: req.body,
+        bodyBase64: req.bodyBase64,
+        credentials: req.credentials,
+        useSessionCookies: req.useSessionCookies,
+        redirect: req.redirect,
+        maxFrames: req.maxFrames,
+        maxBytes: req.maxBytes,
+        idleTimeoutMs: req.idleTimeoutMs,
+        totalTimeoutMs: req.totalTimeoutMs,
+      });
+      await this.client.sendResourceToServer({
+        resource: "stream-started",
+        correlationId,
+        ...result,
+      });
+    } catch (error) {
+      await this.client.sendResourceToServer({
+        resource: "stream-started",
+        correlationId,
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  private async handleStreamPoll(
+    correlationId: string,
+    req: StreamPollServerMessage
+  ): Promise<void> {
+    try {
+      const result = await pollStream(req.streamId, req.sinceIndex);
+      await this.client.sendResourceToServer({
+        resource: "stream-frames",
+        correlationId,
+        ...result,
+      });
+    } catch (error) {
+      await this.client.sendResourceToServer({
+        resource: "stream-frames",
+        correlationId,
+        ok: false,
+        streamId: req.streamId,
+        frames: [],
+        nextIndex: req.sinceIndex ?? 0,
+        done: true,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  private async handleStreamClose(
+    correlationId: string,
+    req: StreamCloseServerMessage
+  ): Promise<void> {
+    try {
+      const result = closeStream(req.streamId);
+      await this.client.sendResourceToServer({
+        resource: "stream-closed",
+        correlationId,
+        ...result,
+      });
+    } catch (error) {
+      await this.client.sendResourceToServer({
+        resource: "stream-closed",
+        correlationId,
+        ok: false,
+      });
+    }
   }
 
   private async waitForText(

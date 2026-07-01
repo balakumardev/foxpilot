@@ -174,6 +174,26 @@ export const AVAILABLE_TOOLS: ToolInfo[] = [
     id: "get-network-requests",
     name: "Get Network Requests",
     description: "Allows the MCP server to read a page's captured network requests (URLs, methods, status, timing)"
+  },
+  {
+    id: "get-cookies",
+    name: "Get Cookies",
+    description: "Allows the MCP server to read cookies (including httpOnly) from the browser's cookie jar for a site"
+  },
+  {
+    id: "browser-fetch",
+    name: "Browser Fetch",
+    description: "Allows the MCP server to make HTTP requests from the browser using its cookies and host access (bypasses page CSP)"
+  },
+  {
+    id: "stream-fetch",
+    name: "Stream Fetch",
+    description: "Allows the MCP server to open a streaming/SSE request from the browser and drain its frames"
+  },
+  {
+    id: "capture-response-bodies",
+    name: "Capture Response Bodies (debugger)",
+    description: "Attach the Chrome debugger to a tab to capture response bodies — shows a debugging banner and is detectable by the site (breaks covert capture)."
   }
 ];
 
@@ -208,6 +228,12 @@ export const COMMAND_TO_TOOL_ID: Record<ServerMessageRequest["cmd"], string> = {
   "emulate": "emulate",
   "get-console-messages": "get-console-messages",
   "get-network-requests": "get-network-requests",
+  "get-cookies": "get-cookies",
+  "browser-fetch": "browser-fetch",
+  "stream-start": "stream-fetch",
+  "stream-poll": "stream-fetch",
+  "stream-close": "stream-fetch",
+  "capture-response-bodies": "capture-response-bodies",
 };
 
 // Commands that actively control a page (navigation, input, scripting, page
@@ -236,6 +262,12 @@ export const AUTOMATION_COMMANDS: ReadonlySet<string> = new Set<string>([
   "evaluate-script",
   "get-console-messages",
   "get-network-requests",
+  "get-cookies",
+  "browser-fetch",
+  "stream-start",
+  "stream-poll",
+  "stream-close",
+  "capture-response-bodies",
 ]);
 
 /**

@@ -16,6 +16,7 @@ import {
 import { initConsoleCapture } from "./console-capture";
 import { initNetworkCapture } from "./network-capture";
 import { initEmulate } from "./emulate";
+import { initBrowserHttp } from "./browser-http";
 import { initKeepalive } from "./keepalive";
 
 // Per-port client registry so a service-worker respawn that re-runs the
@@ -222,6 +223,9 @@ initExtension()
     initNetworkCapture();
     // Start background UA emulation once (browser-wide).
     initEmulate();
+    // Clear any orphaned Cookie-injection DNR rules left by a prior service
+    // worker generation (defense-in-depth for useSessionCookies streams).
+    initBrowserHttp();
 
     const transport = await getTransport();
     // Start from a known-disconnected state; clients flip this as they connect.
