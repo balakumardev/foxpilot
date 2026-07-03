@@ -335,6 +335,25 @@ export function buildSnapshot(
   const selectorMode =
     typeof options.selector === "string" && options.selector.length > 0;
 
+  const textMode =
+    typeof options.textContains === "string" && options.textContains.length > 0;
+  const textNeedle = textMode
+    ? (options.textContains as string).toLowerCase()
+    : "";
+  function ownTextIncludesNeedle(el: Element): boolean {
+    return (el.textContent || "").toLowerCase().indexOf(textNeedle) !== -1;
+  }
+  function isLeafTextMatch(el: Element): boolean {
+    // Deepest-wins: reject if any DESCENDANT element also contains the needle.
+    const kids = el.querySelectorAll("*");
+    for (let k = 0; k < kids.length; k++) {
+      if (ownTextIncludesNeedle(kids[k])) {
+        return false;
+      }
+    }
+    return true;
+  }
+
   let candidates: Element[];
   if (selectorMode) {
     try {
@@ -350,9 +369,18 @@ export function buildSnapshot(
         error: "Invalid CSS selector: " + options.selector,
       };
     }
+  } else if (textMode) {
+    // Text query mode with no selector scans all elements; the text filter and
+    // leaf-preference below narrow it down.
+    candidates = Array.prototype.slice.call(doc.querySelectorAll("*"));
   } else {
     candidates = Array.prototype.slice.call(
       doc.querySelectorAll(baseSelectorString)
+    );
+  }
+  if (textMode) {
+    candidates = candidates.filter(
+      (el) => ownTextIncludesNeedle(el) && isLeafTextMatch(el)
     );
   }
 
@@ -368,7 +396,15 @@ export function buildSnapshot(
     }
 
     const role = getRole(el);
-    const name = getAccessibleName(el, role);
+    let name = getAccessibleName(el, role);
+    if (textMode && !name) {
+      // Text query mode targets leaf elements matched purely by their visible
+      // text (e.g. a role-less "Open" card), which the accessible-name rules
+      // leave unnamed. Fall back to the leaf's own trimmed text (clip respects
+      // NAME_MAX) so the match is identifiable. Strictly text-mode-local, so the
+      // base / pointer / selector passes are unaffected.
+      name = clip(el.textContent || "");
+    }
     const flags = getStateFlags(el, role);
 
     uidCounter += 1;
@@ -393,7 +429,7 @@ export function buildSnapshot(
   // default styles — neither crashes nor alters existing behaviour. The
   // getComputedStyle call is wrapped in try/catch as a further safety net.
   const win = doc.defaultView;
-  if (includePointer && !selectorMode && win && typeof win.getComputedStyle === "function") {
+  if (includePointer && !selectorMode && !textMode && win && typeof win.getComputedStyle === "function") {
     const MAX_CLICKABLES = maxInteractive;
     let added = 0;
 

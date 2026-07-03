@@ -389,6 +389,43 @@ describe("buildSnapshot", () => {
     });
   });
 
+  describe("textContains query mode (Task 6)", () => {
+    it("returns the deepest element whose visible text contains the string (case-insensitive)", () => {
+      document.body.innerHTML = `
+        <main><section><div id="open-card">Open</div></section></main>
+        <p>unrelated</p>
+      `;
+      const { tree } = buildSnapshot(document, {
+        verbose: false,
+        maxLength: 25000,
+        textContains: "open",
+      });
+      // The leaf #open-card matches; its ancestors (main/section) do NOT get
+      // their own entry (deepest-wins).
+      expect(tree).toMatch(/clickable "Open" \[uid=e\d+\]/);
+      const clickableLines = (tree.match(/clickable "Open"/g) || []).length;
+      expect(clickableLines).toBe(1);
+      expect(tree).not.toContain("unrelated");
+    });
+
+    it("composes with selector (AND)", () => {
+      document.body.innerHTML = `
+        <button>Open settings</button>
+        <button>Close</button>
+        <div>Open (not a button)</div>
+      `;
+      const { tree } = buildSnapshot(document, {
+        verbose: false,
+        maxLength: 25000,
+        selector: "button",
+        textContains: "open",
+      });
+      expect(tree).toContain('button "Open settings"');
+      expect(tree).not.toContain('button "Close"');
+      expect(tree).not.toContain("not a button");
+    });
+  });
+
   /**
    * The verbose-only second pass captures "visually clickable" non-semantic
    * elements — `<div onClick={...}>`-style controls that modern React apps
