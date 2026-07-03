@@ -15,6 +15,7 @@ import {
  *   - planFullPageSteps: the scroll-offset plan for full-page stitching
  *   - stripDataUrlPrefix: splitting a data: URL into mime + base64
  *   - mimeTypeForFormat: png/jpeg mime mapping
+ *   - isValidCapture: whether a captureVisibleTab readback is usable (Task 7)
  */
 describe("planFullPageSteps", () => {
   it("tiles a page taller than the viewport into clientHeight steps", () => {

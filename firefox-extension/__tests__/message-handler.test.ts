@@ -1729,6 +1729,95 @@ describe("MessageHandler", () => {
     });
   });
 
+  describe("screenshot fullPage hardening (Task 7)", () => {
+    const automationConfig = {
+      secret: "test-secret",
+      ports: [8089],
+      domainDenyList: [] as string[],
+      auditLog: [],
+      automationMode: true,
+    };
+    beforeEach(() => {
+      (browser.storage.local.get as jest.Mock).mockResolvedValue({
+        config: automationConfig,
+      });
+      (browser.tabs.get as jest.Mock).mockResolvedValue({
+        id: 3,
+        url: "https://example.com",
+        windowId: 1,
+      });
+      (browser.tabs.query as jest.Mock).mockResolvedValue([{ id: 3 }]);
+      (browser.tabs.update as jest.Mock).mockResolvedValue(undefined);
+      (browser.permissions.contains as jest.Mock).mockResolvedValue(true);
+      (browser.tabs.executeScript as jest.Mock).mockResolvedValue([
+        {
+          scrollWidth: 100,
+          scrollHeight: 100,
+          clientWidth: 100,
+          clientHeight: 100,
+          dpr: 1,
+          originalScrollY: 0,
+        },
+      ]);
+    });
+
+    it("falls back to a single viewport capture (with a warning) when stitching fails", async () => {
+      // Tiles capture fine; jsdom canvas makes stitchFullPage throw -> fallback.
+      (browser.tabs.captureVisibleTab as jest.Mock).mockResolvedValue(
+        "data:image/png;base64,GOOD"
+      );
+      await messageHandler.handleDecodedMessage({
+        cmd: "take-screenshot",
+        tabId: 3,
+        fullPage: true,
+        correlationId: "fp",
+      } as ServerMessageRequest);
+      expect(mockClient.sendResourceToServer).toHaveBeenCalledWith(
+        expect.objectContaining({
+          resource: "screenshot",
+          correlationId: "fp",
+          base64: "GOOD",
+          warning:
+            "Full-page stitch failed; returning a single viewport capture instead.",
+        })
+      );
+    });
+
+    it("retries an empty tile readback then succeeds", async () => {
+      (browser.tabs.captureVisibleTab as jest.Mock)
+        .mockResolvedValueOnce("") // tile attempt 1: empty -> retry
+        .mockResolvedValue("data:image/png;base64,GOOD"); // attempt 2+ and fallback
+      await messageHandler.handleDecodedMessage({
+        cmd: "take-screenshot",
+        tabId: 3,
+        fullPage: true,
+        correlationId: "rt",
+      } as ServerMessageRequest);
+      expect(
+        (browser.tabs.captureVisibleTab as jest.Mock).mock.calls.length
+      ).toBeGreaterThan(1);
+      expect(mockClient.sendResourceToServer).toHaveBeenCalledWith(
+        expect.objectContaining({
+          resource: "screenshot",
+          correlationId: "rt",
+          base64: "GOOD",
+        })
+      );
+    });
+
+    it("throws 'image readback failed' when every capture is empty (retries + fallback exhausted)", async () => {
+      (browser.tabs.captureVisibleTab as jest.Mock).mockResolvedValue("");
+      await expect(
+        messageHandler.handleDecodedMessage({
+          cmd: "take-screenshot",
+          tabId: 3,
+          fullPage: true,
+          correlationId: "err",
+        } as ServerMessageRequest)
+      ).rejects.toThrow("image readback failed");
+    });
+  });
+
   describe("upload-file command", () => {
     const automationConfig = {
       secret: "test-secret",

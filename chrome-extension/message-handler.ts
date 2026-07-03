@@ -25,6 +25,7 @@ import { NativeInputClient } from "./native-input-client";
 import { NativeGesture, NativeWaypoint, NativeInputResponse } from "@foxpilot/common";
 import {
   cropElementFromCapture,
+  isValidCapture,
   mimeTypeForFormat,
   planFullPageSteps,
   stitchFullPage,
@@ -40,11 +41,7 @@ import {
   isDebuggerAttached,
 } from "./network-capture";
 import { Point, mousePath, typingPlan } from "./humanize/motion-model";
-import {
-  performPointAction,
-  scrollWindowTo,
-  scrollElementIntoView,
-} from "./injected/point-action-script";
+import { performPointAction } from "./injected/point-action-script";
 
 type InputActionArgs =
   | { action: "click"; uid: string; doubleClick?: boolean }
@@ -1026,7 +1023,7 @@ export class MessageHandler {
     });
     await browser.tabs.update(tabId, { active: true });
 
-    let result: { mimeType: string; base64: string };
+    let result: { mimeType: string; base64: string; warning?: string };
     try {
       if (opts.uid) {
         result = await this.captureElement(tabId, tab.windowId, opts.uid, format);
@@ -1048,6 +1045,7 @@ export class MessageHandler {
       correlationId,
       mimeType: result.mimeType,
       base64: result.base64,
+      ...(result.warning !== undefined ? { warning: result.warning } : {}),
     });
   }
 
@@ -1087,41 +1085,105 @@ export class MessageHandler {
     return result as { mimeType: string; base64: string };
   }
 
+  // Capture the visible window with bounded retry + backoff. A failed
+  // captureVisibleTab (rejection) OR an empty/payload-less readback is treated as
+  // a transient failure and retried (the backoff also absorbs captureVisibleTab
+  // rate-limiting). Throws only after all attempts are exhausted.
+  private async captureWindowWithRetry(
+    windowId: number | undefined,
+    format: ImageFormat
+  ): Promise<string> {
+    const backoffs = [100, 300, 600]; // slept BETWEEN attempts (not after the last)
+    let lastErr: unknown;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (attempt > 0) {
+        await sleep(backoffs[attempt - 1]);
+      }
+      try {
+        const dataUrl = await this.captureWindow(windowId, format);
+        if (isValidCapture(dataUrl)) {
+          return dataUrl;
+        }
+        lastErr = new Error("empty capture readback");
+      } catch (e) {
+        lastErr = e;
+      }
+    }
+    throw new Error(
+      `captureVisibleTab failed after 3 attempts: ${String(
+        (lastErr as any)?.message ?? lastErr
+      )}`
+    );
+  }
+
   private async captureFullPage(
     tabId: number,
     windowId: number | undefined,
     format: ImageFormat
-  ): Promise<{ mimeType: string; base64: string }> {
-    const dims = await sendMessageToTab(tabId, {
-      type: "readPageDimensions",
-    });
+  ): Promise<{ mimeType: string; base64: string; warning?: string }> {
+    const dims = await sendMessageToTab(tabId, { type: "readPageDimensions" });
     const offsets = planFullPageSteps(dims);
     const captures: { offsetY: number; dataUrl: string }[] = [];
+    let tileError = false;
     try {
       for (const y of offsets) {
         await sendMessageToTab(tabId, { type: "scrollTo", y });
         await sleep(100);
-        const dataUrl = await this.captureWindow(windowId, format);
+        const dataUrl = await this.captureWindowWithRetry(windowId, format);
         captures.push({ offsetY: y, dataUrl });
       }
+    } catch (e) {
+      // A tile ultimately failed even after retries — abandon stitching and try
+      // the single-viewport fallback below.
+      tileError = true;
     } finally {
-      await sendMessageToTab(tabId, {
-        type: "scrollTo",
-        y: dims.originalScrollY,
-      });
+      await sendMessageToTab(tabId, { type: "scrollTo", y: dims.originalScrollY });
     }
-    await ensureOffscreen();
-    const result = await browser.runtime.sendMessage({
-      type: "stitchFullPage",
-      captures,
-      dims: {
-        scrollWidth: dims.scrollWidth,
-        scrollHeight: dims.scrollHeight,
-        dpr: dims.dpr,
-      },
-      format,
-    });
-    return result as { mimeType: string; base64: string };
+
+    // Stitch on the offscreen document. Treat a throw OR an empty readback as a
+    // stitch failure and fall through to the viewport fallback.
+    let stitched: { mimeType: string; base64: string } | null = null;
+    if (!tileError) {
+      try {
+        await ensureOffscreen();
+        const result = (await browser.runtime.sendMessage({
+          type: "stitchFullPage",
+          captures,
+          dims: {
+            scrollWidth: dims.scrollWidth,
+            scrollHeight: dims.scrollHeight,
+            dpr: dims.dpr,
+          },
+          format,
+        })) as { mimeType: string; base64: string };
+        if (result && result.base64 && result.base64.length > 0) {
+          stitched = result;
+        }
+      } catch (e) {
+        stitched = null;
+      }
+    }
+    if (stitched) {
+      return stitched;
+    }
+
+    // Fallback: a single validated viewport capture, flagged with a warning.
+    let fallbackUrl: string;
+    try {
+      fallbackUrl = await this.captureWindowWithRetry(windowId, format);
+    } catch (e) {
+      throw new Error("image readback failed");
+    }
+    const { base64 } = stripDataUrlPrefix(fallbackUrl);
+    if (!base64) {
+      throw new Error("image readback failed");
+    }
+    return {
+      mimeType: mimeTypeForFormat(format),
+      base64,
+      warning:
+        "Full-page stitch failed; returning a single viewport capture instead.",
+    };
   }
 
   private async captureWindow(

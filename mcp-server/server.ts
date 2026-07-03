@@ -790,6 +790,13 @@ mcpServer.tool(
       });
     }
 
+    // Surface a fallback warning (e.g. the full-page stitch failed and a single
+    // viewport capture was returned instead) so the model knows the image is not
+    // the full page it asked for.
+    if (result.warning) {
+      content.push({ type: "text", text: `Warning: ${result.warning}` });
+    }
+
     // Always return the image itself as MCP image content.
     content.push({
       type: "image",

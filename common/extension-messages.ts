@@ -123,6 +123,9 @@ export interface ScreenshotExtensionMessage extends ExtensionMessageBase {
   resource: "screenshot";
   mimeType: string;
   base64: string;
+  // Set when a fallback path produced the image (e.g. full-page stitch failed
+  // and a single viewport capture was returned instead). Append-only.
+  warning?: string;
 }
 
 // A single captured console entry. `level` is the console method ("log",

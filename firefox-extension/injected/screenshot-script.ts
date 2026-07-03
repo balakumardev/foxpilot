@@ -37,6 +37,20 @@ export function stripDataUrlPrefix(dataUrl: string): {
 }
 
 /**
+ * True when `dataUrl` is a usable capture: a non-empty string whose data-URL
+ * payload has a non-empty base64 body. A failed captureVisibleTab / empty
+ * offscreen readback yields "" (or a prefix with no payload) — that is a
+ * FAILURE, not a valid (empty) image.
+ */
+export function isValidCapture(dataUrl: unknown): boolean {
+  if (typeof dataUrl !== "string" || dataUrl.length === 0) {
+    return false;
+  }
+  const { base64 } = stripDataUrlPrefix(dataUrl);
+  return base64.length > 0;
+}
+
+/**
  * Plans the list of vertical scroll offsets needed to tile a full page of
  * `scrollHeight` using a viewport of `clientHeight`, capturing the visible area
  * at each offset.

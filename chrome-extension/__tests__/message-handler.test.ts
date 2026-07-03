@@ -555,4 +555,83 @@ describe("MessageHandler (chrome) — foreground-tab preservation", () => {
       });
     });
   });
+
+  describe("screenshot fullPage hardening (Task 7)", () => {
+    const automationConfig = { ...baseConfig, automationMode: true };
+    beforeEach(() => {
+      (browser.storage.local.get as jest.Mock).mockResolvedValue({
+        config: automationConfig,
+      });
+      (browser.tabs.get as jest.Mock).mockResolvedValue({
+        id: 3,
+        url: "https://example.com",
+        windowId: 1,
+      });
+      (browser.tabs.query as jest.Mock).mockResolvedValue([{ id: 3 }]);
+      (browser.tabs.update as jest.Mock).mockResolvedValue(undefined);
+      (browser.permissions.contains as jest.Mock).mockResolvedValue(true);
+      // `offscreen` is an MV3-only API not on the webextension-polyfill Browser
+      // type, so reach it via an any-cast (same pattern as the chrome.debugger
+      // tests above).
+      ((browser as any).offscreen.hasDocument as jest.Mock).mockResolvedValue(
+        true
+      );
+      // Content-script measurement reads (readPageDimensions / scrollTo).
+      (browser.tabs.sendMessage as jest.Mock).mockImplementation((_id, msg) => {
+        if (msg.type === "readPageDimensions") {
+          return Promise.resolve({
+            scrollWidth: 100,
+            scrollHeight: 100,
+            clientWidth: 100,
+            clientHeight: 100,
+            dpr: 1,
+            originalScrollY: 0,
+          });
+        }
+        return Promise.resolve({ ok: true });
+      });
+    });
+
+    it("falls back to a single viewport capture with a warning when the offscreen stitch returns empty", async () => {
+      (browser.tabs.captureVisibleTab as jest.Mock).mockResolvedValue(
+        "data:image/png;base64,GOOD"
+      );
+      // Offscreen stitch (runtime.sendMessage) returns an empty readback.
+      (browser.runtime.sendMessage as jest.Mock).mockResolvedValue({
+        mimeType: "image/png",
+        base64: "",
+      });
+      await messageHandler.handleDecodedMessage({
+        cmd: "take-screenshot",
+        tabId: 3,
+        fullPage: true,
+        correlationId: "fp",
+      } as ServerMessageRequest);
+      expect(transport.sendResourceToServer).toHaveBeenCalledWith(
+        expect.objectContaining({
+          resource: "screenshot",
+          correlationId: "fp",
+          base64: "GOOD",
+          warning:
+            "Full-page stitch failed; returning a single viewport capture instead.",
+        })
+      );
+    });
+
+    it("throws 'image readback failed' when tiles and the fallback are all empty", async () => {
+      (browser.tabs.captureVisibleTab as jest.Mock).mockResolvedValue("");
+      (browser.runtime.sendMessage as jest.Mock).mockResolvedValue({
+        mimeType: "image/png",
+        base64: "",
+      });
+      await expect(
+        messageHandler.handleDecodedMessage({
+          cmd: "take-screenshot",
+          tabId: 3,
+          fullPage: true,
+          correlationId: "err",
+        } as ServerMessageRequest)
+      ).rejects.toThrow("image readback failed");
+    });
+  });
 });
