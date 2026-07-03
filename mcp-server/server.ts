@@ -4,6 +4,7 @@ import { z } from "zod";
 import * as fs from "fs";
 import { BrowserAPI } from "./browser-api";
 import { readFileForUpload } from "./file-upload";
+import { formatPointResult } from "./point-format";
 import dayjs from "dayjs";
 import relativeTime from "dayjs/plugin/relativeTime";
 
@@ -622,50 +623,8 @@ mcpServer.tool(
   }
 );
 
-// Formats a point-action-result for the coordinate tools: a one-line
-// confirmation with the element descriptor, or isError:true on a miss.
-function formatPointResult(
-  verb: string,
-  tabId: number,
-  x: number,
-  y: number,
-  result: {
-    ok: boolean;
-    error?: string;
-    element?: {
-      tag: string;
-      id?: string;
-      name?: string;
-      role?: string;
-      editable?: boolean;
-    };
-  }
-) {
-  if (!result.ok) {
-    return {
-      content: [
-        {
-          type: "text" as const,
-          text: `${verb} failed at (${x}, ${y}) on tab ${tabId}: ${
-            result.error ?? "no element at point"
-          }`,
-        },
-      ],
-      isError: true,
-    };
-  }
-  const el = result.element;
-  const desc = el
-    ? ` — element: <${el.tag}${el.id ? " #" + el.id : ""}${
-        el.role ? ' role="' + el.role + '"' : ""
-      }>${el.name ? ' "' + el.name + '"' : ""}${el.editable ? " (editable)" : ""}`
-    : "";
-  return {
-    content: [
-      { type: "text" as const, text: `${verb} at (${x}, ${y}) on tab ${tabId}${desc}` },
-    ],
-  };
-}
+// formatPointResult lives in ./point-format (a pure, importable module) so it
+// can be unit-tested without importing this self-executing server entrypoint.
 
 mcpServer.tool(
   "click-at",
@@ -680,6 +639,22 @@ mcpServer.tool(
   async ({ tabId, x, y, doubleClick, button }) => {
     const result = await browserApi.clickAt(tabId, x, y, { doubleClick, button });
     return formatPointResult("Clicked", tabId, x, y, result);
+  }
+);
+
+mcpServer.tool(
+  "type-at",
+  "Type text into the element at viewport pixel coordinates {x,y}. Clicks the point to focus it first, then types — works for <input>/<textarea> AND custom <div contenteditable> chat inputs that take-snapshot may not expose as textboxes. Set submit:true to press Enter afterward (and submit the form if there is one). Runs covertly in the isolated world. Returns a descriptor of the element that was typed into.",
+  {
+    tabId: z.number(),
+    x: z.number(),
+    y: z.number(),
+    text: z.string(),
+    submit: z.boolean().optional(),
+  },
+  async ({ tabId, x, y, text, submit }) => {
+    const result = await browserApi.typeAt(tabId, x, y, text, submit);
+    return formatPointResult("Typed", tabId, x, y, result);
   }
 );
 

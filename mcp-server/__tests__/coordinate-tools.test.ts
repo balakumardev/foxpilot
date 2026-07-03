@@ -2,6 +2,7 @@ import WebSocket from "ws";
 import { BrokerServer } from "../broker";
 import { BrowserAPI } from "../browser-api";
 import { createSignature } from "../signing";
+import { formatPointResult } from "../point-format";
 import type { ServerMessageRequest } from "@foxpilot/common";
 
 jest.mock("child_process", () => {
@@ -99,5 +100,63 @@ describe("BrowserAPI coordinate tools over the broker", () => {
     expect((lastReq as any).button).toBe("right");
     expect(result.ok).toBe(true);
     expect(result.element!.id).toBe("open-card");
+  });
+
+  it("forwards type-at text/submit", async () => {
+    await api.typeAt(2, 50, 60, "hello", true);
+    expect((lastReq as any).cmd).toBe("type-at");
+    expect((lastReq as any).text).toBe("hello");
+    expect((lastReq as any).submit).toBe(true);
+  });
+});
+
+// Rider #3: exercise the pure formatter directly (the wire test above only
+// drives api.typeAt/clickAt, so the role/name/editable formatting branches of
+// formatPointResult were otherwise unexercised).
+describe("formatPointResult", () => {
+  type FormatResult = {
+    content: { type: string; text: string }[];
+    isError?: boolean;
+  };
+
+  it("renders role, quoted name, and (editable) for an editable descriptor", () => {
+    const out = formatPointResult("Typed", 7, 10, 20, {
+      ok: true,
+      element: {
+        tag: "textarea",
+        id: "msg",
+        role: "textbox",
+        name: "Message",
+        editable: true,
+      },
+    }) as FormatResult;
+    expect(out.isError).toBeUndefined();
+    const text = out.content[0].text;
+    expect(text).toContain("Typed at (10, 20) on tab 7");
+    expect(text).toContain('<textarea #msg role="textbox">');
+    expect(text).toContain('"Message"');
+    expect(text).toContain("(editable)");
+  });
+
+  it("omits the id/role/name/editable adornments when they are absent", () => {
+    const out = formatPointResult("Clicked", 3, 1, 2, {
+      ok: true,
+      element: { tag: "div" },
+    }) as FormatResult;
+    const text = out.content[0].text;
+    expect(text).toBe("Clicked at (1, 2) on tab 3 — element: <div>");
+    expect(text).not.toContain("role=");
+    expect(text).not.toContain("(editable)");
+  });
+
+  it("returns isError with the miss reason when ok is false", () => {
+    const out = formatPointResult("Typed", 5, 8, 9, {
+      ok: false,
+      error: "No element at point (8, 9)",
+    }) as FormatResult;
+    expect(out.isError).toBe(true);
+    expect(out.content[0].text).toBe(
+      "Typed failed at (8, 9) on tab 5: No element at point (8, 9)"
+    );
   });
 });

@@ -2,7 +2,7 @@ import { performPointAction } from "../injected/point-action-script";
 
 // jsdom has no layout: document.elementFromPoint returns null and rects are
 // zero. Every test stubs elementFromPoint and never asserts rect values.
-describe("performPointAction (firefox)", () => {
+describe("performPointAction (chrome)", () => {
   afterEach(() => {
     document.body.innerHTML = "";
     (document as any).elementFromPoint = undefined;
@@ -64,6 +64,66 @@ describe("performPointAction (firefox)", () => {
       performPointAction(document, { action: "click-at", x: 5, y: 5, button: "right" });
       expect(onCtx).toHaveBeenCalledTimes(1);
       expect(onClick).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("type-at (Task 3)", () => {
+    function stubPoint(el: Element | null) {
+      (document as any).elementFromPoint = jest.fn(() => el);
+    }
+
+    it("types into an <input> via the native setter and fires input", () => {
+      document.body.innerHTML = `<input type="text" />`;
+      const el = document.querySelector("input")!;
+      stubPoint(el);
+      const onInput = jest.fn();
+      el.addEventListener("input", onInput);
+
+      const res = performPointAction(document, { action: "type-at", x: 3, y: 4, text: "hi" });
+
+      expect(res.ok).toBe(true);
+      expect(el.value).toBe("hi");
+      expect(onInput).toHaveBeenCalled();
+      expect(res.element!.editable).toBe(true);
+    });
+
+    it("types into a contenteditable div (textContent fallback when execCommand is absent)", () => {
+      document.body.innerHTML = `<div contenteditable="true"></div>`;
+      const el = document.querySelector("[contenteditable]")!;
+      // jsdom has no execCommand — the fallback path runs.
+      stubPoint(el);
+      const res = performPointAction(document, { action: "type-at", x: 1, y: 1, text: "yo" });
+      expect(res.ok).toBe(true);
+      expect(el.textContent).toBe("yo");
+    });
+
+    it("submits with a trailing Enter when submit is set", () => {
+      document.body.innerHTML = `<input type="text" />`;
+      const el = document.querySelector("input")!;
+      stubPoint(el);
+      const onKeydown = jest.fn();
+      el.addEventListener("keydown", onKeydown);
+      performPointAction(document, { action: "type-at", x: 1, y: 1, text: "x", submit: true });
+      const keys = onKeydown.mock.calls.map((c) => c[0].key);
+      expect(keys).toContain("Enter");
+    });
+
+    it("returns ok:false for a non-typable element", () => {
+      document.body.innerHTML = `<div>plain</div>`;
+      const el = document.querySelector("div")!;
+      stubPoint(el);
+      const res = performPointAction(document, { action: "type-at", x: 1, y: 1, text: "z" });
+      expect(res.ok).toBe(false);
+      expect(res.error).toMatch(/not typable/);
+      expect(res.element!.tag).toBe("div");
+    });
+
+    it("returns ok:false when no element is at the point", () => {
+      stubPoint(null);
+      const res = performPointAction(document, { action: "type-at", x: 9, y: 9, text: "q" });
+      expect(res.ok).toBe(false);
+      expect(res.error).toMatch(/No element at point/);
+      expect(res.element).toBeUndefined();
     });
   });
 });

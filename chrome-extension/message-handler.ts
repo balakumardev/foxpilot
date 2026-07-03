@@ -334,6 +334,15 @@ export class MessageHandler {
           button: req.button,
         });
         break;
+      case "type-at":
+        await this.runPointAction(req.correlationId, req.tabId, {
+          action: "type-at",
+          x: req.x,
+          y: req.y,
+          text: req.text,
+          submit: req.submit,
+        });
+        break;
       case "resize-window":
         await this.resizeWindow(
           req.correlationId,

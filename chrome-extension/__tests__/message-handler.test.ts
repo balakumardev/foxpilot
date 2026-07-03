@@ -450,5 +450,33 @@ describe("MessageHandler (chrome) — foreground-tab preservation", () => {
         error: "No element at point (1, 2) — the coordinates may be outside the visible viewport or over a cross-origin frame.",
       });
     });
+
+    it("type-at forwards coords/text/submit to the isolated point action and returns point-action-result", async () => {
+      (browser.tabs.sendMessage as jest.Mock).mockResolvedValue({
+        ok: true,
+        element: { tag: "textarea", id: "msg", classes: [], rect: { x: 0, y: 0, w: 0, h: 0 }, editable: true },
+      });
+
+      await messageHandler.handleDecodedMessage({
+        cmd: "type-at",
+        tabId: 8,
+        x: 5,
+        y: 6,
+        text: "hello",
+        submit: true,
+        correlationId: "tx",
+      } as ServerMessageRequest);
+
+      expect(browser.tabs.sendMessage).toHaveBeenCalledWith(8, {
+        type: "performPointAction",
+        args: { action: "type-at", x: 5, y: 6, text: "hello", submit: true },
+      });
+      expect(transport.sendResourceToServer).toHaveBeenCalledWith({
+        resource: "point-action-result",
+        correlationId: "tx",
+        ok: true,
+        element: { tag: "textarea", id: "msg", classes: [], rect: { x: 0, y: 0, w: 0, h: 0 }, editable: true },
+      });
+    });
   });
 });

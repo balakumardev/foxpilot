@@ -2594,5 +2594,32 @@ describe("MessageHandler", () => {
         element: { tag: "div", classes: [], rect: { x: 0, y: 0, w: 0, h: 0 }, editable: false },
       });
     });
+
+    it("type-at injects performPointAction with the type-at args and replies point-action-result", async () => {
+      (browser.tabs.executeScript as jest.Mock).mockResolvedValue([
+        { ok: true, element: { tag: "textarea", classes: [], rect: { x: 0, y: 0, w: 0, h: 0 }, editable: true } },
+      ]);
+
+      await messageHandler.handleDecodedMessage({
+        cmd: "type-at",
+        tabId: 9,
+        x: 5,
+        y: 6,
+        text: "hello",
+        submit: true,
+        correlationId: "ft",
+      } as ServerMessageRequest);
+
+      const code = (browser.tabs.executeScript as jest.Mock).mock.calls[0][1].code;
+      expect(code).toContain('"action":"type-at"');
+      expect(code).toContain('"text":"hello"');
+      expect(code).toContain('"submit":true');
+      expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+        resource: "point-action-result",
+        correlationId: "ft",
+        ok: true,
+        element: { tag: "textarea", classes: [], rect: { x: 0, y: 0, w: 0, h: 0 }, editable: true },
+      });
+    });
   });
 });

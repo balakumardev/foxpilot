@@ -544,6 +544,25 @@ export class BrowserAPI {
     });
   }
 
+  async typeAt(
+    tabId: number,
+    x: number,
+    y: number,
+    text: string,
+    submit?: boolean
+  ): Promise<PointActionResultExtensionMessage> {
+    // Returned unchanged (NOT thrown on ok:false) so the tool can report the
+    // element descriptor even when the point missed / hit a non-typable node.
+    return await this.sendTool<PointActionResultExtensionMessage>({
+      cmd: "type-at",
+      tabId,
+      x,
+      y,
+      text,
+      submit,
+    });
+  }
+
   async hoverElement(tabId: number, uid: string): Promise<void> {
     const message = await this.sendTool<ActionResultExtensionMessage>({
       cmd: "hover-element",

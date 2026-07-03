@@ -35,6 +35,7 @@ export function performPointAction(
         doubleClick?: boolean;
         button?: "left" | "middle" | "right";
       }
+    | { action: "type-at"; x: number; y: number; text: string; submit?: boolean }
 ): { ok: boolean; error?: string; element?: PointElementDescriptor } {
   try {
     const win = doc.defaultView as (Window & typeof globalThis) | null;
@@ -114,6 +115,36 @@ export function performPointAction(
       return 0;
     }
 
+    function keyEvt(type: string, key: string): KeyboardEvent {
+      return new KeyboardEvent(type, { key: key, bubbles: true });
+    }
+
+    function nativeSetValue(el: Element, value: string): void {
+      const proto =
+        el.tagName === "TEXTAREA"
+          ? win!.HTMLTextAreaElement.prototype
+          : win!.HTMLInputElement.prototype;
+      const descriptor = Object.getOwnPropertyDescriptor(proto, "value");
+      const setter = descriptor && descriptor.set;
+      if (setter) {
+        setter.call(el, value);
+      } else {
+        (el as { value?: string }).value = value;
+      }
+    }
+
+    // True when the element is a contenteditable host. Prefers the IDL
+    // isContentEditable property (which a real browser also reports true for
+    // descendants of an editable host); falls back to the contenteditable
+    // attribute for environments that don't reflect that property (e.g. jsdom).
+    function contentEditableHost(el: Element): boolean {
+      if ((el as { isContentEditable?: boolean }).isContentEditable === true) {
+        return true;
+      }
+      const ce = el.getAttribute("contenteditable");
+      return ce === "" || ce === "true" || ce === "plaintext-only";
+    }
+
     if (args.action === "click-at") {
       const el = elementAt(args.x, args.y);
       if (!el) {
@@ -144,6 +175,83 @@ export function performPointAction(
       }
       if (args.doubleClick) {
         el.dispatchEvent(mouseEvt("dblclick", b));
+      }
+      return { ok: true, element: describeElement(el) };
+    }
+
+    if (args.action === "type-at") {
+      const el = elementAt(args.x, args.y);
+      if (!el) {
+        return offPoint(args.x, args.y);
+      }
+      // Click-to-focus (press sequence + focus + activate) so the type targets it.
+      el.dispatchEvent(mouseEvt("pointerdown", 0));
+      el.dispatchEvent(mouseEvt("mousedown", 0));
+      el.dispatchEvent(mouseEvt("mouseup", 0));
+      try {
+        (el as { focus?: () => void }).focus?.();
+      } catch (e) {
+        /* ignore */
+      }
+      try {
+        (el as { click?: () => void }).click?.();
+      } catch (e) {
+        /* ignore */
+      }
+      const text = args.text;
+      const tag = el.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA") {
+        // Framework-safe native-setter append + input (mirrors action-script.ts).
+        const current = ((el as { value?: string }).value || "") as string;
+        nativeSetValue(el, current + text);
+        el.dispatchEvent(new Event("input", { bubbles: true }));
+      } else if (contentEditableHost(el)) {
+        // contenteditable (the SPA chat-input case): insert text + fire input.
+        const doExec = (doc as {
+          execCommand?: (c: string, s?: boolean, v?: string) => boolean;
+        }).execCommand;
+        let inserted = false;
+        if (typeof doExec === "function") {
+          try {
+            inserted = doExec.call(doc, "insertText", false, text);
+          } catch (e) {
+            inserted = false;
+          }
+        }
+        if (!inserted) {
+          (el as { textContent?: string }).textContent =
+            (el.textContent || "") + text;
+        }
+        el.dispatchEvent(new Event("input", { bubbles: true }));
+      } else {
+        return {
+          ok: false,
+          error:
+            "Element at point is not typable (not an input, textarea, or contenteditable).",
+          element: describeElement(el),
+        };
+      }
+      for (let i = 0; i < text.length; i++) {
+        const ch = text.charAt(i);
+        el.dispatchEvent(keyEvt("keydown", ch));
+        el.dispatchEvent(keyEvt("keyup", ch));
+      }
+      if (args.submit) {
+        el.dispatchEvent(keyEvt("keydown", "Enter"));
+        el.dispatchEvent(keyEvt("keyup", "Enter"));
+        const form = (el as { form?: HTMLFormElement }).form;
+        if (form) {
+          try {
+            const rs = (form as { requestSubmit?: () => void }).requestSubmit;
+            if (typeof rs === "function") {
+              rs.call(form);
+            } else {
+              form.submit();
+            }
+          } catch (e) {
+            /* ignore */
+          }
+        }
       }
       return { ok: true, element: describeElement(el) };
     }

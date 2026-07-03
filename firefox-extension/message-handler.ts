@@ -343,6 +343,15 @@ export class MessageHandler {
           button: req.button,
         });
         break;
+      case "type-at":
+        await this.runPointAction(req.correlationId, req.tabId, {
+          action: "type-at",
+          x: req.x,
+          y: req.y,
+          text: req.text,
+          submit: req.submit,
+        });
+        break;
       case "resize-window":
         await this.resizeWindow(
           req.correlationId,
@@ -717,10 +726,12 @@ export class MessageHandler {
     });
   }
 
-  // Coordinate (synthetic) executor. Injects the self-contained
-  // performPointAction into the ISOLATED world (executeScript compiles it — no
-  // eval, no page-world <script>) and replies with point-action-result. An
-  // off-point / not-typable ok:false is a legitimate RESULT, not a thrown error.
+  // Coordinate (synthetic) executor for the -at tools (click-at, type-at).
+  // Injects the self-contained performPointAction into the ISOLATED world
+  // (executeScript compiles it — no eval, no page-world <script>) and replies
+  // with point-action-result. An off-point miss (either action) or a
+  // not-typable target (type-at) is a legitimate ok:false RESULT, not a thrown
+  // error.
   private async runPointAction(
     correlationId: string,
     tabId: number,

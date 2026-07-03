@@ -354,6 +354,20 @@ export interface ClickAtServerMessage extends ServerMessageBase {
   button?: "left" | "middle" | "right";
 }
 
+// Type text into the element at viewport CSS-pixel coordinates {x,y}: click the
+// point to focus it, then synthesize the keystrokes in the isolated world.
+// Handles <input>/<textarea> (framework-safe native setter) AND
+// <div contenteditable> chat inputs. `submit` presses Enter afterward (and
+// requestSubmit()s the enclosing form if there is one).
+export interface TypeAtServerMessage extends ServerMessageBase {
+  cmd: "type-at";
+  tabId: number;
+  x: number;
+  y: number;
+  text: string;
+  submit?: boolean;
+}
+
 export type ServerMessage =
   | OpenTabServerMessage
   | CloseTabsServerMessage
@@ -390,6 +404,7 @@ export type ServerMessage =
   | StreamPollServerMessage
   | StreamCloseServerMessage
   | CaptureResponseBodiesServerMessage
-  | ClickAtServerMessage;
+  | ClickAtServerMessage
+  | TypeAtServerMessage;
 
 export type ServerMessageRequest = ServerMessage & { correlationId: string };
