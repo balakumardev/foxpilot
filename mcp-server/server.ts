@@ -5,6 +5,7 @@ import * as fs from "fs";
 import { BrowserAPI } from "./browser-api";
 import { readFileForUpload } from "./file-upload";
 import { formatPointResult } from "./point-format";
+import { formatNetworkHeaders } from "./network-format";
 import dayjs from "dayjs";
 import relativeTime from "dayjs/plugin/relativeTime";
 
@@ -843,15 +844,16 @@ mcpServer.tool(
 
 mcpServer.tool(
   "get-network-requests",
-  "Get the network requests captured for a browser tab (URL, method, status, resource type, timing, size). Requires Automation Mode, and only captures requests made AFTER Automation Mode was enabled (reload the page if you see nothing). Pass 'filter' to keep only requests whose URL contains it (case-insensitive) or whose resource type matches it exactly, 'limit' to return only the most recent N, 'includeHeaders' to also print each request's captured request/response headers (credential-bearing values — Cookie/Authorization/Set-Cookie — are redacted), and 'includeBody' to request best-effort response-body snippets for FUTURE requests (browser-dependent: captured on Firefox; Chrome MV3 cannot capture bodies via webRequest and returns metadata only).",
+  "Get the network requests captured for a browser tab (URL, method, status, resource type, timing, size). Requires Automation Mode, and only captures requests made AFTER Automation Mode was enabled (reload the page if you see nothing). Pass 'filter' to keep only requests whose URL contains it (case-insensitive) or whose resource type matches it exactly, 'limit' to return only the most recent N, 'includeHeaders' to also print each request's captured request/response headers (credential-bearing values — Cookie/Authorization/Set-Cookie — are redacted by default), 'includeCredentials' to print those credential values UN-REDACTED (only meaningful with includeHeaders; WARNING: this exposes real session cookies/tokens in the tool output — use it only when you must replay the app's own authenticated calls, and never log the values), and 'includeBody' to request best-effort response-body snippets for FUTURE requests (browser-dependent: captured on Firefox; Chrome MV3 cannot capture bodies via webRequest and returns metadata only).",
   {
     tabId: z.number(),
     filter: z.string().optional(),
     limit: z.number().optional(),
     includeHeaders: z.boolean().optional(),
+    includeCredentials: z.boolean().optional(),
     includeBody: z.boolean().optional(),
   },
-  async ({ tabId, filter, limit, includeHeaders, includeBody }) => {
+  async ({ tabId, filter, limit, includeHeaders, includeCredentials, includeBody }) => {
     const { requests, bodyCaptureSupported } =
       await browserApi.getNetworkRequests(tabId, {
         filter,
@@ -868,25 +870,6 @@ mcpServer.tool(
         ],
       };
     }
-    // Redact credential-bearing headers so captured traffic never leaks the
-    // session token into tool output.
-    const SENSITIVE_HEADER =
-      /^(cookie|set-cookie|authorization|proxy-authorization)$/i;
-    const formatHeaders = (
-      label: string,
-      headers?: { name: string; value?: string }[]
-    ): string => {
-      if (!headers || headers.length === 0) return "";
-      const lines = headers
-        .map((h) => {
-          const value = SENSITIVE_HEADER.test(h.name)
-            ? `<redacted:${(h.value ?? "").length} chars>`
-            : h.value ?? "";
-          return `      ${h.name}: ${value}`;
-        })
-        .join("\n");
-      return `\n    ${label}:\n${lines}`;
-    };
     const content = requests.map((req) => {
       const status = req.error
         ? `ERR ${req.error}`
@@ -899,8 +882,16 @@ mcpServer.tool(
         req.responseSize !== undefined ? `, ${req.responseSize} B` : "";
       let text = `${req.method} ${req.url} -> ${status} (${req.type}${duration}${size})`;
       if (includeHeaders) {
-        text += formatHeaders("request headers", req.requestHeaders);
-        text += formatHeaders("response headers", req.responseHeaders);
+        text += formatNetworkHeaders(
+          "request headers",
+          req.requestHeaders,
+          !!includeCredentials
+        );
+        text += formatNetworkHeaders(
+          "response headers",
+          req.responseHeaders,
+          !!includeCredentials
+        );
       }
       if (req.requestBody) {
         // Request bodies are arbitrary (may contain form credentials); truncate
