@@ -336,3 +336,51 @@ export function performPointAction(
     return { ok: false, error: String(e) };
   }
 }
+
+export function scrollWindowTo(
+  doc: Document,
+  x?: number,
+  y?: number
+): { ok: boolean; error?: string } {
+  try {
+    const win = doc.defaultView as (Window & typeof globalThis) | null;
+    if (!win || typeof win.scrollTo !== "function") {
+      return { ok: false, error: "Window is not scrollable in this context." };
+    }
+    const toX = typeof x === "number" ? x : win.scrollX || 0;
+    const toY = typeof y === "number" ? y : win.scrollY || 0;
+    win.scrollTo(toX, toY);
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: String(e) };
+  }
+}
+
+export function scrollElementIntoView(
+  doc: Document,
+  uid: string
+): { ok: boolean; error?: string } {
+  try {
+    const el = doc.querySelector('[data-bcmcp-uid="' + uid + '"]');
+    if (!el) {
+      return {
+        ok: false,
+        error:
+          "Element uid '" +
+          uid +
+          "' not found — take a fresh snapshot (uids are reassigned each snapshot).",
+      };
+    }
+    try {
+      (el as { scrollIntoView?: (opts?: unknown) => void }).scrollIntoView?.({
+        block: "center",
+        inline: "center",
+      });
+    } catch (e) {
+      /* jsdom lacks a layout engine — never throw on scroll */
+    }
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: String(e) };
+  }
+}

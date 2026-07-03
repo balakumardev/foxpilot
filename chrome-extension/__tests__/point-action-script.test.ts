@@ -1,4 +1,8 @@
-import { performPointAction } from "../injected/point-action-script";
+import {
+  performPointAction,
+  scrollWindowTo,
+  scrollElementIntoView,
+} from "../injected/point-action-script";
 
 // jsdom has no layout: document.elementFromPoint returns null and rects are
 // zero. Every test stubs elementFromPoint and never asserts rect values.
@@ -219,6 +223,31 @@ describe("performPointAction (chrome)", () => {
       expect(res.ok).toBe(false);
       expect(res.error).toMatch(/No element at point/);
       expect(res.element).toBeUndefined();
+    });
+  });
+
+  describe("scrollWindowTo / scrollElementIntoView (Task 6)", () => {
+    it("scrollWindowTo calls window.scrollTo(x,y)", () => {
+      (window as any).scrollTo = jest.fn();
+      const res = scrollWindowTo(document, 0, 400);
+      expect((window as any).scrollTo).toHaveBeenCalledWith(0, 400);
+      expect(res.ok).toBe(true);
+    });
+
+    it("scrollElementIntoView resolves the uid and centers it", () => {
+      document.body.innerHTML = `<div data-bcmcp-uid="e5">target</div>`;
+      const el = document.querySelector('[data-bcmcp-uid="e5"]')!;
+      (el as any).scrollIntoView = jest.fn();
+      const res = scrollElementIntoView(document, "e5");
+      expect((el as any).scrollIntoView).toHaveBeenCalledWith({ block: "center", inline: "center" });
+      expect(res.ok).toBe(true);
+    });
+
+    it("scrollElementIntoView returns ok:false for a stale uid", () => {
+      document.body.innerHTML = `<div>nope</div>`;
+      const res = scrollElementIntoView(document, "e404");
+      expect(res.ok).toBe(false);
+      expect(res.error).toMatch(/not found/);
     });
   });
 });

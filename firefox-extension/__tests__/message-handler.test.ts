@@ -2672,5 +2672,17 @@ describe("MessageHandler", () => {
         element: { tag: "div", id: "panel", classes: [], rect: { x: 0, y: 0, w: 0, h: 0 }, editable: false },
       });
     });
+
+    it("scroll-into-view injects scrollElementIntoView and replies action-result", async () => {
+      (browser.tabs.executeScript as jest.Mock).mockResolvedValue([{ ok: true }]);
+      await messageHandler.handleDecodedMessage({
+        cmd: "scroll-into-view", tabId: 9, uid: "e5", correlationId: "sv",
+      } as ServerMessageRequest);
+      const code = (browser.tabs.executeScript as jest.Mock).mock.calls[0][1].code;
+      expect(code).toContain('"e5"');
+      expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+        resource: "action-result", correlationId: "sv", ok: true,
+      });
+    });
   });
 });

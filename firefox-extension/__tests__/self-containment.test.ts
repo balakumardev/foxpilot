@@ -40,7 +40,11 @@
 
 import { buildSnapshot } from "../injected/snapshot-script";
 import { performInputAction } from "../injected/action-script";
-import { performPointAction } from "../injected/point-action-script";
+import {
+  performPointAction,
+  scrollWindowTo,
+  scrollElementIntoView,
+} from "../injected/point-action-script";
 import {
   dispatchMouseMoveStep,
   typeCharStep,
@@ -65,6 +69,8 @@ const INJECTED_FUNCTIONS: ReadonlyArray<[string, (...args: any[]) => any]> = [
   ["buildSnapshot", buildSnapshot as unknown as (...args: any[]) => any],
   ["performInputAction", performInputAction as unknown as (...args: any[]) => any],
   ["performPointAction", performPointAction as unknown as (...args: any[]) => any],
+  ["scrollWindowTo", scrollWindowTo as unknown as (...args: any[]) => any],
+  ["scrollElementIntoView", scrollElementIntoView as unknown as (...args: any[]) => any],
   ["dispatchMouseMoveStep", dispatchMouseMoveStep as unknown as (...args: any[]) => any],
   ["typeCharStep", typeCharStep as unknown as (...args: any[]) => any],
   ["readElementScreenRect", readElementScreenRect as unknown as (...args: any[]) => any],

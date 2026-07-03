@@ -395,6 +395,27 @@ export interface ScrollAtServerMessage extends ServerMessageBase {
   dy?: number;
 }
 
+// Absolute page scroll via window.scrollTo(x, y). Unlike the -at tools this does
+// not act at an arbitrary point, so it replies with the shared action-result.
+// Omit x or y to leave that axis unchanged (position content before a viewport
+// screenshot). Runs in the ISOLATED content-script world.
+export interface ScrollToServerMessage extends ServerMessageBase {
+  cmd: "scroll-to";
+  tabId: number;
+  x?: number;
+  y?: number;
+}
+
+// Scroll the element identified by a snapshot uid into view (centered) via
+// scrollIntoView({block:"center"}). Replies with the shared action-result; a
+// stale/missing uid is a legitimate ok:false. Runs in the ISOLATED content-
+// script world.
+export interface ScrollIntoViewServerMessage extends ServerMessageBase {
+  cmd: "scroll-into-view";
+  tabId: number;
+  uid: string;
+}
+
 export type ServerMessage =
   | OpenTabServerMessage
   | CloseTabsServerMessage
@@ -434,6 +455,8 @@ export type ServerMessage =
   | ClickAtServerMessage
   | TypeAtServerMessage
   | HoverAtServerMessage
-  | ScrollAtServerMessage;
+  | ScrollAtServerMessage
+  | ScrollToServerMessage
+  | ScrollIntoViewServerMessage;
 
 export type ServerMessageRequest = ServerMessage & { correlationId: string };

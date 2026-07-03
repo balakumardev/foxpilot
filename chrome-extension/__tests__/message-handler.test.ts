@@ -532,5 +532,27 @@ describe("MessageHandler (chrome) — foreground-tab preservation", () => {
         element: { tag: "div", id: "panel", classes: [], rect: { x: 0, y: 0, w: 0, h: 0 }, editable: false },
       });
     });
+
+    it("scroll-to replies action-result ok:true", async () => {
+      (browser.tabs.sendMessage as jest.Mock).mockResolvedValue({ ok: true });
+      await messageHandler.handleDecodedMessage({
+        cmd: "scroll-to", tabId: 8, x: 0, y: 500, correlationId: "st",
+      } as ServerMessageRequest);
+      expect(browser.tabs.sendMessage).toHaveBeenCalledWith(8, { type: "scrollWindowTo", x: 0, y: 500 });
+      expect(transport.sendResourceToServer).toHaveBeenCalledWith({
+        resource: "action-result", correlationId: "st", ok: true,
+      });
+    });
+
+    it("scroll-into-view replies action-result ok:false for a stale uid", async () => {
+      (browser.tabs.sendMessage as jest.Mock).mockResolvedValue({ ok: false, error: "Element uid 'e9' not found — take a fresh snapshot (uids are reassigned each snapshot)." });
+      await messageHandler.handleDecodedMessage({
+        cmd: "scroll-into-view", tabId: 8, uid: "e9", correlationId: "sv",
+      } as ServerMessageRequest);
+      expect(transport.sendResourceToServer).toHaveBeenCalledWith({
+        resource: "action-result", correlationId: "sv", ok: false,
+        error: "Element uid 'e9' not found — take a fresh snapshot (uids are reassigned each snapshot).",
+      });
+    });
   });
 });

@@ -17,7 +17,11 @@ import {
   evalInIsolatedWorld,
 } from "./injected/page-world";
 import { performFileUpload } from "./injected/upload-script";
-import { performPointAction } from "./injected/point-action-script";
+import {
+  performPointAction,
+  scrollWindowTo,
+  scrollElementIntoView,
+} from "./injected/point-action-script";
 
 // Guard against duplicate injection in the same isolated world.
 if ((window as any).__bcmcpContentScriptLoaded) {
@@ -323,6 +327,18 @@ if ((window as any).__bcmcpContentScriptLoaded) {
           case "scrollTo": {
             window.scrollTo(0, message.y);
             sendResponse({ ok: true });
+            break;
+          }
+
+          case "scrollWindowTo": {
+            const result = scrollWindowTo(document, message.x, message.y);
+            sendResponse(result);
+            break;
+          }
+
+          case "scrollElementIntoView": {
+            const result = scrollElementIntoView(document, message.uid);
+            sendResponse(result);
             break;
           }
 

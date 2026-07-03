@@ -40,7 +40,11 @@ import {
   isDebuggerAttached,
 } from "./network-capture";
 import { Point, mousePath, typingPlan } from "./humanize/motion-model";
-import { performPointAction } from "./injected/point-action-script";
+import {
+  performPointAction,
+  scrollWindowTo,
+  scrollElementIntoView,
+} from "./injected/point-action-script";
 
 type InputActionArgs =
   | { action: "click"; uid: string; doubleClick?: boolean }
@@ -358,6 +362,12 @@ export class MessageHandler {
           dx: req.dx,
           dy: req.dy,
         });
+        break;
+      case "scroll-to":
+        await this.scrollWindow(req.correlationId, req.tabId, req.x, req.y);
+        break;
+      case "scroll-into-view":
+        await this.scrollIntoViewByUid(req.correlationId, req.tabId, req.uid);
         break;
       case "resize-window":
         await this.resizeWindow(
@@ -685,6 +695,58 @@ export class MessageHandler {
       ok: !!(result && result.ok),
       ...(result && result.error !== undefined ? { error: result.error } : {}),
       ...(result && result.element !== undefined ? { element: result.element } : {}),
+    });
+  }
+
+  // Absolute page scroll (window.scrollTo). Routes to the ISOLATED content-script
+  // world (scrollWindowTo) and replies with the shared action-result — there is
+  // no element to describe. Omitting x/y leaves that axis unchanged.
+  private async scrollWindow(
+    correlationId: string,
+    tabId: number,
+    x?: number,
+    y?: number
+  ): Promise<void> {
+    const tab = await browser.tabs.get(tabId);
+    if (tab.url && (await isDomainInDenyList(tab.url))) {
+      throw new Error(`Domain in tab URL is in the deny list`);
+    }
+    await this.checkForUrlPermission(tab.url);
+    const result = await sendMessageToTabRaw(tabId, {
+      type: "scrollWindowTo",
+      x,
+      y,
+    });
+    await this.client.sendResourceToServer({
+      resource: "action-result",
+      correlationId,
+      ok: !!(result && result.ok),
+      ...(result && result.error !== undefined ? { error: result.error } : {}),
+    });
+  }
+
+  // Scroll a snapshot uid's element into view (centered) in the ISOLATED
+  // content-script world. A stale/missing uid comes back as a legitimate
+  // ok:false action-result (with the "take a fresh snapshot" hint), not a throw.
+  private async scrollIntoViewByUid(
+    correlationId: string,
+    tabId: number,
+    uid: string
+  ): Promise<void> {
+    const tab = await browser.tabs.get(tabId);
+    if (tab.url && (await isDomainInDenyList(tab.url))) {
+      throw new Error(`Domain in tab URL is in the deny list`);
+    }
+    await this.checkForUrlPermission(tab.url);
+    const result = await sendMessageToTabRaw(tabId, {
+      type: "scrollElementIntoView",
+      uid,
+    });
+    await this.client.sendResourceToServer({
+      resource: "action-result",
+      correlationId,
+      ok: !!(result && result.ok),
+      ...(result && result.error !== undefined ? { error: result.error } : {}),
     });
   }
 

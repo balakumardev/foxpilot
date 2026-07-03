@@ -3,7 +3,11 @@ import { ExtensionTransport } from "./transport";
 import { isCommandAllowed, isDomainInDenyList, COMMAND_TO_TOOL_ID, addAuditLogEntry, requiresAutomationMode, isAutomationModeEnabled, getInputRealismMode, getSidecarPort, getSecret } from "./extension-config";
 import { buildSnapshot } from "./injected/snapshot-script";
 import { performInputAction } from "./injected/action-script";
-import { performPointAction } from "./injected/point-action-script";
+import {
+  performPointAction,
+  scrollWindowTo,
+  scrollElementIntoView,
+} from "./injected/point-action-script";
 import { dispatchMouseMoveStep, typeCharStep, readElementScreenRect } from "./injected/humanize-steps";
 import { runHumanInput, HumanInputDeps, StepResult } from "./humanize/run-human-input";
 import { mousePath, typingPlan, Point } from "./humanize/motion-model";
@@ -367,6 +371,12 @@ export class MessageHandler {
           dx: req.dx,
           dy: req.dy,
         });
+        break;
+      case "scroll-to":
+        await this.scrollWindow(req.correlationId, req.tabId, req.x, req.y);
+        break;
+      case "scroll-into-view":
+        await this.scrollIntoViewByUid(req.correlationId, req.tabId, req.uid);
         break;
       case "resize-window":
         await this.resizeWindow(
@@ -773,6 +783,65 @@ export class MessageHandler {
       ok: !!result.ok,
       ...(result.error !== undefined ? { error: result.error } : {}),
       ...(result.element !== undefined ? { element: result.element } : {}),
+    });
+  }
+
+  // Absolute page scroll (window.scrollTo). Injects the self-contained
+  // scrollWindowTo into the ISOLATED world via executeScript and replies with
+  // the shared action-result — there is no element to describe. Omitting x/y
+  // leaves that axis unchanged: `JSON.stringify(x ?? null) ?? undefined` emits
+  // `null ?? undefined` (→ undefined) when the coord was omitted, else the value.
+  private async scrollWindow(
+    correlationId: string,
+    tabId: number,
+    x?: number,
+    y?: number
+  ): Promise<void> {
+    const tab = await browser.tabs.get(tabId);
+    if (tab.url && (await isDomainInDenyList(tab.url))) {
+      throw new Error(`Domain in tab URL is in the deny list`);
+    }
+    await this.checkForUrlPermission(tab.url);
+    const results = await browser.tabs.executeScript(tabId, {
+      code: `(${scrollWindowTo.toString()})(document, ${JSON.stringify(
+        x ?? null
+      )} ?? undefined, ${JSON.stringify(y ?? null)} ?? undefined)`,
+    });
+    const result = (results && results[0]) || { ok: false, error: "no result" };
+    await this.client.sendResourceToServer({
+      resource: "action-result",
+      correlationId,
+      ok: !!result.ok,
+      ...(result.error !== undefined ? { error: result.error } : {}),
+    });
+  }
+
+  // Scroll a snapshot uid's element into view (centered) in the ISOLATED world.
+  // A stale/missing uid comes back as a legitimate ok:false action-result (with
+  // the "take a fresh snapshot" hint), not a throw.
+  private async scrollIntoViewByUid(
+    correlationId: string,
+    tabId: number,
+    uid: string
+  ): Promise<void> {
+    const tab = await browser.tabs.get(tabId);
+    if (tab.url && (await isDomainInDenyList(tab.url))) {
+      throw new Error(`Domain in tab URL is in the deny list`);
+    }
+    await this.checkForUrlPermission(tab.url);
+    const results = await browser.tabs.executeScript(tabId, {
+      code: `(${scrollElementIntoView.toString()})(document, ${JSON.stringify(uid)})`,
+    });
+    const result = (results && results[0]) || {
+      ok: false,
+      error:
+        "scroll-into-view produced no result (content script not loaded — reload and retry).",
+    };
+    await this.client.sendResourceToServer({
+      resource: "action-result",
+      correlationId,
+      ok: !!result.ok,
+      ...(result.error !== undefined ? { error: result.error } : {}),
     });
   }
 

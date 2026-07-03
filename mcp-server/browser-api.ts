@@ -597,6 +597,30 @@ export class BrowserAPI {
     });
   }
 
+  async scrollTo(
+    tabId: number,
+    x?: number,
+    y?: number
+  ): Promise<ActionResultExtensionMessage> {
+    return await this.sendTool<ActionResultExtensionMessage>({
+      cmd: "scroll-to",
+      tabId,
+      x,
+      y,
+    });
+  }
+
+  async scrollIntoView(
+    tabId: number,
+    uid: string
+  ): Promise<ActionResultExtensionMessage> {
+    return await this.sendTool<ActionResultExtensionMessage>({
+      cmd: "scroll-into-view",
+      tabId,
+      uid,
+    });
+  }
+
   async hoverElement(tabId: number, uid: string): Promise<void> {
     const message = await this.sendTool<ActionResultExtensionMessage>({
       cmd: "hover-element",

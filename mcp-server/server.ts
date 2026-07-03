@@ -685,6 +685,53 @@ mcpServer.tool(
 );
 
 mcpServer.tool(
+  "scroll-to",
+  "Scroll the page to absolute coordinates via window.scrollTo(x, y). Omit x or y to leave that axis unchanged. Useful to position content before a viewport screenshot.",
+  { tabId: z.number(), x: z.number().optional(), y: z.number().optional() },
+  async ({ tabId, x, y }) => {
+    const result = await browserApi.scrollTo(tabId, x, y);
+    if (!result.ok) {
+      return {
+        content: [
+          { type: "text", text: `scroll-to failed: ${result.error ?? "unknown error"}` },
+        ],
+        isError: true,
+      };
+    }
+    return {
+      content: [
+        {
+          type: "text",
+          text: `Scrolled tab ${tabId} to (${x ?? "*"}, ${y ?? "*"})`,
+        },
+      ],
+    };
+  }
+);
+
+mcpServer.tool(
+  "scroll-into-view",
+  "Scroll the element with the given snapshot uid into view (centered). Take a fresh take-snapshot first to get a current uid (uids are reassigned each snapshot).",
+  { tabId: z.number(), uid: z.string() },
+  async ({ tabId, uid }) => {
+    const result = await browserApi.scrollIntoView(tabId, uid);
+    if (!result.ok) {
+      return {
+        content: [
+          { type: "text", text: `scroll-into-view failed: ${result.error ?? "unknown error"}` },
+        ],
+        isError: true,
+      };
+    }
+    return {
+      content: [
+        { type: "text", text: `Scrolled element ${uid} into view on tab ${tabId}` },
+      ],
+    };
+  }
+);
+
+mcpServer.tool(
   "upload-file",
   "Upload a local file into a file <input> on a page. Pass the 'uid' of the file input from a recent take-snapshot and the absolute 'filePath' of the file on the machine running the MCP server. The server reads the file itself and injects it into the input (browsers forbid setting a file input's path from script, so this is the reliable way). Works for arbitrary local paths. Max file size 25 MB.",
   { tabId: z.number(), uid: z.string(), filePath: z.string() },

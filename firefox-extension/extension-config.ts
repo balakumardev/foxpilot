@@ -213,6 +213,16 @@ export const AVAILABLE_TOOLS: ToolInfo[] = [
     id: "scroll-at",
     name: "Scroll at Coordinates",
     description: "Allows the MCP server to scroll the nearest scrollable container under pixel coordinates (fixes inner-container scroll; synthetic, covert)"
+  },
+  {
+    id: "scroll-to",
+    name: "Scroll to Position",
+    description: "Allows the MCP server to scroll the page to absolute coordinates (window.scrollTo)"
+  },
+  {
+    id: "scroll-into-view",
+    name: "Scroll Element into View",
+    description: "Allows the MCP server to scroll a snapshot element into view by uid"
   }
 ];
 
@@ -257,6 +267,8 @@ export const COMMAND_TO_TOOL_ID: Record<ServerMessageRequest["cmd"], string> = {
   "type-at": "type-at",
   "hover-at": "hover-at",
   "scroll-at": "scroll-at",
+  "scroll-to": "scroll-to",
+  "scroll-into-view": "scroll-into-view",
 };
 
 // Commands that actively control a page (navigation, input, scripting, page
@@ -294,6 +306,8 @@ export const AUTOMATION_COMMANDS: ReadonlySet<string> = new Set<string>([
   "type-at",
   "hover-at",
   "scroll-at",
+  "scroll-to",
+  "scroll-into-view",
 ]);
 
 /**

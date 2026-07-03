@@ -63,6 +63,13 @@ describe("BrowserAPI coordinate tools over the broker", () => {
     const port = server.getPort();
     ext = await startMockExtension(port, (req) => {
       lastReq = req;
+      if (req.cmd === "scroll-to" || req.cmd === "scroll-into-view") {
+        return {
+          resource: "action-result",
+          correlationId: req.correlationId,
+          ok: true,
+        };
+      }
       return {
         resource: "point-action-result",
         correlationId: req.correlationId,
@@ -120,6 +127,17 @@ describe("BrowserAPI coordinate tools over the broker", () => {
     await api.scrollAt(2, 30, 40, { dx: 0, dy: 250 });
     expect((lastReq as any).cmd).toBe("scroll-at");
     expect((lastReq as any).dy).toBe(250);
+  });
+
+  it("forwards scroll-to and scroll-into-view", async () => {
+    const r1 = await api.scrollTo(2, 0, 900);
+    expect((lastReq as any).cmd).toBe("scroll-to");
+    expect((lastReq as any).y).toBe(900);
+    expect(r1.ok).toBe(true);
+    const r2 = await api.scrollIntoView(2, "e7");
+    expect((lastReq as any).cmd).toBe("scroll-into-view");
+    expect((lastReq as any).uid).toBe("e7");
+    expect(r2.ok).toBe(true);
   });
 });
 
