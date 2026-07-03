@@ -154,4 +154,71 @@ describe("performPointAction (chrome)", () => {
       expect(res.ok).toBe(false);
     });
   });
+
+  describe("scroll-at (Task 5)", () => {
+    function stubPoint(el: Element | null) {
+      (document as any).elementFromPoint = jest.fn(() => el);
+    }
+
+    it("scrolls the nearest scrollable ANCESTOR, not the window", () => {
+      document.body.innerHTML = `
+        <div id="panel" style="overflow-y: scroll">
+          <div id="inner"><span id="leaf">row</span></div>
+        </div>`;
+      const panel = document.getElementById("panel")!;
+      const leaf = document.getElementById("leaf")!;
+      // jsdom reports 0 sizes; force a scrollable geometry on the panel.
+      Object.defineProperty(panel, "scrollHeight", { value: 500, configurable: true });
+      Object.defineProperty(panel, "clientHeight", { value: 200, configurable: true });
+      (panel as any).scrollBy = jest.fn();
+      (window as any).scrollBy = jest.fn();
+      stubPoint(leaf);
+
+      const res = performPointAction(document, { action: "scroll-at", x: 5, y: 5, dy: 120 });
+
+      expect((panel as any).scrollBy).toHaveBeenCalledWith(0, 120);
+      expect((window as any).scrollBy).not.toHaveBeenCalled();
+      expect(res.ok).toBe(true);
+      expect(res.element!.id).toBe("panel");
+    });
+
+    it("falls back to window.scrollBy when no ancestor is scrollable", () => {
+      document.body.innerHTML = `<div id="plain">x</div>`;
+      const el = document.getElementById("plain")!;
+      (window as any).scrollBy = jest.fn();
+      stubPoint(el);
+
+      const res = performPointAction(document, { action: "scroll-at", x: 1, y: 1, dy: 300 });
+
+      expect((window as any).scrollBy).toHaveBeenCalledWith(0, 300);
+      expect(res.ok).toBe(true);
+    });
+
+    it("defaults dy to the container's clientHeight when dy is omitted", () => {
+      document.body.innerHTML = `<div id="panel" style="overflow-y: scroll"><span id="leaf">row</span></div>`;
+      const panel = document.getElementById("panel")!;
+      const leaf = document.getElementById("leaf")!;
+      Object.defineProperty(panel, "scrollHeight", { value: 900, configurable: true });
+      Object.defineProperty(panel, "clientHeight", { value: 300, configurable: true });
+      (panel as any).scrollBy = jest.fn();
+      (window as any).scrollBy = jest.fn();
+      stubPoint(leaf);
+
+      const res = performPointAction(document, { action: "scroll-at", x: 2, y: 2 });
+
+      // dx defaults to 0; dy defaults to the container's clientHeight (300).
+      expect((panel as any).scrollBy).toHaveBeenCalledWith(0, 300);
+      expect((window as any).scrollBy).not.toHaveBeenCalled();
+      expect(res.ok).toBe(true);
+      expect(res.element!.id).toBe("panel");
+    });
+
+    it("returns ok:false when the point hits nothing", () => {
+      stubPoint(null);
+      const res = performPointAction(document, { action: "scroll-at", x: 0, y: 0 });
+      expect(res.ok).toBe(false);
+      expect(res.error).toMatch(/No element at point/);
+      expect(res.element).toBeUndefined();
+    });
+  });
 });

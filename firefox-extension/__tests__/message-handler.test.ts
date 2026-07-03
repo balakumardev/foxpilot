@@ -2646,5 +2646,31 @@ describe("MessageHandler", () => {
         element: { tag: "div", classes: [], rect: { x: 0, y: 0, w: 0, h: 0 }, editable: false },
       });
     });
+
+    it("scroll-at injects performPointAction with the scroll-at args and replies point-action-result", async () => {
+      (browser.tabs.executeScript as jest.Mock).mockResolvedValue([
+        { ok: true, element: { tag: "div", id: "panel", classes: [], rect: { x: 0, y: 0, w: 0, h: 0 }, editable: false } },
+      ]);
+
+      await messageHandler.handleDecodedMessage({
+        cmd: "scroll-at",
+        tabId: 9,
+        x: 5,
+        y: 6,
+        dx: 0,
+        dy: 250,
+        correlationId: "fs",
+      } as ServerMessageRequest);
+
+      const code = (browser.tabs.executeScript as jest.Mock).mock.calls[0][1].code;
+      expect(code).toContain('"action":"scroll-at"');
+      expect(code).toContain('"dy":250');
+      expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+        resource: "point-action-result",
+        correlationId: "fs",
+        ok: true,
+        element: { tag: "div", id: "panel", classes: [], rect: { x: 0, y: 0, w: 0, h: 0 }, editable: false },
+      });
+    });
   });
 });

@@ -669,6 +669,22 @@ mcpServer.tool(
 );
 
 mcpServer.tool(
+  "scroll-at",
+  "Scroll the NEAREST SCROLLABLE CONTAINER under viewport pixel coordinates {x,y} by (dx, dy) pixels — this scrolls an inner panel (e.g. a chat message list) rather than the whole window, which press-key PageUp cannot do. Omit dx/dy to scroll one container-viewport down. Falls back to the window when nothing under the point scrolls. Returns a descriptor of the container that was scrolled.",
+  {
+    tabId: z.number(),
+    x: z.number(),
+    y: z.number(),
+    dx: z.number().optional(),
+    dy: z.number().optional(),
+  },
+  async ({ tabId, x, y, dx, dy }) => {
+    const result = await browserApi.scrollAt(tabId, x, y, { dx, dy });
+    return formatPointResult("Scrolled", tabId, x, y, result);
+  }
+);
+
+mcpServer.tool(
   "upload-file",
   "Upload a local file into a file <input> on a page. Pass the 'uid' of the file input from a recent take-snapshot and the absolute 'filePath' of the file on the machine running the MCP server. The server reads the file itself and injects it into the input (browsers forbid setting a file input's path from script, so this is the reliable way). Works for arbitrary local paths. Max file size 25 MB.",
   { tabId: z.number(), uid: z.string(), filePath: z.string() },

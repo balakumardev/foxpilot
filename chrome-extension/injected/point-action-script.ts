@@ -37,6 +37,7 @@ export function performPointAction(
       }
     | { action: "type-at"; x: number; y: number; text: string; submit?: boolean }
     | { action: "hover-at"; x: number; y: number }
+    | { action: "scroll-at"; x: number; y: number; dx?: number; dy?: number }
 ): { ok: boolean; error?: string; element?: PointElementDescriptor } {
   try {
     const win = doc.defaultView as (Window & typeof globalThis) | null;
@@ -271,6 +272,62 @@ export function performPointAction(
         })
       );
       el.dispatchEvent(mouseEvt("mousemove", 0));
+      return { ok: true, element: describeElement(el) };
+    }
+
+    if (args.action === "scroll-at") {
+      const el = elementAt(args.x, args.y);
+      if (!el) {
+        return offPoint(args.x, args.y);
+      }
+      function isScrollable(node: Element): boolean {
+        if (!win || typeof win.getComputedStyle !== "function") {
+          return false;
+        }
+        let oy = "";
+        let ox = "";
+        try {
+          const cs = win.getComputedStyle(node);
+          oy = cs.overflowY || "";
+          ox = cs.overflowX || "";
+        } catch (e) {
+          return false;
+        }
+        const canY =
+          (oy === "auto" || oy === "scroll") &&
+          node.scrollHeight > node.clientHeight;
+        const canX =
+          (ox === "auto" || ox === "scroll") &&
+          node.scrollWidth > node.clientWidth;
+        return canY || canX;
+      }
+      let container: Element | null = el;
+      while (container && !isScrollable(container)) {
+        container = container.parentElement;
+      }
+      const dx = typeof args.dx === "number" ? args.dx : 0;
+      const viewportH = win ? win.innerHeight || 0 : 0;
+      if (container) {
+        const dy =
+          typeof args.dy === "number"
+            ? args.dy
+            : container.clientHeight || viewportH || 600;
+        const sb = (container as {
+          scrollBy?: (x: number, y: number) => void;
+        }).scrollBy;
+        if (typeof sb === "function") {
+          sb.call(container, dx, dy);
+        } else {
+          (container as { scrollTop: number }).scrollTop += dy;
+          (container as { scrollLeft: number }).scrollLeft += dx;
+        }
+        return { ok: true, element: describeElement(container) };
+      }
+      // No scrollable ancestor — scroll the window.
+      const dyWin = typeof args.dy === "number" ? args.dy : viewportH || 600;
+      if (win && typeof win.scrollBy === "function") {
+        win.scrollBy(dx, dyWin);
+      }
       return { ok: true, element: describeElement(el) };
     }
 

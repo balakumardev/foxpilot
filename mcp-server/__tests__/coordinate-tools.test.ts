@@ -115,6 +115,12 @@ describe("BrowserAPI coordinate tools over the broker", () => {
     expect((lastReq as any).x).toBe(11);
     expect((lastReq as any).y).toBe(22);
   });
+
+  it("forwards scroll-at deltas", async () => {
+    await api.scrollAt(2, 30, 40, { dx: 0, dy: 250 });
+    expect((lastReq as any).cmd).toBe("scroll-at");
+    expect((lastReq as any).dy).toBe(250);
+  });
 });
 
 // Rider #3: exercise the pure formatter directly (the wire test above only

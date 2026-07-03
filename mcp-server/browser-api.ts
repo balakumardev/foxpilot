@@ -578,6 +578,25 @@ export class BrowserAPI {
     });
   }
 
+  async scrollAt(
+    tabId: number,
+    x: number,
+    y: number,
+    opts?: { dx?: number; dy?: number }
+  ): Promise<PointActionResultExtensionMessage> {
+    // Returned unchanged (NOT thrown on ok:false) so the tool can report the
+    // scrolled container's descriptor (or the element at the point when it falls
+    // back to the window), and surface an off-point miss.
+    return await this.sendTool<PointActionResultExtensionMessage>({
+      cmd: "scroll-at",
+      tabId,
+      x,
+      y,
+      dx: opts?.dx,
+      dy: opts?.dy,
+    });
+  }
+
   async hoverElement(tabId: number, uid: string): Promise<void> {
     const message = await this.sendTool<ActionResultExtensionMessage>({
       cmd: "hover-element",

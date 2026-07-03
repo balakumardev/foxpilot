@@ -359,6 +359,15 @@ export class MessageHandler {
           y: req.y,
         });
         break;
+      case "scroll-at":
+        await this.runPointAction(req.correlationId, req.tabId, {
+          action: "scroll-at",
+          x: req.x,
+          y: req.y,
+          dx: req.dx,
+          dy: req.dy,
+        });
+        break;
       case "resize-window":
         await this.resizeWindow(
           req.correlationId,

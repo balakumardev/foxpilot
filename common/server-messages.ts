@@ -379,6 +379,22 @@ export interface HoverAtServerMessage extends ServerMessageBase {
   y: number;
 }
 
+// Scroll the NEAREST SCROLLABLE ANCESTOR under viewport CSS-pixel coordinates
+// {x,y} by (dx, dy): elementFromPoint → walk ancestors for the first container
+// whose computed overflow is auto/scroll AND whose scroll size exceeds its
+// client size → scrollBy(dx, dy). Falls back to scrolling the window when
+// nothing under the point scrolls. Fixes the inner-container scroll gap that
+// press-key PageUp (window-only) cannot reach. Omit dx/dy to scroll one
+// container-viewport down. Runs covertly in the isolated content-script world.
+export interface ScrollAtServerMessage extends ServerMessageBase {
+  cmd: "scroll-at";
+  tabId: number;
+  x: number;
+  y: number;
+  dx?: number;
+  dy?: number;
+}
+
 export type ServerMessage =
   | OpenTabServerMessage
   | CloseTabsServerMessage
@@ -417,6 +433,7 @@ export type ServerMessage =
   | CaptureResponseBodiesServerMessage
   | ClickAtServerMessage
   | TypeAtServerMessage
-  | HoverAtServerMessage;
+  | HoverAtServerMessage
+  | ScrollAtServerMessage;
 
 export type ServerMessageRequest = ServerMessage & { correlationId: string };

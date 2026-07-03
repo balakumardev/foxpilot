@@ -504,5 +504,33 @@ describe("MessageHandler (chrome) — foreground-tab preservation", () => {
         element: { tag: "div", id: "menu", classes: [], rect: { x: 0, y: 0, w: 0, h: 0 }, editable: false },
       });
     });
+
+    it("scroll-at forwards coords/deltas to the isolated point action and returns point-action-result with the container descriptor", async () => {
+      (browser.tabs.sendMessage as jest.Mock).mockResolvedValue({
+        ok: true,
+        element: { tag: "div", id: "panel", classes: [], rect: { x: 0, y: 0, w: 0, h: 0 }, editable: false },
+      });
+
+      await messageHandler.handleDecodedMessage({
+        cmd: "scroll-at",
+        tabId: 8,
+        x: 5,
+        y: 6,
+        dx: 0,
+        dy: 250,
+        correlationId: "sx",
+      } as ServerMessageRequest);
+
+      expect(browser.tabs.sendMessage).toHaveBeenCalledWith(8, {
+        type: "performPointAction",
+        args: { action: "scroll-at", x: 5, y: 6, dx: 0, dy: 250 },
+      });
+      expect(transport.sendResourceToServer).toHaveBeenCalledWith({
+        resource: "point-action-result",
+        correlationId: "sx",
+        ok: true,
+        element: { tag: "div", id: "panel", classes: [], rect: { x: 0, y: 0, w: 0, h: 0 }, editable: false },
+      });
+    });
   });
 });

@@ -209,6 +209,11 @@ export const AVAILABLE_TOOLS: ToolInfo[] = [
     id: "hover-at",
     name: "Hover at Coordinates",
     description: "Allows the MCP server to hover the pointer at pixel coordinates on a page (reveals hover menus/tooltips; synthetic, covert)"
+  },
+  {
+    id: "scroll-at",
+    name: "Scroll at Coordinates",
+    description: "Allows the MCP server to scroll the nearest scrollable container under pixel coordinates (fixes inner-container scroll; synthetic, covert)"
   }
 ];
 
@@ -252,6 +257,7 @@ export const COMMAND_TO_TOOL_ID: Record<ServerMessageRequest["cmd"], string> = {
   "click-at": "click-at",
   "type-at": "type-at",
   "hover-at": "hover-at",
+  "scroll-at": "scroll-at",
 };
 
 // Commands that actively control a page (navigation, input, scripting, page
@@ -289,6 +295,7 @@ export const AUTOMATION_COMMANDS: ReadonlySet<string> = new Set<string>([
   "click-at",
   "type-at",
   "hover-at",
+  "scroll-at",
 ]);
 
 /**
