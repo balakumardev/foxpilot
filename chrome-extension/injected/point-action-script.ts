@@ -36,6 +36,7 @@ export function performPointAction(
         button?: "left" | "middle" | "right";
       }
     | { action: "type-at"; x: number; y: number; text: string; submit?: boolean }
+    | { action: "hover-at"; x: number; y: number }
 ): { ok: boolean; error?: string; element?: PointElementDescriptor } {
   try {
     const win = doc.defaultView as (Window & typeof globalThis) | null;
@@ -253,6 +254,23 @@ export function performPointAction(
           }
         }
       }
+      return { ok: true, element: describeElement(el) };
+    }
+
+    if (args.action === "hover-at") {
+      const el = elementAt(args.x, args.y);
+      if (!el) {
+        return offPoint(args.x, args.y);
+      }
+      el.dispatchEvent(mouseEvt("mouseover", 0));
+      el.dispatchEvent(
+        new MouseEvent("mouseenter", {
+          bubbles: false,
+          cancelable: true,
+          view: win as Window,
+        })
+      );
+      el.dispatchEvent(mouseEvt("mousemove", 0));
       return { ok: true, element: describeElement(el) };
     }
 

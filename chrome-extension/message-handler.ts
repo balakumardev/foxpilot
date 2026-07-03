@@ -343,6 +343,13 @@ export class MessageHandler {
           submit: req.submit,
         });
         break;
+      case "hover-at":
+        await this.runPointAction(req.correlationId, req.tabId, {
+          action: "hover-at",
+          x: req.x,
+          y: req.y,
+        });
+        break;
       case "resize-window":
         await this.resizeWindow(
           req.correlationId,

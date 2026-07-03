@@ -108,6 +108,13 @@ describe("BrowserAPI coordinate tools over the broker", () => {
     expect((lastReq as any).text).toBe("hello");
     expect((lastReq as any).submit).toBe(true);
   });
+
+  it("forwards hover-at coords", async () => {
+    await api.hoverAt(2, 11, 22);
+    expect((lastReq as any).cmd).toBe("hover-at");
+    expect((lastReq as any).x).toBe(11);
+    expect((lastReq as any).y).toBe(22);
+  });
 });
 
 // Rider #3: exercise the pure formatter directly (the wire test above only

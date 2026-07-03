@@ -204,6 +204,11 @@ export const AVAILABLE_TOOLS: ToolInfo[] = [
     id: "type-at",
     name: "Type at Coordinates",
     description: "Allows the MCP server to type text into the element at pixel coordinates on a page (synthetic, covert)"
+  },
+  {
+    id: "hover-at",
+    name: "Hover at Coordinates",
+    description: "Allows the MCP server to hover the pointer at pixel coordinates on a page (reveals hover menus/tooltips; synthetic, covert)"
   }
 ];
 
@@ -246,6 +251,7 @@ export const COMMAND_TO_TOOL_ID: Record<ServerMessageRequest["cmd"], string> = {
   "capture-response-bodies": "capture-response-bodies",
   "click-at": "click-at",
   "type-at": "type-at",
+  "hover-at": "hover-at",
 };
 
 // Commands that actively control a page (navigation, input, scripting, page
@@ -282,6 +288,7 @@ export const AUTOMATION_COMMANDS: ReadonlySet<string> = new Set<string>([
   "capture-response-bodies",
   "click-at",
   "type-at",
+  "hover-at",
 ]);
 
 /**

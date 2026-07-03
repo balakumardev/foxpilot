@@ -126,4 +126,32 @@ describe("performPointAction (chrome)", () => {
       expect(res.element).toBeUndefined();
     });
   });
+
+  describe("hover-at (Task 4)", () => {
+    it("dispatches mouseover/mouseenter/mousemove on the element under the point", () => {
+      document.body.innerHTML = `<div id="menu">Menu</div>`;
+      const el = document.getElementById("menu")!;
+      (document as any).elementFromPoint = jest.fn(() => el);
+      const over = jest.fn();
+      const enter = jest.fn();
+      const move = jest.fn();
+      el.addEventListener("mouseover", over);
+      el.addEventListener("mouseenter", enter);
+      el.addEventListener("mousemove", move);
+
+      const res = performPointAction(document, { action: "hover-at", x: 7, y: 8 });
+
+      expect(over).toHaveBeenCalled();
+      expect(enter).toHaveBeenCalled();
+      expect(move).toHaveBeenCalled();
+      expect(res.ok).toBe(true);
+      expect(res.element!.id).toBe("menu");
+    });
+
+    it("returns ok:false when the point hits nothing", () => {
+      (document as any).elementFromPoint = jest.fn(() => null);
+      const res = performPointAction(document, { action: "hover-at", x: 0, y: 0 });
+      expect(res.ok).toBe(false);
+    });
+  });
 });

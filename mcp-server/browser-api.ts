@@ -563,6 +563,21 @@ export class BrowserAPI {
     });
   }
 
+  async hoverAt(
+    tabId: number,
+    x: number,
+    y: number
+  ): Promise<PointActionResultExtensionMessage> {
+    // Returned unchanged (NOT thrown on ok:false) so the tool can report the
+    // element descriptor even when the point missed.
+    return await this.sendTool<PointActionResultExtensionMessage>({
+      cmd: "hover-at",
+      tabId,
+      x,
+      y,
+    });
+  }
+
   async hoverElement(tabId: number, uid: string): Promise<void> {
     const message = await this.sendTool<ActionResultExtensionMessage>({
       cmd: "hover-element",

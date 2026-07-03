@@ -2621,5 +2621,30 @@ describe("MessageHandler", () => {
         element: { tag: "textarea", classes: [], rect: { x: 0, y: 0, w: 0, h: 0 }, editable: true },
       });
     });
+
+    it("hover-at injects performPointAction with the hover-at args and replies point-action-result", async () => {
+      (browser.tabs.executeScript as jest.Mock).mockResolvedValue([
+        { ok: true, element: { tag: "div", classes: [], rect: { x: 0, y: 0, w: 0, h: 0 }, editable: false } },
+      ]);
+
+      await messageHandler.handleDecodedMessage({
+        cmd: "hover-at",
+        tabId: 9,
+        x: 7,
+        y: 8,
+        correlationId: "fh",
+      } as ServerMessageRequest);
+
+      const code = (browser.tabs.executeScript as jest.Mock).mock.calls[0][1].code;
+      expect(code).toContain('"action":"hover-at"');
+      expect(code).toContain('"x":7');
+      expect(code).toContain('"y":8');
+      expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+        resource: "point-action-result",
+        correlationId: "fh",
+        ok: true,
+        element: { tag: "div", classes: [], rect: { x: 0, y: 0, w: 0, h: 0 }, editable: false },
+      });
+    });
   });
 });

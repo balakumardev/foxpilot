@@ -368,6 +368,17 @@ export interface TypeAtServerMessage extends ServerMessageBase {
   submit?: boolean;
 }
 
+// Move a synthetic pointer to the element at viewport CSS-pixel coordinates
+// {x,y}: elementFromPoint → dispatch mouseover/mouseenter/mousemove on that
+// element to reveal hover-only UI (dropdown menus, tooltips). Runs covertly in
+// the isolated content-script world. Reports the element under the point.
+export interface HoverAtServerMessage extends ServerMessageBase {
+  cmd: "hover-at";
+  tabId: number;
+  x: number;
+  y: number;
+}
+
 export type ServerMessage =
   | OpenTabServerMessage
   | CloseTabsServerMessage
@@ -405,6 +416,7 @@ export type ServerMessage =
   | StreamCloseServerMessage
   | CaptureResponseBodiesServerMessage
   | ClickAtServerMessage
-  | TypeAtServerMessage;
+  | TypeAtServerMessage
+  | HoverAtServerMessage;
 
 export type ServerMessageRequest = ServerMessage & { correlationId: string };

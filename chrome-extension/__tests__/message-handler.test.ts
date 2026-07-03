@@ -478,5 +478,31 @@ describe("MessageHandler (chrome) — foreground-tab preservation", () => {
         element: { tag: "textarea", id: "msg", classes: [], rect: { x: 0, y: 0, w: 0, h: 0 }, editable: true },
       });
     });
+
+    it("hover-at forwards coords to the isolated point action and returns point-action-result with the descriptor", async () => {
+      (browser.tabs.sendMessage as jest.Mock).mockResolvedValue({
+        ok: true,
+        element: { tag: "div", id: "menu", classes: [], rect: { x: 0, y: 0, w: 0, h: 0 }, editable: false },
+      });
+
+      await messageHandler.handleDecodedMessage({
+        cmd: "hover-at",
+        tabId: 8,
+        x: 7,
+        y: 8,
+        correlationId: "hx",
+      } as ServerMessageRequest);
+
+      expect(browser.tabs.sendMessage).toHaveBeenCalledWith(8, {
+        type: "performPointAction",
+        args: { action: "hover-at", x: 7, y: 8 },
+      });
+      expect(transport.sendResourceToServer).toHaveBeenCalledWith({
+        resource: "point-action-result",
+        correlationId: "hx",
+        ok: true,
+        element: { tag: "div", id: "menu", classes: [], rect: { x: 0, y: 0, w: 0, h: 0 }, editable: false },
+      });
+    });
   });
 });

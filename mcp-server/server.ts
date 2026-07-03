@@ -659,6 +659,16 @@ mcpServer.tool(
 );
 
 mcpServer.tool(
+  "hover-at",
+  "Move the pointer to viewport pixel coordinates {x,y} to reveal hover-only UI (dropdown menus, tooltips) before a follow-up snapshot/click. Runs covertly in the isolated world. Returns a descriptor of the element under the point.",
+  { tabId: z.number(), x: z.number(), y: z.number() },
+  async ({ tabId, x, y }) => {
+    const result = await browserApi.hoverAt(tabId, x, y);
+    return formatPointResult("Hovered", tabId, x, y, result);
+  }
+);
+
+mcpServer.tool(
   "upload-file",
   "Upload a local file into a file <input> on a page. Pass the 'uid' of the file input from a recent take-snapshot and the absolute 'filePath' of the file on the machine running the MCP server. The server reads the file itself and injects it into the input (browsers forbid setting a file input's path from script, so this is the reliable way). Works for arbitrary local paths. Max file size 25 MB.",
   { tabId: z.number(), uid: z.string(), filePath: z.string() },
