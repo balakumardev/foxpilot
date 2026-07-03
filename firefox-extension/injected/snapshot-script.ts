@@ -354,11 +354,43 @@ export function buildSnapshot(
     return true;
   }
 
+  // Region scoping: restrict collection to the subtree of the first element
+  // matching rootSelector. A miss is an explicit, recoverable error. Name
+  // resolution (getElementById/querySelector for labels) still uses `doc`.
+  let root: ParentNode = doc;
+  if (
+    typeof options.rootSelector === "string" &&
+    options.rootSelector.length > 0
+  ) {
+    let scoped: Element | null = null;
+    try {
+      scoped = doc.querySelector(options.rootSelector);
+    } catch (e) {
+      return {
+        tree: "",
+        isTruncated: false,
+        total: 0,
+        hasMore: false,
+        error: "Invalid rootSelector: " + options.rootSelector,
+      };
+    }
+    if (!scoped) {
+      return {
+        tree: "",
+        isTruncated: false,
+        total: 0,
+        hasMore: false,
+        error: "rootSelector matched no element: " + options.rootSelector,
+      };
+    }
+    root = scoped;
+  }
+
   let candidates: Element[];
   if (selectorMode) {
     try {
       candidates = Array.prototype.slice.call(
-        doc.querySelectorAll(options.selector as string)
+        root.querySelectorAll(options.selector as string)
       );
     } catch (e) {
       return {
@@ -372,10 +404,10 @@ export function buildSnapshot(
   } else if (textMode) {
     // Text query mode with no selector scans all elements; the text filter and
     // leaf-preference below narrow it down.
-    candidates = Array.prototype.slice.call(doc.querySelectorAll("*"));
+    candidates = Array.prototype.slice.call(root.querySelectorAll("*"));
   } else {
     candidates = Array.prototype.slice.call(
-      doc.querySelectorAll(baseSelectorString)
+      root.querySelectorAll(baseSelectorString)
     );
   }
   if (textMode) {
@@ -447,7 +479,7 @@ export function buildSnapshot(
       return parts.join(" ");
     }
 
-    const allEls = doc.querySelectorAll("*");
+    const allEls = root.querySelectorAll("*");
     for (let i = 0; i < allEls.length && added < MAX_CLICKABLES; i++) {
       const el = allEls[i];
 

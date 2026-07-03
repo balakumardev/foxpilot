@@ -96,4 +96,32 @@ describe("buildSnapshot (chrome)", () => {
       expect(tree).not.toContain("not a button");
     });
   });
+
+  describe("rootSelector scoping (Task 7)", () => {
+    it("collects only within the matched subtree, excluding a sibling sidebar", () => {
+      document.body.innerHTML = `
+        <nav id="sidebar"><a href="/1">Side 1</a><a href="/2">Side 2</a></nav>
+        <main id="main-panel"><button>Main Action</button></main>
+      `;
+      const { tree } = buildSnapshot(document, {
+        verbose: false,
+        maxLength: 25000,
+        rootSelector: "#main-panel",
+      });
+      expect(tree).toContain('button "Main Action"');
+      expect(tree).not.toContain("Side 1");
+      expect(tree).not.toContain("Side 2");
+    });
+
+    it("returns an error when rootSelector matches nothing", () => {
+      document.body.innerHTML = `<button>X</button>`;
+      const res = buildSnapshot(document, {
+        verbose: false,
+        maxLength: 25000,
+        rootSelector: "#does-not-exist",
+      });
+      expect(res.error).toMatch(/rootSelector matched no element/);
+      expect(res.tree).toBe("");
+    });
+  });
 });

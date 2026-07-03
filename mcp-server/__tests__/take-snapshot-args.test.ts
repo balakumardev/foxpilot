@@ -62,6 +62,18 @@ describe("BrowserAPI.takeSnapshot query args over the broker", () => {
     const port = server.getPort();
     ext = await startMockExtension(port, (req) => {
       lastReq = req;
+      if ((req as any).rootSelector === "#missing") {
+        return {
+          resource: "snapshot",
+          correlationId: req.correlationId,
+          tabId: (req as any).tabId,
+          snapshot: "",
+          isTruncated: false,
+          total: 0,
+          hasMore: false,
+          error: "rootSelector matched no element: #missing",
+        };
+      }
       return {
         resource: "snapshot",
         correlationId: req.correlationId,
@@ -94,5 +106,11 @@ describe("BrowserAPI.takeSnapshot query args over the broker", () => {
     expect(result.total).toBe(1);
     expect(result.hasMore).toBe(false);
     expect(result.snapshot).toContain("uid=e1");
+  });
+
+  it("surfaces a rootSelector miss as an error field", async () => {
+    const result = await api.takeSnapshot(9, { rootSelector: "#missing" });
+    expect((lastReq as any).rootSelector).toBe("#missing");
+    expect(result.error).toMatch(/rootSelector matched no element/);
   });
 });
