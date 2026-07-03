@@ -1352,6 +1352,7 @@ export class MessageHandler {
         url: req.url,
         domain: req.domain,
         name: req.name,
+        names: req.names,
       });
       await this.client.sendResourceToServer({
         resource: "cookies",

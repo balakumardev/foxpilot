@@ -259,6 +259,7 @@ export async function getCookies(opts: {
   url?: string;
   domain?: string;
   name?: string;
+  names?: string[];
 }): Promise<CookieRecord[]> {
   const query: Record<string, string> = {};
   if (opts.url !== undefined) {
@@ -267,11 +268,23 @@ export async function getCookies(opts: {
   if (opts.domain !== undefined) {
     query.domain = opts.domain;
   }
-  if (opts.name !== undefined) {
+  // When a multi-name filter is present, do NOT constrain getAll by a single
+  // name — fetch all cookies in the url/domain scope and filter in-memory.
+  // A lone singular `name` still narrows the query for the back-compat path.
+  const multiName = !!(opts.names && opts.names.length > 0);
+  if (opts.name !== undefined && !multiName) {
     query.name = opts.name;
   }
   const raw = await (browser as any).cookies.getAll(query);
-  return (raw ?? []).map(mapChromeCookie);
+  let mapped: CookieRecord[] = (raw ?? []).map(mapChromeCookie);
+  if (multiName) {
+    const wanted = new Set(opts.names);
+    if (opts.name !== undefined) {
+      wanted.add(opts.name); // union singular + plural
+    }
+    mapped = mapped.filter((c) => wanted.has(c.name));
+  }
+  return mapped;
 }
 
 // ---------------------------------------------------------------------------

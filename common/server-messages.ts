@@ -247,6 +247,8 @@ export interface GetCookiesServerMessage extends ServerMessageBase {
   url?: string;
   domain?: string;
   name?: string;
+  // Filter to cookies whose name is in this set (union with `name` if both).
+  names?: string[];
 }
 
 // A privileged one-shot fetch executed from the extension background context.

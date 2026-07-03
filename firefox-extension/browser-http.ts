@@ -176,6 +176,7 @@ export async function getCookies(opts: {
   url?: string;
   domain?: string;
   name?: string;
+  names?: string[];
 }): Promise<CookieRecord[]> {
   const details: Record<string, string> = {};
   if (opts.url !== undefined) {
@@ -184,11 +185,20 @@ export async function getCookies(opts: {
   if (opts.domain !== undefined) {
     details.domain = opts.domain;
   }
-  if (opts.name !== undefined) {
+  const multiName = !!(opts.names && opts.names.length > 0);
+  if (opts.name !== undefined && !multiName) {
     details.name = opts.name;
   }
   const cookies = await (browser.cookies as any).getAll(details);
-  return ((cookies as any[]) ?? []).map(mapFirefoxCookie);
+  let mapped: CookieRecord[] = ((cookies as any[]) ?? []).map(mapFirefoxCookie);
+  if (multiName) {
+    const wanted = new Set(opts.names);
+    if (opts.name !== undefined) {
+      wanted.add(opts.name);
+    }
+    mapped = mapped.filter((c) => wanted.has(c.name));
+  }
+  return mapped;
 }
 
 /** Assemble a `name=value; name=value` Cookie header from the jar for a URL. */

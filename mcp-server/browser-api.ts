@@ -728,6 +728,7 @@ export class BrowserAPI {
     url?: string;
     domain?: string;
     name?: string;
+    names?: string[];
   }): Promise<CookiesExtensionMessage> {
     // Reads the browser's cookie jar via the extension background (sees httpOnly
     // cookies document.cookie cannot). Does NOT throw on failure — returns the

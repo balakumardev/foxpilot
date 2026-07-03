@@ -749,14 +749,15 @@ mcpServer.tool(
 
 mcpServer.tool(
   "get-cookies",
-  "Read the browser's cookie jar INCLUDING httpOnly cookies (which document.cookie cannot see). Runs in the extension background, so the visited page's CSP does not apply. Narrow the results with 'url', 'domain', and/or 'name'; omit all three to return every cookie the extension is permitted to see. Requires the user to enable Automation Mode and grant host permission for the domain. Note: cookie values are sensitive credentials — handle them with care.",
+  "Read the browser's cookie jar INCLUDING httpOnly cookies (which document.cookie cannot see). Runs in the extension background, so the visited page's CSP does not apply. Narrow with 'url', 'domain', a single 'name', and/or 'names' (an array of cookie names — the union is returned); omit all to return every cookie the extension is permitted to see. Requires the user to enable Automation Mode and grant host permission for the domain. Note: cookie values are sensitive credentials — handle them with care.",
   {
     url: z.string().optional(),
     domain: z.string().optional(),
     name: z.string().optional(),
+    names: z.array(z.string()).optional(),
   },
-  async ({ url, domain, name }) => {
-    const result = await browserApi.getCookies({ url, domain, name });
+  async ({ url, domain, name, names }) => {
+    const result = await browserApi.getCookies({ url, domain, name, names });
     if (!result.ok) {
       // API unavailable or host permission not granted — surface a recoverable,
       // non-throwing error so the model can prompt the user to grant access.

@@ -265,6 +265,20 @@ describe("getCookies", () => {
     expect(cookies[0].session).toBe(false);
     expect(cookies[0].value).toBe("abc");
   });
+
+  it("filters getAll results to `names[]` (httpOnly included), querying only by url", async () => {
+    (browser.cookies.getAll as jest.Mock).mockResolvedValue([
+      { name: "sid", value: "s", domain: "x.com", path: "/", secure: true, httpOnly: true, expirationDate: 1 },
+      { name: "csrf", value: "c", domain: "x.com", path: "/", secure: true, httpOnly: false, expirationDate: 1 },
+      { name: "theme", value: "dark", domain: "x.com", path: "/", secure: false, httpOnly: false },
+    ]);
+
+    const cookies = await getCookies({ url: "https://x.com", names: ["sid", "csrf"] });
+
+    expect(browser.cookies.getAll).toHaveBeenCalledWith({ url: "https://x.com" });
+    expect(cookies.map((c) => c.name).sort()).toEqual(["csrf", "sid"]);
+    expect(cookies.find((c) => c.name === "sid")!.httpOnly).toBe(true);
+  });
 });
 
 // ---------------------------------------------------------------------------

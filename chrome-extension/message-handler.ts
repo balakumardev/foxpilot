@@ -351,6 +351,7 @@ export class MessageHandler {
           url: req.url,
           domain: req.domain,
           name: req.name,
+          names: req.names,
         });
         break;
       case "browser-fetch":
@@ -1126,7 +1127,7 @@ export class MessageHandler {
 
   private async getCookiesForServer(
     correlationId: string,
-    opts: { url?: string; domain?: string; name?: string }
+    opts: { url?: string; domain?: string; name?: string; names?: string[] }
   ): Promise<void> {
     const gateUrl =
       opts.url ?? (opts.domain ? `https://${opts.domain}/` : undefined);

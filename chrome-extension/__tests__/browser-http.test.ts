@@ -204,6 +204,23 @@ describe("getCookies", () => {
     expect(cookies[0].session).toBe(false);
     expect(cookies[1].session).toBe(true);
   });
+
+  it("filters getAll results to `names[]` (httpOnly included) without constraining the query by name", async () => {
+    (browser as any).cookies.getAll.mockResolvedValue([
+      { name: "sid", value: "s", domain: "x.com", path: "/", secure: true, httpOnly: true, expirationDate: 1 },
+      { name: "csrf", value: "c", domain: "x.com", path: "/", secure: true, httpOnly: false, expirationDate: 1 },
+      { name: "theme", value: "dark", domain: "x.com", path: "/", secure: false, httpOnly: false },
+    ]);
+
+    const cookies = await getCookies({ url: "https://x.com", names: ["sid", "csrf"] });
+
+    // getAll is queried only by url — NOT by name — so multi-name filtering
+    // happens in-memory.
+    expect((browser as any).cookies.getAll).toHaveBeenCalledWith({ url: "https://x.com" });
+    expect(cookies.map((c) => c.name).sort()).toEqual(["csrf", "sid"]);
+    // httpOnly cookie survived the filter.
+    expect(cookies.find((c) => c.name === "sid")!.httpOnly).toBe(true);
+  });
 });
 
 describe("browserFetch", () => {
