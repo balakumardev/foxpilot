@@ -488,16 +488,16 @@ export class BrowserAPI {
 
   async waitForText(
     tabId: number,
-    text: string,
+    text: string | string[],
     timeoutMs?: number
-  ): Promise<boolean> {
+  ): Promise<{ found: boolean; matched?: string }> {
     const message = await this.sendTool<WaitForTextResultExtensionMessage>({
       cmd: "wait-for-text",
       tabId,
       text,
       timeoutMs,
     });
-    return message.found;
+    return { found: message.found, matched: message.matched };
   }
 
   async clickElement(

@@ -1278,6 +1278,34 @@ describe("MessageHandler", () => {
       });
     });
 
+    it("accepts an array of strings, OR-matches, and returns which matched", async () => {
+      (browser.storage.local.get as jest.Mock).mockResolvedValue({
+        config: automationConfig,
+      });
+      (browser.tabs.get as jest.Mock).mockResolvedValue({
+        id: 123,
+        url: "https://example.com",
+      });
+      // The injected isolated-world probe returns the matched needle (or null).
+      (browser.tabs.executeScript as jest.Mock).mockResolvedValue(["World"]);
+
+      const request: ServerMessageRequest = {
+        cmd: "wait-for-text",
+        tabId: 123,
+        text: ["Hello", "World"],
+        correlationId: "c-arr",
+      };
+
+      await messageHandler.handleDecodedMessage(request);
+
+      expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+        resource: "wait-for-text-result",
+        correlationId: "c-arr",
+        found: true,
+        matched: "World",
+      });
+    });
+
     it("throws when the tab URL domain is in the deny list", async () => {
       (browser.storage.local.get as jest.Mock).mockResolvedValue({
         config: { ...automationConfig, domainDenyList: ["example.com"] },

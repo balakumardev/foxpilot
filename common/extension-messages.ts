@@ -86,6 +86,8 @@ export interface ActiveTabExtensionMessage extends ExtensionMessageBase {
 export interface WaitForTextResultExtensionMessage extends ExtensionMessageBase {
   resource: "wait-for-text-result";
   found: boolean;
+  // Which needle matched (only set when the request supplied an array).
+  matched?: string;
 }
 
 // Shared reply for all input-automation tools (click, hover, fill, fill-form,

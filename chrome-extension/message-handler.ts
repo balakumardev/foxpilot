@@ -1248,7 +1248,7 @@ export class MessageHandler {
   private async waitForText(
     correlationId: string,
     tabId: number,
-    text: string,
+    text: string | string[],
     timeoutMs?: number
   ): Promise<void> {
     const tab = await browser.tabs.get(tabId);
@@ -1257,14 +1257,18 @@ export class MessageHandler {
     }
     const deadline = Date.now() + (timeoutMs ?? 30000);
     let found = false;
+    let matched: string | undefined;
     while (true) {
       const result = await sendMessageToTab(tabId, {
         type: "waitForText",
         text,
-        timeoutMs: 500, // Short timeout per check, we handle the overall deadline
+        timeoutMs: 500, // short per-check; the loop owns the overall deadline
       });
       if (result.found) {
         found = true;
+        if (Array.isArray(text)) {
+          matched = result.matched;
+        }
         break;
       }
       if (Date.now() >= deadline) {
@@ -1276,6 +1280,7 @@ export class MessageHandler {
       resource: "wait-for-text-result",
       correlationId,
       found,
+      ...(matched !== undefined ? { matched } : {}),
     });
   }
 

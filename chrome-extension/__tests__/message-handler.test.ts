@@ -307,4 +307,42 @@ describe("MessageHandler (chrome) — foreground-tab preservation", () => {
       });
     });
   });
+
+  describe("wait-for-text command", () => {
+    const automationConfig = { ...baseConfig, automationMode: true };
+
+    it("OR-matches an array and returns which needle matched", async () => {
+      (browser.storage.local.get as jest.Mock).mockResolvedValue({
+        config: automationConfig,
+      });
+      (browser.tabs.get as jest.Mock).mockResolvedValue({
+        id: 5,
+        url: "https://example.com",
+      });
+      // sendMessageToTab -> content-script probe returns {found, matched}.
+      (browser.tabs.sendMessage as jest.Mock).mockResolvedValue({
+        found: true,
+        matched: "Ready",
+      });
+
+      await messageHandler.handleDecodedMessage({
+        cmd: "wait-for-text",
+        tabId: 5,
+        text: ["Loading", "Ready"],
+        correlationId: "cw",
+      } as ServerMessageRequest);
+
+      expect(browser.tabs.sendMessage).toHaveBeenCalledWith(5, {
+        type: "waitForText",
+        text: ["Loading", "Ready"],
+        timeoutMs: 500,
+      });
+      expect(transport.sendResourceToServer).toHaveBeenCalledWith({
+        resource: "wait-for-text-result",
+        correlationId: "cw",
+        found: true,
+        matched: "Ready",
+      });
+    });
+  });
 });

@@ -167,15 +167,25 @@ if ((window as any).__bcmcpContentScriptLoaded) {
     };
   }
 
-  // Wait for text to appear on the page.
-  async function waitForText(text: string, timeoutMs: number): Promise<boolean> {
+  // Wait for any of the given needles to appear on the page. Returns which one
+  // matched. Runs in the ISOLATED content-script world (CSP-immune).
+  async function waitForText(
+    text: string | string[],
+    timeoutMs: number
+  ): Promise<{ found: boolean; matched?: string }> {
+    const needles = Array.isArray(text) ? text : [text];
     const deadline = Date.now() + timeoutMs;
     while (true) {
-      if (document.body && document.body.innerText && document.body.innerText.includes(text)) {
-        return true;
+      const body = document.body && document.body.innerText;
+      if (body) {
+        for (const n of needles) {
+          if (body.includes(n)) {
+            return { found: true, matched: n };
+          }
+        }
       }
       if (Date.now() >= deadline) {
-        return false;
+        return { found: false };
       }
       await new Promise((r) => setTimeout(r, 300));
     }
@@ -350,8 +360,8 @@ if ((window as any).__bcmcpContentScriptLoaded) {
           }
 
           case "waitForText": {
-            const found = await waitForText(message.text, message.timeoutMs);
-            sendResponse({ found });
+            const result = await waitForText(message.text, message.timeoutMs);
+            sendResponse(result);
             break;
           }
 

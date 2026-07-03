@@ -1485,7 +1485,7 @@ export class MessageHandler {
   private async waitForText(
     correlationId: string,
     tabId: number,
-    text: string,
+    text: string | string[],
     timeoutMs?: number
   ): Promise<void> {
     const tab = await browser.tabs.get(tabId);
@@ -1493,17 +1493,27 @@ export class MessageHandler {
       throw new Error(`Domain in tab URL is in the deny list`);
     }
 
+    const needles = Array.isArray(text) ? text : [text];
     const deadline = Date.now() + (timeoutMs ?? 30000);
     let found = false;
+    let matched: string | undefined;
 
     while (true) {
+      // Isolated-world probe: return the FIRST needle present in innerText, else
+      // null. CSP-immune (no page-world <script>).
       const results = await browser.tabs.executeScript(tabId, {
-        code: `!!(document.body && document.body.innerText && document.body.innerText.includes(${JSON.stringify(
-          text
-        )}))`,
+        code: `(function(){var ns=${JSON.stringify(
+          needles
+        )};var b=document.body&&document.body.innerText;if(!b)return null;for(var i=0;i<ns.length;i++){if(b.indexOf(ns[i])!==-1)return ns[i];}return null;})()`,
       });
-      if (results && results[0]) {
+      const hit = results && results[0];
+      if (hit) {
         found = true;
+        // Only surface `matched` when the caller asked with an array (the
+        // string case stays byte-for-byte back-compatible).
+        if (Array.isArray(text)) {
+          matched = String(hit);
+        }
         break;
       }
       if (Date.now() >= deadline) {
@@ -1516,6 +1526,7 @@ export class MessageHandler {
       resource: "wait-for-text-result",
       correlationId,
       found,
+      ...(matched !== undefined ? { matched } : {}),
     });
   }
 

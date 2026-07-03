@@ -77,7 +77,9 @@ export interface GetActiveTabServerMessage extends ServerMessageBase {
 export interface WaitForTextServerMessage extends ServerMessageBase {
   cmd: "wait-for-text";
   tabId: number;
-  text: string;
+  // Back-compat: a plain string OR a non-empty array (OR-match — resolve as
+  // soon as ANY string appears). The result reports which string matched.
+  text: string | string[];
   timeoutMs?: number;
 }
 

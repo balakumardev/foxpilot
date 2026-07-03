@@ -334,12 +334,24 @@ mcpServer.tool(
 
 mcpServer.tool(
   "wait-for-text",
-  "Wait until the given text appears on a tab's page, polling until found or the timeout elapses (default 30000ms).",
-  { tabId: z.number(), text: z.string(), timeoutMs: z.number().optional() },
+  "Wait until text appears on a tab's page, polling until found or the timeout elapses (default 30000ms). 'text' may be a single string OR an array of strings — with an array it resolves as soon as ANY of them appears and reports which one matched.",
+  {
+    tabId: z.number(),
+    text: z.union([z.string(), z.array(z.string()).nonempty()]),
+    timeoutMs: z.number().optional(),
+  },
   async ({ tabId, text, timeoutMs }) => {
-    const found = await browserApi.waitForText(tabId, text, timeoutMs);
+    const { found, matched } = await browserApi.waitForText(
+      tabId,
+      text,
+      timeoutMs
+    );
     if (found) {
-      return { content: [{ type: "text", text: "Text found" }] };
+      const which =
+        Array.isArray(text) && matched !== undefined
+          ? ` (matched "${matched}")`
+          : "";
+      return { content: [{ type: "text", text: `Text found${which}` }] };
     }
     return {
       content: [
