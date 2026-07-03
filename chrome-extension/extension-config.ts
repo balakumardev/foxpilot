@@ -194,6 +194,11 @@ export const AVAILABLE_TOOLS: ToolInfo[] = [
     id: "capture-response-bodies",
     name: "Capture Response Bodies (debugger)",
     description: "Attach the Chrome debugger to a tab to capture response bodies — shows a debugging banner and is detectable by the site (breaks covert capture)."
+  },
+  {
+    id: "click-at",
+    name: "Click at Coordinates",
+    description: "Allows the MCP server to click at pixel coordinates on a page (synthetic, covert)"
   }
 ];
 
@@ -234,6 +239,7 @@ export const COMMAND_TO_TOOL_ID: Record<ServerMessageRequest["cmd"], string> = {
   "stream-poll": "stream-fetch",
   "stream-close": "stream-fetch",
   "capture-response-bodies": "capture-response-bodies",
+  "click-at": "click-at",
 };
 
 // Commands that actively control a page (navigation, input, scripting, page
@@ -268,6 +274,7 @@ export const AUTOMATION_COMMANDS: ReadonlySet<string> = new Set<string>([
   "stream-poll",
   "stream-close",
   "capture-response-bodies",
+  "click-at",
 ]);
 
 /**

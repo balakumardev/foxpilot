@@ -388,4 +388,67 @@ describe("MessageHandler (chrome) — foreground-tab preservation", () => {
       });
     });
   });
+
+  describe("coordinate tools (Task 2+)", () => {
+    const automationConfig = { ...baseConfig, automationMode: true };
+
+    beforeEach(() => {
+      (browser.storage.local.get as jest.Mock).mockResolvedValue({
+        config: automationConfig,
+      });
+      (browser.tabs.get as jest.Mock).mockResolvedValue({
+        id: 8,
+        url: "https://example.com",
+      });
+      (browser.permissions.contains as jest.Mock).mockResolvedValue(true);
+    });
+
+    it("click-at forwards coords to the isolated point action and returns point-action-result with the descriptor", async () => {
+      (browser.tabs.sendMessage as jest.Mock).mockResolvedValue({
+        ok: true,
+        element: { tag: "div", id: "card", classes: [], rect: { x: 0, y: 0, w: 0, h: 0 }, editable: false },
+      });
+
+      await messageHandler.handleDecodedMessage({
+        cmd: "click-at",
+        tabId: 8,
+        x: 12,
+        y: 34,
+        correlationId: "cx",
+      } as ServerMessageRequest);
+
+      expect(browser.tabs.sendMessage).toHaveBeenCalledWith(8, {
+        type: "performPointAction",
+        args: { action: "click-at", x: 12, y: 34, doubleClick: undefined, button: undefined },
+      });
+      expect(transport.sendResourceToServer).toHaveBeenCalledWith({
+        resource: "point-action-result",
+        correlationId: "cx",
+        ok: true,
+        element: { tag: "div", id: "card", classes: [], rect: { x: 0, y: 0, w: 0, h: 0 }, editable: false },
+      });
+    });
+
+    it("click-at reports ok:false (not a thrown error) when the point missed", async () => {
+      (browser.tabs.sendMessage as jest.Mock).mockResolvedValue({
+        ok: false,
+        error: "No element at point (1, 2) — the coordinates may be outside the visible viewport or over a cross-origin frame.",
+      });
+
+      await messageHandler.handleDecodedMessage({
+        cmd: "click-at",
+        tabId: 8,
+        x: 1,
+        y: 2,
+        correlationId: "cm",
+      } as ServerMessageRequest);
+
+      expect(transport.sendResourceToServer).toHaveBeenCalledWith({
+        resource: "point-action-result",
+        correlationId: "cm",
+        ok: false,
+        error: "No element at point (1, 2) — the coordinates may be outside the visible viewport or over a cross-origin frame.",
+      });
+    });
+  });
 });

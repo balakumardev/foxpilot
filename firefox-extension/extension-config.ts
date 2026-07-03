@@ -193,6 +193,11 @@ export const AVAILABLE_TOOLS: ToolInfo[] = [
     id: "stream-fetch",
     name: "Stream Fetch",
     description: "Allows the MCP server to open a streaming/SSE HTTP request from the browser and read its frames"
+  },
+  {
+    id: "click-at",
+    name: "Click at Coordinates",
+    description: "Allows the MCP server to click at pixel coordinates on a page (synthetic, covert)"
   }
 ];
 
@@ -233,6 +238,7 @@ export const COMMAND_TO_TOOL_ID: Record<ServerMessageRequest["cmd"], string> = {
   "stream-poll": "stream-fetch",
   "stream-close": "stream-fetch",
   "capture-response-bodies": "capture-response-bodies",
+  "click-at": "click-at",
 };
 
 // Commands that actively control a page (navigation, input, scripting, page
@@ -266,6 +272,7 @@ export const AUTOMATION_COMMANDS: ReadonlySet<string> = new Set<string>([
   "stream-start",
   "stream-poll",
   "stream-close",
+  "click-at",
 ]);
 
 /**

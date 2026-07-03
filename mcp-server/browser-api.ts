@@ -48,6 +48,7 @@ import type {
   StreamFramesExtensionMessage,
   StreamClosedExtensionMessage,
   ResponseBodyCaptureExtensionMessage,
+  PointActionResultExtensionMessage,
 } from "@foxpilot/common";
 import {
   BrokerClientFrame,
@@ -523,6 +524,24 @@ export class BrowserAPI {
     if (!message.ok) {
       throw new Error(message.error ?? "Action failed");
     }
+  }
+
+  async clickAt(
+    tabId: number,
+    x: number,
+    y: number,
+    opts?: { doubleClick?: boolean; button?: "left" | "middle" | "right" }
+  ): Promise<PointActionResultExtensionMessage> {
+    // Returned unchanged (NOT thrown on ok:false) so the tool can report the
+    // element descriptor even when the point missed / hit a non-typable node.
+    return await this.sendTool<PointActionResultExtensionMessage>({
+      cmd: "click-at",
+      tabId,
+      x,
+      y,
+      doubleClick: opts?.doubleClick,
+      button: opts?.button,
+    });
   }
 
   async hoverElement(tabId: number, uid: string): Promise<void> {

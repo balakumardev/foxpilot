@@ -3,6 +3,7 @@ import { ExtensionTransport } from "./transport";
 import { isCommandAllowed, isDomainInDenyList, COMMAND_TO_TOOL_ID, addAuditLogEntry, requiresAutomationMode, isAutomationModeEnabled, getInputRealismMode, getSidecarPort, getSecret } from "./extension-config";
 import { buildSnapshot } from "./injected/snapshot-script";
 import { performInputAction } from "./injected/action-script";
+import { performPointAction } from "./injected/point-action-script";
 import { dispatchMouseMoveStep, typeCharStep, readElementScreenRect } from "./injected/humanize-steps";
 import { runHumanInput, HumanInputDeps, StepResult } from "./humanize/run-human-input";
 import { mousePath, typingPlan, Point } from "./humanize/motion-model";
@@ -47,6 +48,9 @@ import type {
 
 // The argument shape accepted by the injected `performInputAction` function.
 type InputActionArgs = Parameters<typeof performInputAction>[1];
+
+// The argument shape accepted by the injected `performPointAction` function.
+type PointActionArgs = Parameters<typeof performPointAction>[1];
 
 const sleep = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
@@ -328,6 +332,15 @@ export class MessageHandler {
           action: "drag",
           fromUid: req.fromUid,
           toUid: req.toUid,
+        });
+        break;
+      case "click-at":
+        await this.runPointAction(req.correlationId, req.tabId, {
+          action: "click-at",
+          x: req.x,
+          y: req.y,
+          doubleClick: req.doubleClick,
+          button: req.button,
         });
         break;
       case "resize-window":
@@ -701,6 +714,38 @@ export class MessageHandler {
       correlationId,
       ok: result.ok,
       error: result.error,
+    });
+  }
+
+  // Coordinate (synthetic) executor. Injects the self-contained
+  // performPointAction into the ISOLATED world (executeScript compiles it — no
+  // eval, no page-world <script>) and replies with point-action-result. An
+  // off-point / not-typable ok:false is a legitimate RESULT, not a thrown error.
+  private async runPointAction(
+    correlationId: string,
+    tabId: number,
+    args: PointActionArgs
+  ): Promise<void> {
+    const tab = await browser.tabs.get(tabId);
+    if (tab.url && (await isDomainInDenyList(tab.url))) {
+      throw new Error(`Domain in tab URL is in the deny list`);
+    }
+    await this.checkForUrlPermission(tab.url);
+
+    const results = await browser.tabs.executeScript(tabId, {
+      code: `(${performPointAction.toString()})(document, ${JSON.stringify(args)})`,
+    });
+    const result = (results && results[0]) || {
+      ok: false,
+      error:
+        "point action produced no result (the content script may not be loaded in this tab — reload the page and retry).",
+    };
+    await this.client.sendResourceToServer({
+      resource: "point-action-result",
+      correlationId,
+      ok: !!result.ok,
+      ...(result.error !== undefined ? { error: result.error } : {}),
+      ...(result.element !== undefined ? { element: result.element } : {}),
     });
   }
 

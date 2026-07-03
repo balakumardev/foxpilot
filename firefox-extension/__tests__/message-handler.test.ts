@@ -2549,4 +2549,50 @@ describe("MessageHandler", () => {
       expect(browser.tabs.executeScript).not.toHaveBeenCalled();
     });
   });
+
+  describe("coordinate tools (Task 2+)", () => {
+    const automationConfig = {
+      secret: "test-secret",
+      ports: [8089],
+      domainDenyList: [] as string[],
+      auditLog: [],
+      automationMode: true,
+    };
+
+    beforeEach(() => {
+      (browser.storage.local.get as jest.Mock).mockResolvedValue({
+        config: automationConfig,
+      });
+      (browser.tabs.get as jest.Mock).mockResolvedValue({
+        id: 9,
+        url: "https://example.com",
+      });
+      (browser.permissions.contains as jest.Mock).mockResolvedValue(true);
+    });
+
+    it("click-at injects performPointAction with the click-at args and replies point-action-result", async () => {
+      (browser.tabs.executeScript as jest.Mock).mockResolvedValue([
+        { ok: true, element: { tag: "div", classes: [], rect: { x: 0, y: 0, w: 0, h: 0 }, editable: false } },
+      ]);
+
+      await messageHandler.handleDecodedMessage({
+        cmd: "click-at",
+        tabId: 9,
+        x: 12,
+        y: 34,
+        correlationId: "fx",
+      } as ServerMessageRequest);
+
+      const code = (browser.tabs.executeScript as jest.Mock).mock.calls[0][1].code;
+      expect(code).toContain('"action":"click-at"');
+      expect(code).toContain('"x":12');
+      expect(code).toContain('"y":34');
+      expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+        resource: "point-action-result",
+        correlationId: "fx",
+        ok: true,
+        element: { tag: "div", classes: [], rect: { x: 0, y: 0, w: 0, h: 0 }, editable: false },
+      });
+    });
+  });
 });

@@ -40,6 +40,7 @@ import {
   isDebuggerAttached,
 } from "./network-capture";
 import { Point, mousePath, typingPlan } from "./humanize/motion-model";
+import { performPointAction } from "./injected/point-action-script";
 
 type InputActionArgs =
   | { action: "click"; uid: string; doubleClick?: boolean }
@@ -49,6 +50,9 @@ type InputActionArgs =
   | { action: "type"; text: string; submit?: boolean }
   | { action: "press-key"; key: string; modifiers?: string[] }
   | { action: "drag"; fromUid: string; toUid: string };
+
+// The argument shape accepted by the injected `performPointAction` function.
+type PointActionArgs = Parameters<typeof performPointAction>[1];
 
 // @types/chrome on this version exposes the enum as chrome.tabGroups.Color and
 // types color as a template-literal union rather than a `ColorEnum` alias, so we
@@ -319,6 +323,15 @@ export class MessageHandler {
           action: "drag",
           fromUid: req.fromUid,
           toUid: req.toUid,
+        });
+        break;
+      case "click-at":
+        await this.runPointAction(req.correlationId, req.tabId, {
+          action: "click-at",
+          x: req.x,
+          y: req.y,
+          doubleClick: req.doubleClick,
+          button: req.button,
         });
         break;
       case "resize-window":
@@ -621,6 +634,35 @@ export class MessageHandler {
     });
   }
 
+  // Coordinate (synthetic) executor. Forwards the {x,y} action to the ISOLATED
+  // content-script world (performPointAction runs elementFromPoint → the click
+  // event sequence) and replies with point-action-result. An off-point / stale
+  // hit is a legitimate ok:false RESULT, not a thrown error — so it uses the raw
+  // sender that does not throw on an {ok:false} payload.
+  private async runPointAction(
+    correlationId: string,
+    tabId: number,
+    args: PointActionArgs
+  ): Promise<void> {
+    const tab = await browser.tabs.get(tabId);
+    if (tab.url && (await isDomainInDenyList(tab.url))) {
+      throw new Error(`Domain in tab URL is in the deny list`);
+    }
+    await this.checkForUrlPermission(tab.url);
+
+    const result = await sendMessageToTabRaw(tabId, {
+      type: "performPointAction",
+      args,
+    });
+    await this.client.sendResourceToServer({
+      resource: "point-action-result",
+      correlationId,
+      ok: !!(result && result.ok),
+      ...(result && result.error !== undefined ? { error: result.error } : {}),
+      ...(result && result.element !== undefined ? { element: result.element } : {}),
+    });
+  }
+
   private async runHumanInputAction(tabId: number, args: InputActionArgs): Promise<any> {
     const cursor = this.cursorByTab.get(tabId) || { x: 100, y: 100 };
     const result = await sendMessageToTab(tabId, {
@@ -747,12 +789,14 @@ export class MessageHandler {
     if (world === "isolated") {
       // Isolated content-script world (CSP-immune DOM reads). Uses the raw
       // sender so a Chrome-CSP eval degrade comes back as eval-result ok:false
-      // rather than a thrown tool-error.
-      result = await sendMessageToTabRaw(tabId, {
+      // rather than a thrown tool-error. Guard the empty reply (no content
+      // script in the tab) so it can never throw a raw TypeError reading
+      // result.ok — mirrors the Firefox isolated branch.
+      result = (await sendMessageToTabRaw(tabId, {
         type: "evaluateScriptIsolated",
         functionSource,
         args: args ?? [],
-      });
+      })) ?? { ok: false, error: "isolated evaluation produced no result." };
     } else {
       const resultAttr = `data-bcmcp-result-${Date.now()}-${++evalKeyCounter}`;
       result = await sendMessageToTab(tabId, {

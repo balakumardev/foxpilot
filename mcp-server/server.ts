@@ -622,6 +622,67 @@ mcpServer.tool(
   }
 );
 
+// Formats a point-action-result for the coordinate tools: a one-line
+// confirmation with the element descriptor, or isError:true on a miss.
+function formatPointResult(
+  verb: string,
+  tabId: number,
+  x: number,
+  y: number,
+  result: {
+    ok: boolean;
+    error?: string;
+    element?: {
+      tag: string;
+      id?: string;
+      name?: string;
+      role?: string;
+      editable?: boolean;
+    };
+  }
+) {
+  if (!result.ok) {
+    return {
+      content: [
+        {
+          type: "text" as const,
+          text: `${verb} failed at (${x}, ${y}) on tab ${tabId}: ${
+            result.error ?? "no element at point"
+          }`,
+        },
+      ],
+      isError: true,
+    };
+  }
+  const el = result.element;
+  const desc = el
+    ? ` — element: <${el.tag}${el.id ? " #" + el.id : ""}${
+        el.role ? ' role="' + el.role + '"' : ""
+      }>${el.name ? ' "' + el.name + '"' : ""}${el.editable ? " (editable)" : ""}`
+    : "";
+  return {
+    content: [
+      { type: "text" as const, text: `${verb} at (${x}, ${y}) on tab ${tabId}${desc}` },
+    ],
+  };
+}
+
+mcpServer.tool(
+  "click-at",
+  "Click at viewport pixel coordinates {x,y} (origin = top-left of the visible viewport, as used by document.elementFromPoint). Reach for this when take-snapshot did NOT surface a clickable element (e.g. a custom-React <div onClick> with no role/tabindex) but you can see where it is — e.g. from take-screenshot. Runs covertly in the isolated world (no automation banner, no debugger). Set doubleClick for a double-click, or button to 'middle'/'right'. Returns a descriptor of the element that was under the point (or an error if the point hit nothing).",
+  {
+    tabId: z.number(),
+    x: z.number(),
+    y: z.number(),
+    doubleClick: z.boolean().optional(),
+    button: z.enum(["left", "middle", "right"]).optional(),
+  },
+  async ({ tabId, x, y, doubleClick, button }) => {
+    const result = await browserApi.clickAt(tabId, x, y, { doubleClick, button });
+    return formatPointResult("Clicked", tabId, x, y, result);
+  }
+);
+
 mcpServer.tool(
   "upload-file",
   "Upload a local file into a file <input> on a page. Pass the 'uid' of the file input from a recent take-snapshot and the absolute 'filePath' of the file on the machine running the MCP server. The server reads the file itself and injects it into the input (browsers forbid setting a file input's path from script, so this is the reliable way). Works for arbitrary local paths. Max file size 25 MB.",

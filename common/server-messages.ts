@@ -339,6 +339,21 @@ export interface CaptureResponseBodiesServerMessage extends ServerMessageBase {
   enabled: boolean;
 }
 
+// --- Coordinate (synthetic) interaction — Phase 2 ---
+// Act at viewport CSS-pixel coordinates {x,y} (origin = top-left of the visible
+// viewport, matching document.elementFromPoint). All run covertly in the
+// isolated content-script world (elementFromPoint → the existing action
+// sequences). No trusted-input engine in Phase 2 — the optional `engine` param
+// is a backward-compatible Phase 3 addition.
+export interface ClickAtServerMessage extends ServerMessageBase {
+  cmd: "click-at";
+  tabId: number;
+  x: number;
+  y: number;
+  doubleClick?: boolean;
+  button?: "left" | "middle" | "right";
+}
+
 export type ServerMessage =
   | OpenTabServerMessage
   | CloseTabsServerMessage
@@ -374,6 +389,7 @@ export type ServerMessage =
   | StreamStartServerMessage
   | StreamPollServerMessage
   | StreamCloseServerMessage
-  | CaptureResponseBodiesServerMessage;
+  | CaptureResponseBodiesServerMessage
+  | ClickAtServerMessage;
 
 export type ServerMessageRequest = ServerMessage & { correlationId: string };

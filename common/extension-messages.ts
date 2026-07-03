@@ -282,6 +282,29 @@ export interface ResponseBodyCaptureExtensionMessage extends ExtensionMessageBas
   error?: string;
 }
 
+// Compact descriptor of the element under a coordinate point, returned by the
+// coordinate tools (click-at/type-at/hover-at/scroll-at) for confirmation.
+// `rect` is the viewport-relative bounding box in CSS px; `editable` is true
+// for inputs/textareas/selects/contenteditable.
+export interface PointElementDescriptor {
+  tag: string;
+  id?: string;
+  classes: string[];
+  role?: string;
+  name?: string;
+  rect: { x: number; y: number; w: number; h: number };
+  editable?: boolean;
+}
+
+// Reply for the coordinate tools. `ok` is false (with `error`) when no element
+// resolves at the point; on success `element` describes what was under it.
+export interface PointActionResultExtensionMessage extends ExtensionMessageBase {
+  resource: "point-action-result";
+  ok: boolean;
+  error?: string;
+  element?: PointElementDescriptor;
+}
+
 export type ExtensionMessage =
   | TabContentExtensionMessage
   | TabsExtensionMessage
@@ -306,7 +329,8 @@ export type ExtensionMessage =
   | StreamStartedExtensionMessage
   | StreamFramesExtensionMessage
   | StreamClosedExtensionMessage
-  | ResponseBodyCaptureExtensionMessage;
+  | ResponseBodyCaptureExtensionMessage
+  | PointActionResultExtensionMessage;
 
 export interface ExtensionError {
   correlationId: string;

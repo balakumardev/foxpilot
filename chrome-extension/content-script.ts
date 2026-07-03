@@ -17,6 +17,7 @@ import {
   evalInIsolatedWorld,
 } from "./injected/page-world";
 import { performFileUpload } from "./injected/upload-script";
+import { performPointAction } from "./injected/point-action-script";
 
 // Guard against duplicate injection in the same isolated world.
 if ((window as any).__bcmcpContentScriptLoaded) {
@@ -271,6 +272,12 @@ if ((window as any).__bcmcpContentScriptLoaded) {
 
           case "performInputAction": {
             const result = performInputAction(document, message.args);
+            sendResponse(result);
+            break;
+          }
+
+          case "performPointAction": {
+            const result = performPointAction(document, message.args);
             sendResponse(result);
             break;
           }
