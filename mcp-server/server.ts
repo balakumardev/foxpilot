@@ -603,7 +603,7 @@ mcpServer.tool(
 
 mcpServer.tool(
   "evaluate-script",
-  'Evaluate a JavaScript function in a browser tab and return its result. Pass "function" as a function EXPRESSION string, e.g. "() => document.title" or "(sel) => document.querySelector(sel)?.textContent". By default (world:"main") it runs in the page\'s real world (sees the page\'s window/frameworks/DOM, is awaited if it returns a promise) — but a page with a strict Content-Security-Policy can block it. Set world:"isolated" to run in the extension\'s isolated content-script world instead: CSP-IMMUNE (works where world:"main" is blocked), can read the DOM, element rects, and non-httpOnly document.cookie, but CANNOT see the page\'s own JS globals/framework state and runs SYNCHRONOUSLY (a returned Promise is not awaited). Pass "args" to forward arguments to the function.',
+  'Evaluate a JavaScript function in a browser tab and return its result. Pass "function" as a function EXPRESSION string, e.g. "() => document.title" or "(sel) => document.querySelector(sel)?.textContent". By default (world:"main") it runs in the page\'s real world (sees the page\'s window/frameworks/DOM, is awaited if it returns a promise) — but a page with a strict Content-Security-Policy can block it. Set world:"isolated" to run in the extension\'s isolated content-script world instead: CSP-immune, can read the DOM, element rects, and non-httpOnly document.cookie, but CANNOT see the page\'s own JS globals/framework state and runs SYNCHRONOUSLY (a returned Promise is not awaited). Browser support for world:"isolated" is asymmetric: Firefox runs it fully (the source is compiled, so it is genuinely CSP-immune), but on Chrome MV3 the isolated-world CSP blocks arbitrary-source eval, so it honestly degrades to a clear ok:false — on Chrome use world:"main", or read state with the CSP-immune snapshot/screenshot/coordinate tools instead. Pass "args" to forward arguments to the function.',
   {
     tabId: z.number(),
     function: z.string(),
@@ -660,7 +660,7 @@ mcpServer.tool(
 
 mcpServer.tool(
   "hover-at",
-  "Move the pointer to viewport pixel coordinates {x,y} to reveal hover-only UI (dropdown menus, tooltips) before a follow-up snapshot/click. Runs covertly in the isolated world. Returns a descriptor of the element under the point.",
+  "Hover at viewport pixel coordinates {x,y} to reveal hover-triggered UI (dropdown menus, tooltips) before a follow-up snapshot/click. Runs covertly in the isolated world via synthetic pointer events, so it fires the page's JS mouseover/mouseenter listeners (which open most such menus) but does NOT activate CSS :hover styling (that needs a real, trusted pointer). Returns a descriptor of the element under the point.",
   { tabId: z.number(), x: z.number(), y: z.number() },
   async ({ tabId, x, y }) => {
     const result = await browserApi.hoverAt(tabId, x, y);
