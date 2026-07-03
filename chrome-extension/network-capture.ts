@@ -35,15 +35,33 @@ const recordTabId = new Map<string, number>();
 // Attaching the debugger is the ONLY way MV3 can read RESPONSE bodies, but it
 // shows a "started debugging this browser" banner and is detectable by the page.
 // It populates the SAME per-tab buffers as the covert webRequest path; while a
-// tab is attached the debugger OWNS it and the webRequest path is skipped for
-// that tab (see the debuggerAttached guards in onBeforeRequestRecord /
-// onCompletedRecord / onErrorOccurredRecord) so a request is never recorded
-// twice. CDP request ids are strings in a SEPARATE namespace from webRequest
+// tab is attached for the NETWORK purpose the debugger OWNS it and the
+// webRequest path is skipped for that tab (see the hasNetworkPurpose guards in
+// onBeforeRequestRecord / onCompletedRecord / onErrorOccurredRecord) so a
+// request is never recorded twice. CDP request ids are strings in a SEPARATE namespace from webRequest
 // ids, so they get their own in-flight map to avoid any collision.
-const debuggerAttached = new Set<number>();
+//
+// Purpose-refcounted chrome.debugger attach. A tab's debugger can be held by
+// more than one PURPOSE at once: "network" (response-body deep-capture, which
+// runs Network.enable) and "input" (the engine:"cdp" trusted coordinate tools,
+// which dispatch Input.* and never enable the Network domain). We attach once,
+// run Network.enable only for the network purpose, and only really detach when
+// the LAST purpose releases — so a CDP click on a tab that is already capturing
+// response bodies does not tear the capture down, and vice-versa.
+type DebuggerPurpose = "network" | "input";
+const attachedPurposes = new Map<number, Set<DebuggerPurpose>>();
 const cdpInFlight = new Map<string, NetworkRecord>();
 const cdpRequestTab = new Map<string, number>();
 let cdpListenersRegistered = false;
+
+// True when the NETWORK purpose holds the debugger for this tab — i.e. response
+// bodies are being deep-captured. The covert webRequest path is suppressed only
+// for such tabs (an input-only CDP attach must NOT suppress covert capture,
+// since it never enables the Network domain).
+function hasNetworkPurpose(tabId: number): boolean {
+  const s = attachedPurposes.get(tabId);
+  return !!s && s.has("network");
+}
 
 /**
  * Whether the chrome.debugger deep-capture path is currently attached to a tab
@@ -51,7 +69,7 @@ let cdpListenersRegistered = false;
  * `bodyCaptureSupported` honestly.
  */
 export function isDebuggerAttached(tabId: number): boolean {
-  return debuggerAttached.has(tabId);
+  return hasNetworkPurpose(tabId);
 }
 
 // Whether best-effort request-body capture is enabled. Toggled by the tool (via
@@ -95,7 +113,7 @@ export function onBeforeRequestRecord(details: WebRequestDetails): void {
   }
   // The debugger owns tabs it is attached to: skip the covert webRequest path
   // for them so a request is not recorded twice (the CDP path records it).
-  if (debuggerAttached.has(details.tabId)) {
+  if (hasNetworkPurpose(details.tabId)) {
     return;
   }
   const record: NetworkRecord = {
@@ -144,7 +162,7 @@ export function onHeadersReceivedRecord(details: WebRequestDetails): void {
 export function onCompletedRecord(details: WebRequestDetails): void {
   // Debugger-owned tabs are captured via the CDP path; skip the covert path so
   // the completed event can't synthesize a duplicate webRequest record.
-  if (typeof details.tabId === "number" && debuggerAttached.has(details.tabId)) {
+  if (typeof details.tabId === "number" && hasNetworkPurpose(details.tabId)) {
     return;
   }
   const record = takeOrSynthesize(details);
@@ -170,7 +188,7 @@ export function onCompletedRecord(details: WebRequestDetails): void {
 
 export function onErrorOccurredRecord(details: WebRequestDetails): void {
   // See onCompletedRecord: don't synthesize a duplicate for a debugger-owned tab.
-  if (typeof details.tabId === "number" && debuggerAttached.has(details.tabId)) {
+  if (typeof details.tabId === "number" && hasNetworkPurpose(details.tabId)) {
     return;
   }
   const record = takeOrSynthesize(details);
@@ -347,8 +365,8 @@ export function clearAllNetworkState(): void {
   buffers.clear();
   inFlight.clear();
   recordTabId.clear();
-  // The CDP in-flight maps are cleared too; detaching (which flips
-  // debuggerAttached) is handled by the caller before this runs.
+  // The CDP in-flight maps are cleared too; detaching (which clears the tab's
+  // attachedPurposes entry) is handled by the caller before this runs.
   cdpInFlight.clear();
   cdpRequestTab.clear();
 }
@@ -473,28 +491,73 @@ function registerDebuggerListeners(): void {
 }
 
 /**
- * Attach the chrome.debugger (CDP) deep-capture path to a tab and enable the
- * Network domain. Shows the "started debugging this browser" banner. A rejection
- * (DevTools already open / another debugger attached) is allowed to propagate so
- * the caller can surface `ok:false`.
+ * Attach the chrome.debugger (CDP) path to a tab under a PURPOSE and, for the
+ * network purpose, enable the Network domain. Shows the "started debugging this
+ * browser" banner on the first purpose. `purpose` defaults to "network" so
+ * existing one-arg callers (capture-response-bodies) are unchanged. A rejection
+ * (DevTools already open / another debugger attached) propagates so the caller
+ * can surface ok:false.
  */
-export async function attachDebugger(tabId: number): Promise<void> {
+export async function attachDebugger(
+  tabId: number,
+  purpose: DebuggerPurpose = "network"
+): Promise<void> {
   const dbg = (chrome as any).debugger;
   registerDebuggerListeners();
-  await dbg.attach({ tabId }, "1.3");
-  await dbg.sendCommand({ tabId }, "Network.enable");
-  debuggerAttached.add(tabId);
+  let set = attachedPurposes.get(tabId);
+  if (!set || set.size === 0) {
+    // First purpose on this tab — actually attach (this shows the banner).
+    await dbg.attach({ tabId }, "1.3");
+    set = new Set<DebuggerPurpose>();
+    attachedPurposes.set(tabId, set);
+  }
+  // Enable the Network domain only for the network purpose, and only the first
+  // time it is added (avoids a redundant Network.enable round-trip).
+  if (purpose === "network" && !set.has("network")) {
+    await dbg.sendCommand({ tabId }, "Network.enable");
+  }
+  set.add(purpose);
 }
 
 /**
- * Detach the debugger from a tab and drop its in-flight CDP records. Idempotent:
- * a no-op (aside from dropping stray entries) when the tab is not attached.
+ * Release a PURPOSE's hold on the debugger. Really detaches (and drops the
+ * tab's in-flight CDP records) only when the LAST purpose releases. `purpose`
+ * defaults to "network" for back-compat. Idempotent.
  */
-export async function detachDebugger(tabId: number): Promise<void> {
-  if (debuggerAttached.has(tabId)) {
+export async function detachDebugger(
+  tabId: number,
+  purpose: DebuggerPurpose = "network"
+): Promise<void> {
+  const set = attachedPurposes.get(tabId);
+  if (set && set.has(purpose)) {
+    set.delete(purpose);
+    if (set.size === 0) {
+      // Last purpose released — really detach (the banner goes away).
+      attachedPurposes.delete(tabId);
+      const dbg = (chrome as any).debugger;
+      await dbg.detach({ tabId }).catch(() => {});
+    }
+  }
+  // Drop stray CDP in-flight records once the tab is no longer attached for ANY
+  // purpose (idempotent — matches the old always-cleanup for the fully-detached
+  // case; a still-attached tab keeps its in-flight records).
+  if (!attachedPurposes.has(tabId)) {
+    dropCdpTab(tabId);
+  }
+}
+
+/**
+ * Fully tear down the debugger for a tab regardless of how many purposes hold
+ * it — used by the auto-detach triggers (tab closed, Automation Mode turned
+ * off) where every purpose must be released at once. Detaches (if attached),
+ * clears all purposes, and drops the tab's in-flight CDP records.
+ */
+export async function forceDetachDebugger(tabId: number): Promise<void> {
+  const set = attachedPurposes.get(tabId);
+  attachedPurposes.delete(tabId);
+  if (set && set.size > 0) {
     const dbg = (chrome as any).debugger;
     await dbg.detach({ tabId }).catch(() => {});
-    debuggerAttached.delete(tabId);
   }
   dropCdpTab(tabId);
 }
@@ -508,7 +571,7 @@ async function onDebuggerEvent(
   params: any
 ): Promise<void> {
   const tabId = source?.tabId;
-  if (typeof tabId !== "number" || !debuggerAttached.has(tabId)) {
+  if (typeof tabId !== "number" || !hasNetworkPurpose(tabId)) {
     return;
   }
   const dbg = (chrome as any).debugger;
@@ -613,7 +676,9 @@ function onDebuggerDetach(source: { tabId?: number }, _reason: string): void {
   if (typeof tabId !== "number") {
     return;
   }
-  debuggerAttached.delete(tabId);
+  // External detach (banner dismissed / DevTools closed / target crashed)
+  // tears down every purpose at once.
+  attachedPurposes.delete(tabId);
   dropCdpTab(tabId);
 }
 
@@ -621,7 +686,8 @@ export function initNetworkCapture(): void {
   browser.tabs.onRemoved.addListener((tabId: number) => {
     clearNetworkRequests(tabId);
     // Detach the debugger if this tab was attached (idempotent otherwise).
-    void detachDebugger(tabId);
+    // Force-detach so an input-held tab is not leaked on close.
+    void forceDetachDebugger(tabId);
   });
 
   browser.storage.onChanged.addListener(
@@ -641,9 +707,10 @@ export function initNetworkCapture(): void {
       } else {
         void unregisterNetworkListeners();
         // Detach every debugger-owned tab before wiping state so the banner goes
-        // away and no tab is left attached when automation is turned off.
-        for (const attachedTabId of Array.from(debuggerAttached)) {
-          void detachDebugger(attachedTabId);
+        // away and no tab is left attached when automation is turned off. Force-
+        // detach so tabs held only by the input purpose are released too.
+        for (const attachedTabId of Array.from(attachedPurposes.keys())) {
+          void forceDetachDebugger(attachedTabId);
         }
         clearAllNetworkState();
       }

@@ -869,3 +869,71 @@ describe("chrome.debugger (CDP) deep-capture path", () => {
     expect(isDebuggerAttached(907)).toBe(false);
   });
 });
+
+describe("debugger attach purpose-refcounting (Phase 3)", () => {
+  let dbg: any;
+  const T = [910, 911, 912, 913];
+
+  beforeEach(() => {
+    dbg = (chrome as any).debugger;
+    jest.clearAllMocks();
+    clearAllNetworkState();
+    dbg.attach.mockReset().mockResolvedValue(undefined);
+    dbg.detach.mockReset().mockResolvedValue(undefined);
+    dbg.sendCommand.mockReset().mockResolvedValue({});
+  });
+
+  afterEach(async () => {
+    const { forceDetachDebugger } = require("../network-capture");
+    for (const t of T) await forceDetachDebugger(t);
+    clearAllNetworkState();
+  });
+
+  it("an input-purpose attach does NOT enable the Network domain and is not 'network attached'", async () => {
+    await attachDebugger(910, "input");
+    expect(dbg.attach).toHaveBeenCalledWith({ tabId: 910 }, "1.3");
+    expect(dbg.sendCommand).not.toHaveBeenCalledWith(
+      { tabId: 910 },
+      "Network.enable"
+    );
+    expect(isDebuggerAttached(910)).toBe(false); // network purpose absent
+  });
+
+  it("an input-only attach does NOT suppress the covert webRequest path", async () => {
+    await attachDebugger(911, "input");
+    onBeforeRequestRecord(details({ requestId: "wr2", tabId: 911 }));
+    onCompletedRecord(details({ requestId: "wr2", tabId: 911, statusCode: 200 }));
+    expect(getNetworkRequests(911)).toHaveLength(1);
+  });
+
+  it("two purposes on one tab attach ONCE and detach only after both release", async () => {
+    await attachDebugger(912, "network");
+    await attachDebugger(912, "input");
+    expect(dbg.attach).toHaveBeenCalledTimes(1);
+    await detachDebugger(912, "input");
+    expect(dbg.detach).not.toHaveBeenCalled();
+    expect(isDebuggerAttached(912)).toBe(true);
+    await detachDebugger(912, "network");
+    expect(dbg.detach).toHaveBeenCalledWith({ tabId: 912 });
+    expect(isDebuggerAttached(912)).toBe(false);
+  });
+
+  it("runs Network.enable exactly once even if the network purpose is added twice", async () => {
+    await attachDebugger(913, "network");
+    await attachDebugger(913, "network");
+    const enables = (dbg.sendCommand as jest.Mock).mock.calls.filter(
+      (c: any[]) => c[1] === "Network.enable"
+    );
+    expect(enables).toHaveLength(1);
+    expect(dbg.attach).toHaveBeenCalledTimes(1);
+  });
+
+  it("forceDetachDebugger tears down every purpose at once", async () => {
+    await attachDebugger(910, "network");
+    await attachDebugger(910, "input");
+    const { forceDetachDebugger } = require("../network-capture");
+    await forceDetachDebugger(910);
+    expect(dbg.detach).toHaveBeenCalledWith({ tabId: 910 });
+    expect(isDebuggerAttached(910)).toBe(false);
+  });
+});

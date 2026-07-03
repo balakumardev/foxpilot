@@ -1346,9 +1346,9 @@ export class MessageHandler {
 
     try {
       if (req.enabled) {
-        await attachDebugger(req.tabId);
+        await attachDebugger(req.tabId, "network");
       } else {
-        await detachDebugger(req.tabId);
+        await detachDebugger(req.tabId, "network");
       }
       await this.client.sendResourceToServer({
         resource: "response-body-capture",
