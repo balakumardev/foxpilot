@@ -525,6 +525,42 @@ describe("MessageHandler (chrome) — foreground-tab preservation", () => {
       );
       expect(call[0].ok).toBe(true);
     });
+
+    it("hover-at engine:cdp dispatches a trusted mouseMoved then reads the descriptor", async () => {
+      await messageHandler.handleDecodedMessage({
+        cmd: "hover-at",
+        tabId: 8,
+        x: 12,
+        y: 34,
+        engine: "cdp",
+        correlationId: "cdph",
+      } as ServerMessageRequest);
+      const move = (dbg.sendCommand as jest.Mock).mock.calls.find(
+        (c: any[]) => c[1] === "Input.dispatchMouseEvent"
+      );
+      expect(move[2]).toMatchObject({ type: "mouseMoved", x: 12, y: 34 });
+      expect(browser.tabs.sendMessage).toHaveBeenCalledWith(8, {
+        type: "performPointAction",
+        args: { action: "describe-at", x: 12, y: 34 },
+      });
+    });
+
+    it("scroll-at engine:cdp dispatches a trusted mouseWheel with the deltas", async () => {
+      await messageHandler.handleDecodedMessage({
+        cmd: "scroll-at",
+        tabId: 8,
+        x: 10,
+        y: 20,
+        dx: 0,
+        dy: 250,
+        engine: "cdp",
+        correlationId: "cdps",
+      } as ServerMessageRequest);
+      const wheel = (dbg.sendCommand as jest.Mock).mock.calls.find(
+        (c: any[]) => c[1] === "Input.dispatchMouseEvent"
+      );
+      expect(wheel[2]).toMatchObject({ type: "mouseWheel", x: 10, y: 20, deltaX: 0, deltaY: 250 });
+    });
   });
 
   describe("coordinate tools (Task 2+)", () => {

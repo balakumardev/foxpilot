@@ -125,3 +125,39 @@ export async function cdpInputType(
     }
   });
 }
+
+export async function cdpInputHover(
+  tabId: number,
+  x: number,
+  y: number
+): Promise<void> {
+  await withInputAttach(tabId, async (dbg) => {
+    await dbg.sendCommand({ tabId }, "Input.dispatchMouseEvent", {
+      type: "mouseMoved",
+      x,
+      y,
+    });
+  });
+}
+
+export async function cdpInputScroll(
+  tabId: number,
+  x: number,
+  y: number,
+  dx?: number,
+  dy?: number
+): Promise<void> {
+  await withInputAttach(tabId, async (dbg) => {
+    // A trusted wheel event at {x,y}. Unlike the synthetic engine (which
+    // measures the container and defaults to its clientHeight), CDP dispatches
+    // a raw wheel at the OS/renderer level, so an omitted delta defaults to a
+    // fixed one-page step (600 px) rather than a measured container height.
+    await dbg.sendCommand({ tabId }, "Input.dispatchMouseEvent", {
+      type: "mouseWheel",
+      x,
+      y,
+      deltaX: typeof dx === "number" ? dx : 0,
+      deltaY: typeof dy === "number" ? dy : 600,
+    });
+  });
+}

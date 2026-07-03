@@ -42,7 +42,7 @@ import {
 } from "./network-capture";
 import { Point, mousePath, typingPlan } from "./humanize/motion-model";
 import { performPointAction, type PointElementDescriptor } from "./injected/point-action-script";
-import { cdpInputClick, cdpInputType } from "./cdp-input";
+import { cdpInputClick, cdpInputType, cdpInputHover, cdpInputScroll } from "./cdp-input";
 
 type InputActionArgs =
   | { action: "click"; uid: string; doubleClick?: boolean }
@@ -741,6 +741,12 @@ export class MessageHandler {
           break;
         case "type-at":
           await cdpInputType(tabId, args.x, args.y, args.text, !!args.submit);
+          break;
+        case "hover-at":
+          await cdpInputHover(tabId, args.x, args.y);
+          break;
+        case "scroll-at":
+          await cdpInputScroll(tabId, args.x, args.y, args.dx, args.dy);
           break;
         default:
           return {

@@ -1,4 +1,4 @@
-import { cdpInputClick, cdpInputType } from "../cdp-input";
+import { cdpInputClick, cdpInputType, cdpInputHover, cdpInputScroll } from "../cdp-input";
 import {
   attachDebugger,
   detachDebugger,
@@ -114,5 +114,45 @@ describe("cdpInputType (Phase 3)", () => {
     const calls = (dbg.sendCommand as jest.Mock).mock.calls;
     expect(calls.filter((c: any[]) => c[1] === "Input.dispatchMouseEvent")).toHaveLength(2);
     expect(calls.some((c: any[]) => c[1] === "Input.insertText")).toBe(false);
+  });
+});
+
+describe("cdpInputHover + cdpInputScroll (Phase 3)", () => {
+  let dbg: any;
+  beforeEach(() => {
+    dbg = (chrome as any).debugger;
+    dbg.attach.mockReset().mockResolvedValue(undefined);
+    dbg.detach.mockReset().mockResolvedValue(undefined);
+    dbg.sendCommand.mockReset().mockResolvedValue({});
+  });
+  afterEach(async () => {
+    const { forceDetachDebugger } = require("../network-capture");
+    await forceDetachDebugger(3);
+  });
+
+  it("cdpInputHover dispatches a single trusted mouseMoved at {x,y}", async () => {
+    await cdpInputHover(3, 12, 34);
+    const moves = (dbg.sendCommand as jest.Mock).mock.calls.filter(
+      (c: any[]) => c[1] === "Input.dispatchMouseEvent"
+    );
+    expect(moves).toHaveLength(1);
+    expect(moves[0][2]).toMatchObject({ type: "mouseMoved", x: 12, y: 34 });
+    expect(dbg.detach).toHaveBeenCalledWith({ tabId: 3 });
+  });
+
+  it("cdpInputScroll dispatches a trusted mouseWheel with the given deltas", async () => {
+    await cdpInputScroll(3, 10, 20, 5, 250);
+    const wheel = (dbg.sendCommand as jest.Mock).mock.calls.filter(
+      (c: any[]) => c[1] === "Input.dispatchMouseEvent"
+    );
+    expect(wheel[0][2]).toMatchObject({ type: "mouseWheel", x: 10, y: 20, deltaX: 5, deltaY: 250 });
+  });
+
+  it("cdpInputScroll defaults an omitted deltaY to a one-page step (600) and deltaX to 0", async () => {
+    await cdpInputScroll(3, 10, 20);
+    const wheel = (dbg.sendCommand as jest.Mock).mock.calls.find(
+      (c: any[]) => c[1] === "Input.dispatchMouseEvent"
+    );
+    expect(wheel[2]).toMatchObject({ type: "mouseWheel", deltaX: 0, deltaY: 600 });
   });
 });
