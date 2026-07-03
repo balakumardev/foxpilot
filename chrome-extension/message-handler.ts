@@ -215,7 +215,16 @@ export class MessageHandler {
         );
         break;
       case "take-snapshot":
-        await this.takeSnapshot(req.correlationId, req.tabId, req.verbose);
+        await this.takeSnapshot(req.correlationId, req.tabId, {
+          verbose: req.verbose,
+          includePointer: req.includePointer,
+          maxInteractive: req.maxInteractive,
+          selector: req.selector,
+          textContains: req.textContains,
+          rootSelector: req.rootSelector,
+          offset: req.offset,
+          limit: req.limit,
+        });
         break;
       case "navigate-tab":
         await this.navigateTab(req.correlationId, req.tabId, req.url);
@@ -522,7 +531,16 @@ export class MessageHandler {
   private async takeSnapshot(
     correlationId: string,
     tabId: number,
-    verbose?: boolean
+    opts: {
+      verbose?: boolean;
+      includePointer?: boolean;
+      maxInteractive?: number;
+      selector?: string;
+      textContains?: string;
+      rootSelector?: string;
+      offset?: number;
+      limit?: number;
+    }
   ): Promise<void> {
     const tab = await browser.tabs.get(tabId);
     if (tab.url && (await isDomainInDenyList(tab.url))) {
@@ -532,7 +550,7 @@ export class MessageHandler {
 
     const result = await sendMessageToTab(tabId, {
       type: "buildSnapshot",
-      options: { verbose: !!verbose },
+      options: opts,
     });
 
     await this.client.sendResourceToServer({
@@ -541,6 +559,9 @@ export class MessageHandler {
       tabId,
       snapshot: result.tree,
       isTruncated: result.isTruncated,
+      ...(result.total !== undefined ? { total: result.total } : {}),
+      ...(result.hasMore !== undefined ? { hasMore: result.hasMore } : {}),
+      ...(result.error !== undefined ? { error: result.error } : {}),
     });
   }
 

@@ -252,11 +252,19 @@ if ((window as any).__bcmcpContentScriptLoaded) {
             break;
 
           case "buildSnapshot": {
-            const { tree, isTruncated } = buildSnapshot(document, {
-              verbose: !!message.options?.verbose,
+            const o = message.options || {};
+            const { tree, isTruncated, total, hasMore, error } = buildSnapshot(document, {
+              verbose: !!o.verbose,
               maxLength: 25000,
+              includePointer: o.includePointer,
+              maxInteractive: o.maxInteractive,
+              selector: o.selector,
+              textContains: o.textContains,
+              rootSelector: o.rootSelector,
+              offset: o.offset,
+              limit: o.limit,
             });
-            sendResponse({ tree, isTruncated });
+            sendResponse({ tree, isTruncated, total, hasMore, error });
             break;
           }
 

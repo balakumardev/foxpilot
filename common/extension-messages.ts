@@ -65,6 +65,12 @@ export interface SnapshotExtensionMessage extends ExtensionMessageBase {
   tabId: number;
   snapshot: string;
   isTruncated: boolean;
+  // Phase-1 additions (append-only): total candidates collected, whether
+  // more remain beyond the current page, and a query error (e.g. a
+  // rootSelector/selector miss). All optional for back-compat.
+  total?: number;
+  hasMore?: boolean;
+  error?: string;
 }
 
 export interface NavigatedExtensionMessage extends ExtensionMessageBase {

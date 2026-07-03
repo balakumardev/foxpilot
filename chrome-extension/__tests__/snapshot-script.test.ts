@@ -30,4 +30,33 @@ describe("buildSnapshot (chrome)", () => {
     expect(tree).toContain('link "Home" [uid=e1]');
     expect(tree).toContain('button "Go" [uid=e2]');
   });
+
+  describe("selector query mode (Task 5)", () => {
+    it("returns exactly the selector matches with fresh uids, even non-interactive", () => {
+      document.body.innerHTML = `
+        <div contenteditable="true" aria-label="Message input"></div>
+        <p>ignore me</p>
+        <button>Send</button>
+      `;
+      const { tree } = buildSnapshot(document, {
+        verbose: false,
+        maxLength: 25000,
+        selector: "[contenteditable]",
+      });
+      expect(tree).toMatch(/textbox "Message input" \[uid=e\d+\]/);
+      // Selector mode is self-contained: unrelated base elements are NOT emitted.
+      expect(tree).not.toContain('button "Send"');
+    });
+
+    it("returns an error for an invalid selector", () => {
+      document.body.innerHTML = `<div>x</div>`;
+      const res = buildSnapshot(document, {
+        verbose: false,
+        maxLength: 25000,
+        selector: "::::bad",
+      });
+      expect(res.error).toMatch(/Invalid CSS selector/);
+      expect(res.tree).toBe("");
+    });
+  });
 });

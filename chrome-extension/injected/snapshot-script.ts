@@ -324,12 +324,36 @@ export function buildSnapshot(
     '[contenteditable]:not([contenteditable="false"])',
   ];
   const verboseSelectors = ["h1", "h2", "h3", "h4", "h5", "h6", "[aria-label]"];
-  const selector = (verbose
+  const baseSelectorString = (verbose
     ? baseSelectors.concat(verboseSelectors)
     : baseSelectors
   ).join(",");
 
-  const candidates = doc.querySelectorAll(selector);
+  // Query mode: an explicit CSS `selector` returns exactly its matches (fresh
+  // uids), interactive or not, and is self-contained (no pointer pass).
+  const selectorMode =
+    typeof options.selector === "string" && options.selector.length > 0;
+
+  let candidates: Element[];
+  if (selectorMode) {
+    try {
+      candidates = Array.prototype.slice.call(
+        doc.querySelectorAll(options.selector as string)
+      );
+    } catch (e) {
+      return {
+        tree: "",
+        isTruncated: false,
+        total: 0,
+        hasMore: false,
+        error: "Invalid CSS selector: " + options.selector,
+      };
+    }
+  } else {
+    candidates = Array.prototype.slice.call(
+      doc.querySelectorAll(baseSelectorString)
+    );
+  }
 
   // --- 3..6. walk, compute, stamp, and build the output ---
   const lines: string[] = [];
@@ -357,18 +381,18 @@ export function buildSnapshot(
     lines.push(line);
   }
 
-  // --- 6b. (verbose only) second pass: visually-clickable non-semantic
+  // --- 6b. (default via includePointer) second pass: visually-clickable non-semantic
   // elements. Modern React apps build dialogs/menus from `<div onClick>`-style
   // controls that carry no role/tabindex/href/onclick attribute (the handler is
   // attached via addEventListener), so the base pass can't see them. They are
   // distinguishable only by `cursor: pointer`, which needs getComputedStyle.
   //
-  // This pass runs by default (includePointer, on by default) so the default snapshot stays unchanged, and
+  // This pass runs by default (includePointer, on by default) so React `<div onClick>` cards appear in the default snapshot, and
   // it is feature-guarded so jsdom — which has no layout engine and returns
   // default styles — neither crashes nor alters existing behaviour. The
   // getComputedStyle call is wrapped in try/catch as a further safety net.
   const win = doc.defaultView;
-  if (includePointer && win && typeof win.getComputedStyle === "function") {
+  if (includePointer && !selectorMode && win && typeof win.getComputedStyle === "function") {
     const MAX_CLICKABLES = maxInteractive;
     let added = 0;
 

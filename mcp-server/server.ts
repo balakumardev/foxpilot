@@ -198,12 +198,64 @@ mcpServer.tool(
 
 mcpServer.tool(
   "take-snapshot",
-  "Take an accessibility snapshot of a browser tab's page. Returns a list of interactive elements, each tagged with a stable uid (e.g. [uid=e12]). Use these uids with the click/fill/hover tools to act on elements. Re-take a snapshot after the page changes, as uids are reassigned each time. Set verbose:true to also include headings, aria-labelled elements, and visually-clickable elements that carry cursor:pointer but no semantic role/href/onclick (e.g. React dialog buttons built from <div onClick>) — useful when an expected control is missing from the default snapshot.",
-  { tabId: z.number(), verbose: z.boolean().optional() },
-  async ({ tabId, verbose }) => {
-    const result = await browserApi.takeSnapshot(tabId, verbose ?? false);
-    const hint = result.isTruncated ? "[snapshot truncated due to size]\n" : "";
-    return { content: [{ type: "text", text: hint + result.snapshot }] };
+  "Take an accessibility snapshot of a browser tab's page. Returns interactive elements each tagged with a stable uid (e.g. [uid=e12]) for the click/fill/hover tools; re-take after the page changes, as uids are reassigned. By default it now also captures visually-clickable elements (cursor:pointer, e.g. React <div onClick> cards) — set includePointer:false to suppress that, or maxInteractive to cap how many are added. Query modes: 'selector' returns exactly the CSS-selector matches (even non-interactive, e.g. selector:'[contenteditable]' for a chat box); 'textContains' returns the deepest elements whose visible text contains the string (case-insensitive). Scope with 'rootSelector' to collect only within one subtree (e.g. the main panel, excluding a huge sidebar), and page large results with 'offset'/'limit' (the reply reports total collected and whether more remain). verbose:true additionally includes headings and aria-labelled elements.",
+  {
+    tabId: z.number(),
+    verbose: z.boolean().optional(),
+    includePointer: z.boolean().optional(),
+    maxInteractive: z.number().optional(),
+    selector: z.string().optional(),
+    textContains: z.string().optional(),
+    rootSelector: z.string().optional(),
+    offset: z.number().optional(),
+    limit: z.number().optional(),
+  },
+  async ({
+    tabId,
+    verbose,
+    includePointer,
+    maxInteractive,
+    selector,
+    textContains,
+    rootSelector,
+    offset,
+    limit,
+  }) => {
+    const result = await browserApi.takeSnapshot(tabId, {
+      verbose,
+      includePointer,
+      maxInteractive,
+      selector,
+      textContains,
+      rootSelector,
+      offset,
+      limit,
+    });
+    if (result.error) {
+      return {
+        content: [{ type: "text", text: `Snapshot error: ${result.error}` }],
+        isError: true,
+      };
+    }
+    const usedQuery =
+      selector !== undefined ||
+      textContains !== undefined ||
+      rootSelector !== undefined ||
+      offset !== undefined ||
+      limit !== undefined;
+    const truncHint = result.isTruncated
+      ? "[snapshot truncated due to size]\n"
+      : "";
+    // Metadata footer only when a query/paging param was supplied, so the
+    // default `take-snapshot {tabId}` output stays as-is (aside from the
+    // by-design cursor:pointer additions). total/hasMore populate in Task 8.
+    let meta = "";
+    if (usedQuery && typeof result.total === "number") {
+      meta =
+        `[snapshot: ${result.total} element(s) collected` +
+        `${result.hasMore ? ", more available — page with offset/limit" : ""}]\n`;
+    }
+    return { content: [{ type: "text", text: truncHint + meta + result.snapshot }] };
   }
 );
 

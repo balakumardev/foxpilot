@@ -246,7 +246,16 @@ export class MessageHandler {
         );
         break;
       case "take-snapshot":
-        await this.takeSnapshot(req.correlationId, req.tabId, req.verbose);
+        await this.takeSnapshot(req.correlationId, req.tabId, {
+          verbose: req.verbose,
+          includePointer: req.includePointer,
+          maxInteractive: req.maxInteractive,
+          selector: req.selector,
+          textContains: req.textContains,
+          rootSelector: req.rootSelector,
+          offset: req.offset,
+          limit: req.limit,
+        });
         break;
       case "navigate-tab":
         await this.navigateTab(req.correlationId, req.tabId, req.url);
@@ -605,7 +614,16 @@ export class MessageHandler {
   private async takeSnapshot(
     correlationId: string,
     tabId: number,
-    verbose?: boolean
+    opts: {
+      verbose?: boolean;
+      includePointer?: boolean;
+      maxInteractive?: number;
+      selector?: string;
+      textContains?: string;
+      rootSelector?: string;
+      offset?: number;
+      limit?: number;
+    }
   ): Promise<void> {
     const tab = await browser.tabs.get(tabId);
     if (tab.url && (await isDomainInDenyList(tab.url))) {
@@ -614,22 +632,33 @@ export class MessageHandler {
 
     await this.checkForUrlPermission(tab.url);
 
-    // `buildSnapshot` is fully self-contained, so stringifying it yields a
-    // function expression that runs standalone in the page's JS world.
-    const snapshotOptions = { verbose: !!verbose, maxLength: 25000 };
+    const snapshotOptions = {
+      verbose: !!opts.verbose,
+      maxLength: 25000,
+      includePointer: opts.includePointer,
+      maxInteractive: opts.maxInteractive,
+      selector: opts.selector,
+      textContains: opts.textContains,
+      rootSelector: opts.rootSelector,
+      offset: opts.offset,
+      limit: opts.limit,
+    };
     const results = await browser.tabs.executeScript(tabId, {
       code: `(${buildSnapshot.toString()})(document, ${JSON.stringify(
         snapshotOptions
       )})`,
     });
 
-    const { tree, isTruncated } = results[0];
+    const { tree, isTruncated, total, hasMore, error } = results[0];
     await this.client.sendResourceToServer({
       resource: "snapshot",
       correlationId,
       tabId,
       snapshot: tree,
       isTruncated,
+      ...(total !== undefined ? { total } : {}),
+      ...(hasMore !== undefined ? { hasMore } : {}),
+      ...(error !== undefined ? { error } : {}),
     });
   }
 

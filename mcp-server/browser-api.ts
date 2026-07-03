@@ -439,12 +439,21 @@ export class BrowserAPI {
 
   async takeSnapshot(
     tabId: number,
-    verbose: boolean
+    opts: {
+      verbose?: boolean;
+      includePointer?: boolean;
+      maxInteractive?: number;
+      selector?: string;
+      textContains?: string;
+      rootSelector?: string;
+      offset?: number;
+      limit?: number;
+    }
   ): Promise<SnapshotExtensionMessage> {
     return await this.sendTool<SnapshotExtensionMessage>({
       cmd: "take-snapshot",
       tabId,
-      verbose,
+      ...opts,
     });
   }
 

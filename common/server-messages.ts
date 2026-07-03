@@ -50,6 +50,13 @@ export interface TakeSnapshotServerMessage extends ServerMessageBase {
   cmd: "take-snapshot";
   tabId: number;
   verbose?: boolean;
+  includePointer?: boolean;
+  maxInteractive?: number;
+  selector?: string;
+  textContains?: string;
+  rootSelector?: string;
+  offset?: number;
+  limit?: number;
 }
 
 export interface NavigateTabServerMessage extends ServerMessageBase {
