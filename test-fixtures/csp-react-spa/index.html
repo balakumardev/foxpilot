@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>CSP-strict SPA fixture</title>
+    <style>
+      * { box-sizing: border-box; }
+      body { margin: 0; font-family: system-ui, sans-serif; display: flex; }
+      #sidebar { width: 240px; height: 100vh; overflow-y: auto; border-right: 1px solid #ccc; padding: 8px; }
+      #sidebar .item { padding: 6px 4px; cursor: pointer; }
+      #main-panel { flex: 1; padding: 16px; }
+      #open-card { display: inline-block; padding: 16px 24px; background: #efefef; border-radius: 8px; cursor: pointer; user-select: none; }
+      #chat { margin-top: 16px; }
+      #chat [contenteditable] { min-height: 40px; border: 1px solid #999; border-radius: 6px; padding: 8px; }
+      #inner-scroll { margin-top: 16px; height: 200px; overflow-y: auto; border: 1px solid #999; padding: 8px; }
+      #inner-scroll .row { padding: 8px 0; border-bottom: 1px dashed #ddd; }
+      #log { margin-top: 12px; color: #333; }
+    </style>
+  </head>
+  <body>
+    <nav id="sidebar" aria-label="Sidebar"><!-- ~700 items injected by app.js --></nav>
+    <main id="main-panel">
+      <h1>Test Agent</h1>
+      <div id="open-card">Open</div>
+      <div id="chat">
+        <div contenteditable="true" aria-label="Message input" data-testid="chat-input"></div>
+      </div>
+      <div id="inner-scroll"><!-- tall content injected by app.js --></div>
+      <div id="log"></div>
+    </main>
+    <script src="app.js"></script>
+  </body>
+</html>
