@@ -9,6 +9,7 @@ import {
   clearNetworkRequests,
 } from "../network-capture";
 import { getTabUserAgent, clearTabUserAgent } from "../emulate";
+import * as screenshotScript from "../injected/screenshot-script";
 
 // Mock the WebsocketClient
 jest.mock("../client", () => {
@@ -1307,7 +1308,9 @@ describe("MessageHandler", () => {
         id: 123,
         url: "https://example.com",
       });
-      (browser.tabs.executeScript as jest.Mock).mockResolvedValue([false]);
+      // The isolated-world probe returns null (not false) when no needle is
+      // present — the `!= null` gate treats that as not-found.
+      (browser.tabs.executeScript as jest.Mock).mockResolvedValue([null]);
 
       const request: ServerMessageRequest = {
         cmd: "wait-for-text",
@@ -1323,6 +1326,36 @@ describe("MessageHandler", () => {
         resource: "wait-for-text-result",
         correlationId: "test-correlation-id",
         found: false,
+      });
+    });
+
+    it("treats an empty-string needle as found (Chrome parity)", async () => {
+      (browser.storage.local.get as jest.Mock).mockResolvedValue({
+        config: automationConfig,
+      });
+      (browser.tabs.get as jest.Mock).mockResolvedValue({
+        id: 123,
+        url: "https://example.com",
+      });
+      // indexOf("") is always 0 on a non-empty body, so the probe returns the
+      // empty needle "". The old truthiness gate wrongly dropped this; `!= null`
+      // now reports it found, matching Chrome's explicit-boolean probe.
+      (browser.tabs.executeScript as jest.Mock).mockResolvedValue([""]);
+
+      const request: ServerMessageRequest = {
+        cmd: "wait-for-text",
+        tabId: 123,
+        text: "",
+        correlationId: "c-empty",
+      };
+
+      await messageHandler.handleDecodedMessage(request);
+
+      // Plain-string request → no `matched` key (back-compat).
+      expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+        resource: "wait-for-text-result",
+        correlationId: "c-empty",
+        found: true,
       });
     });
 
@@ -1737,6 +1770,15 @@ describe("MessageHandler", () => {
       auditLog: [],
       automationMode: true,
     };
+    // We drive the stitch-failure fallback by mocking stitchFullPage to throw,
+    // rather than letting the REAL stitch reach jsdom's unimplemented
+    // HTMLCanvasElement.prototype.getContext (which prints a "Not implemented"
+    // line to stderr). Scoped + restored so it can't leak into other blocks.
+    let stitchSpy: jest.SpyInstance | undefined;
+    afterEach(() => {
+      stitchSpy?.mockRestore();
+      stitchSpy = undefined;
+    });
     beforeEach(() => {
       (browser.storage.local.get as jest.Mock).mockResolvedValue({
         config: automationConfig,
@@ -1762,7 +1804,13 @@ describe("MessageHandler", () => {
     });
 
     it("falls back to a single viewport capture (with a warning) when stitching fails", async () => {
-      // Tiles capture fine; jsdom canvas makes stitchFullPage throw -> fallback.
+      // Tiles capture fine; a thrown stitch -> fallback (mocked so the real
+      // jsdom canvas path never runs and pollutes stderr).
+      stitchSpy = jest
+        .spyOn(screenshotScript, "stitchFullPage")
+        .mockImplementation(() => {
+          throw new Error("stitch failed");
+        });
       (browser.tabs.captureVisibleTab as jest.Mock).mockResolvedValue(
         "data:image/png;base64,GOOD"
       );
@@ -1784,6 +1832,12 @@ describe("MessageHandler", () => {
     });
 
     it("retries an empty tile readback then succeeds", async () => {
+      // Stitch throws (mocked, so no jsdom canvas stderr) -> viewport fallback.
+      stitchSpy = jest
+        .spyOn(screenshotScript, "stitchFullPage")
+        .mockImplementation(() => {
+          throw new Error("stitch failed");
+        });
       (browser.tabs.captureVisibleTab as jest.Mock)
         .mockResolvedValueOnce("") // tile attempt 1: empty -> retry
         .mockResolvedValue("data:image/png;base64,GOOD"); // attempt 2+ and fallback

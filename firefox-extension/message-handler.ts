@@ -1809,7 +1809,12 @@ export class MessageHandler {
         )};var b=document.body&&document.body.innerText;if(!b)return null;for(var i=0;i<ns.length;i++){if(b.indexOf(ns[i])!==-1)return ns[i];}return null;})()`,
       });
       const hit = results && results[0];
-      if (hit) {
+      // The probe returns the matched needle string (possibly "") or null when
+      // absent. Gate on `!= null`, not truthiness, so an empty-string needle
+      // (text:"" or an array containing "") counts as found — matching Chrome,
+      // whose content-script probe returns an explicit boolean. The plain-string
+      // reply omits `matched`, so byte-for-byte back-compat holds.
+      if (hit != null) {
         found = true;
         // Only surface `matched` when the caller asked with an array (the
         // string case stays byte-for-byte back-compatible).

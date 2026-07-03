@@ -718,16 +718,39 @@ export class MessageHandler {
     });
   }
 
-  // engine:"cdp" (Chrome/Edge only): dispatch the action as TRUSTED CDP Input
-  // events (refcounted "input" debugger attach — coexists with response-body
-  // capture), then read the element descriptor from the isolated world so the
-  // reply shape matches the synthetic path. A debugger-attach failure (DevTools
-  // already open) is a reported ok:false, not a thrown tool-error. type-at /
-  // hover-at / scroll-at CDP dispatch land in Tasks 3–4.
+  // engine:"cdp" (Chrome/Edge only): mirror the synthetic path's
+  // resolve→act→describe order. FIRST describe the element under the point in
+  // the isolated world — this both VALIDATES the point and captures the TRUE
+  // target descriptor BEFORE the trusted Input.* dispatch mutates/navigates the
+  // DOM. If nothing is under the point we return the off-point error and do NOT
+  // fire a trusted event into empty space (mirrors the synthetic offPoint).
+  // Reading the descriptor AFTER dispatch was wrong: a click/type that mutates
+  // or navigates could leave a different (or no) element under the point, so a
+  // post-dispatch describe-at MISS was reported as the action's own ok:false —
+  // a FALSE failure for a trusted action that actually succeeded (double-submit
+  // risk). We now report ok:true on a successful dispatch and hand back the
+  // descriptor captured up front. A debugger-attach failure (DevTools already
+  // open) is still a reported ok:false, not a thrown tool-error.
   private async dispatchCdpPointAction(
     tabId: number,
     args: PointActionArgs
   ): Promise<{ ok: boolean; error?: string; element?: PointElementDescriptor }> {
+    // 1. Resolve + validate the point (read-only describe-at, isolated world),
+    //    capturing the descriptor as it is BEFORE the trusted dispatch.
+    const desc = await sendMessageToTabRaw(tabId, {
+      type: "performPointAction",
+      args: { action: "describe-at", x: args.x, y: args.y },
+    });
+    // 2. No element at the point → off-point: report ok:false and do NOT
+    //    dispatch a trusted event into empty space (synthetic offPoint parity).
+    if (desc && desc.ok === false) {
+      return {
+        ok: false,
+        ...(desc.error !== undefined ? { error: desc.error } : {}),
+      };
+    }
+    // 3. Dispatch the action as TRUSTED CDP Input events (refcounted "input"
+    //    debugger attach — coexists with response-body capture).
     try {
       switch (args.action) {
         case "click-at":
@@ -762,19 +785,8 @@ export class MessageHandler {
           String((e as { message?: unknown })?.message ?? e),
       };
     }
-    // Best-effort confirmation: describe what is under the point now, in the
-    // isolated content-script world (same descriptor the synthetic path returns).
-    const desc = await sendMessageToTabRaw(tabId, {
-      type: "performPointAction",
-      args: { action: "describe-at", x: args.x, y: args.y },
-    });
-    if (desc && desc.ok === false) {
-      return {
-        ok: false,
-        ...(desc.error !== undefined ? { error: desc.error } : {}),
-        ...(desc.element !== undefined ? { element: desc.element } : {}),
-      };
-    }
+    // 4. Trusted dispatch succeeded — return the descriptor captured in step 1
+    //    (same shape the synthetic path returns), never a post-dispatch re-read.
     return {
       ok: true,
       ...(desc && desc.element !== undefined ? { element: desc.element } : {}),

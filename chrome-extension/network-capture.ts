@@ -49,6 +49,15 @@ const recordTabId = new Map<string, number>();
 // the LAST purpose releases — so a CDP click on a tab that is already capturing
 // response bodies does not tear the capture down, and vice-versa.
 type DebuggerPurpose = "network" | "input";
+// Per-tab purpose tracker: a Set (membership), NOT a counter. A Set is correct
+// here — not an undercount waiting to happen — because the broker serializes
+// tool calls per tab (see getMessageTabId / "Serialize per tab" in
+// mcp-server/broker-core.ts), so two engine:"cdp" input dispatches never
+// attach/detach the same tab concurrently (no two "input" holders at once). The
+// only genuine multi-holder case is one "network" purpose (response-body
+// deep-capture) coexisting with one "input" purpose (a CDP coordinate dispatch)
+// on the same tab — and those are two DISTINCT Set members, so membership
+// tracking releases the debugger exactly when the LAST purpose leaves.
 const attachedPurposes = new Map<number, Set<DebuggerPurpose>>();
 const cdpInFlight = new Map<string, NetworkRecord>();
 const cdpRequestTab = new Map<string, number>();

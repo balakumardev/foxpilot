@@ -424,7 +424,7 @@ describe("MessageHandler (chrome) — foreground-tab preservation", () => {
       await forceDetachDebugger(8);
     });
 
-    it("click-at engine:cdp dispatches trusted Input.* then reads the descriptor via describe-at", async () => {
+    it("click-at engine:cdp describes (validates) the point FIRST, then dispatches trusted Input.*, returning the pre-captured descriptor", async () => {
       await messageHandler.handleDecodedMessage({
         cmd: "click-at",
         tabId: 8,
@@ -445,6 +445,15 @@ describe("MessageHandler (chrome) — foreground-tab preservation", () => {
         type: "performPointAction",
         args: { action: "describe-at", x: 100, y: 200 },
       });
+      // New ordering (resolve→act→describe): the read-only describe-at that both
+      // validates the point and captures the descriptor runs BEFORE any trusted
+      // Input.* dispatch — so a click that mutates/navigates can't turn a
+      // post-dispatch describe-at miss into a false ok:false for the action.
+      const describeOrder = (browser.tabs.sendMessage as jest.Mock).mock
+        .invocationCallOrder[0];
+      const firstDispatchOrder = (dbg.sendCommand as jest.Mock).mock
+        .invocationCallOrder[0];
+      expect(describeOrder).toBeLessThan(firstDispatchOrder);
       expect(transport.sendResourceToServer).toHaveBeenCalledWith({
         resource: "point-action-result",
         correlationId: "cdpc",
@@ -458,6 +467,45 @@ describe("MessageHandler (chrome) — foreground-tab preservation", () => {
         },
       });
       expect(dbg.detach).toHaveBeenCalledWith({ tabId: 8 });
+    });
+
+    it("off-point engine:cdp reports ok:false and does NOT dispatch a trusted event (synthetic offPoint parity)", async () => {
+      // describe-at (point validation) finds nothing at the point → the trusted
+      // Input.* dispatch must be skipped entirely (no attach, no sendCommand).
+      (browser.tabs.sendMessage as jest.Mock).mockResolvedValue({
+        ok: false,
+        error:
+          "No element at point (5, 6) — the coordinates may be outside the visible viewport or over a cross-origin frame.",
+      });
+
+      await messageHandler.handleDecodedMessage({
+        cmd: "click-at",
+        tabId: 8,
+        x: 5,
+        y: 6,
+        engine: "cdp",
+        correlationId: "cdpoff",
+      } as ServerMessageRequest);
+
+      // Point was validated first...
+      expect(browser.tabs.sendMessage).toHaveBeenCalledWith(8, {
+        type: "performPointAction",
+        args: { action: "describe-at", x: 5, y: 6 },
+      });
+      // ...and because it missed, NO trusted event was fired and the debugger
+      // was never attached.
+      const dispatched = (dbg.sendCommand as jest.Mock).mock.calls.filter(
+        (c: any[]) => c[1] === "Input.dispatchMouseEvent"
+      );
+      expect(dispatched).toHaveLength(0);
+      expect(dbg.attach).not.toHaveBeenCalled();
+      expect(transport.sendResourceToServer).toHaveBeenCalledWith({
+        resource: "point-action-result",
+        correlationId: "cdpoff",
+        ok: false,
+        error:
+          "No element at point (5, 6) — the coordinates may be outside the visible viewport or over a cross-origin frame.",
+      });
     });
 
     it("reports ok:false (not a throw) when the debugger attach fails", async () => {
@@ -495,7 +543,7 @@ describe("MessageHandler (chrome) — foreground-tab preservation", () => {
       });
     });
 
-    it("type-at engine:cdp focus-clicks + inserts text then reads the descriptor", async () => {
+    it("type-at engine:cdp validates the point first, then focus-clicks + inserts text, returning the pre-captured descriptor", async () => {
       await messageHandler.handleDecodedMessage({
         cmd: "type-at",
         tabId: 8,
@@ -526,7 +574,7 @@ describe("MessageHandler (chrome) — foreground-tab preservation", () => {
       expect(call[0].ok).toBe(true);
     });
 
-    it("hover-at engine:cdp dispatches a trusted mouseMoved then reads the descriptor", async () => {
+    it("hover-at engine:cdp validates the point first, then dispatches a trusted mouseMoved, returning the pre-captured descriptor", async () => {
       await messageHandler.handleDecodedMessage({
         cmd: "hover-at",
         tabId: 8,
