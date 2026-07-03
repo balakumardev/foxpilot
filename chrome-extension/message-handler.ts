@@ -41,7 +41,8 @@ import {
   isDebuggerAttached,
 } from "./network-capture";
 import { Point, mousePath, typingPlan } from "./humanize/motion-model";
-import { performPointAction } from "./injected/point-action-script";
+import { performPointAction, type PointElementDescriptor } from "./injected/point-action-script";
+import { cdpInputClick } from "./cdp-input";
 
 type InputActionArgs =
   | { action: "click"; uid: string; doubleClick?: boolean }
@@ -327,38 +328,58 @@ export class MessageHandler {
         });
         break;
       case "click-at":
-        await this.runPointAction(req.correlationId, req.tabId, {
-          action: "click-at",
-          x: req.x,
-          y: req.y,
-          doubleClick: req.doubleClick,
-          button: req.button,
-        });
+        await this.runPointAction(
+          req.correlationId,
+          req.tabId,
+          {
+            action: "click-at",
+            x: req.x,
+            y: req.y,
+            doubleClick: req.doubleClick,
+            button: req.button,
+          },
+          req.engine
+        );
         break;
       case "type-at":
-        await this.runPointAction(req.correlationId, req.tabId, {
-          action: "type-at",
-          x: req.x,
-          y: req.y,
-          text: req.text,
-          submit: req.submit,
-        });
+        await this.runPointAction(
+          req.correlationId,
+          req.tabId,
+          {
+            action: "type-at",
+            x: req.x,
+            y: req.y,
+            text: req.text,
+            submit: req.submit,
+          },
+          req.engine
+        );
         break;
       case "hover-at":
-        await this.runPointAction(req.correlationId, req.tabId, {
-          action: "hover-at",
-          x: req.x,
-          y: req.y,
-        });
+        await this.runPointAction(
+          req.correlationId,
+          req.tabId,
+          {
+            action: "hover-at",
+            x: req.x,
+            y: req.y,
+          },
+          req.engine
+        );
         break;
       case "scroll-at":
-        await this.runPointAction(req.correlationId, req.tabId, {
-          action: "scroll-at",
-          x: req.x,
-          y: req.y,
-          dx: req.dx,
-          dy: req.dy,
-        });
+        await this.runPointAction(
+          req.correlationId,
+          req.tabId,
+          {
+            action: "scroll-at",
+            x: req.x,
+            y: req.y,
+            dx: req.dx,
+            dy: req.dy,
+          },
+          req.engine
+        );
         break;
       case "scroll-to":
         await this.scrollWindow(req.correlationId, req.tabId, req.x, req.y);
@@ -674,7 +695,8 @@ export class MessageHandler {
   private async runPointAction(
     correlationId: string,
     tabId: number,
-    args: PointActionArgs
+    args: PointActionArgs,
+    engine?: "synthetic" | "cdp"
   ): Promise<void> {
     const tab = await browser.tabs.get(tabId);
     if (tab.url && (await isDomainInDenyList(tab.url))) {
@@ -682,10 +704,11 @@ export class MessageHandler {
     }
     await this.checkForUrlPermission(tab.url);
 
-    const result = await sendMessageToTabRaw(tabId, {
-      type: "performPointAction",
-      args,
-    });
+    const result =
+      engine === "cdp"
+        ? await this.dispatchCdpPointAction(tabId, args)
+        : await sendMessageToTabRaw(tabId, { type: "performPointAction", args });
+
     await this.client.sendResourceToServer({
       resource: "point-action-result",
       correlationId,
@@ -693,6 +716,60 @@ export class MessageHandler {
       ...(result && result.error !== undefined ? { error: result.error } : {}),
       ...(result && result.element !== undefined ? { element: result.element } : {}),
     });
+  }
+
+  // engine:"cdp" (Chrome/Edge only): dispatch the action as TRUSTED CDP Input
+  // events (refcounted "input" debugger attach — coexists with response-body
+  // capture), then read the element descriptor from the isolated world so the
+  // reply shape matches the synthetic path. A debugger-attach failure (DevTools
+  // already open) is a reported ok:false, not a thrown tool-error. type-at /
+  // hover-at / scroll-at CDP dispatch land in Tasks 3–4.
+  private async dispatchCdpPointAction(
+    tabId: number,
+    args: PointActionArgs
+  ): Promise<{ ok: boolean; error?: string; element?: PointElementDescriptor }> {
+    try {
+      switch (args.action) {
+        case "click-at":
+          await cdpInputClick(
+            tabId,
+            args.x,
+            args.y,
+            args.button ?? "left",
+            !!args.doubleClick
+          );
+          break;
+        default:
+          return {
+            ok: false,
+            error: `The CDP engine does not support "${args.action}" yet.`,
+          };
+      }
+    } catch (e) {
+      return {
+        ok: false,
+        error:
+          "CDP input dispatch failed — could not attach the debugger (is DevTools open on this tab, or another debugger already attached?): " +
+          String((e as { message?: unknown })?.message ?? e),
+      };
+    }
+    // Best-effort confirmation: describe what is under the point now, in the
+    // isolated content-script world (same descriptor the synthetic path returns).
+    const desc = await sendMessageToTabRaw(tabId, {
+      type: "performPointAction",
+      args: { action: "describe-at", x: args.x, y: args.y },
+    });
+    if (desc && desc.ok === false) {
+      return {
+        ok: false,
+        ...(desc.error !== undefined ? { error: desc.error } : {}),
+        ...(desc.element !== undefined ? { element: desc.element } : {}),
+      };
+    }
+    return {
+      ok: true,
+      ...(desc && desc.element !== undefined ? { element: desc.element } : {}),
+    };
   }
 
   // Absolute page scroll (window.scrollTo). Routes to the ISOLATED content-script

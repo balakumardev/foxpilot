@@ -389,6 +389,113 @@ describe("MessageHandler (chrome) — foreground-tab preservation", () => {
     });
   });
 
+  describe("coordinate tools — CDP engine (Phase 3)", () => {
+    const automationConfig = { ...baseConfig, automationMode: true };
+    let dbg: any;
+
+    beforeEach(() => {
+      (browser.storage.local.get as jest.Mock).mockResolvedValue({
+        config: automationConfig,
+      });
+      (browser.tabs.get as jest.Mock).mockResolvedValue({
+        id: 8,
+        url: "https://example.com",
+      });
+      (browser.permissions.contains as jest.Mock).mockResolvedValue(true);
+      dbg = (chrome as any).debugger;
+      dbg.attach.mockReset().mockResolvedValue(undefined);
+      dbg.detach.mockReset().mockResolvedValue(undefined);
+      dbg.sendCommand.mockReset().mockResolvedValue({});
+      // The isolated-world descriptor read that follows the CDP dispatch.
+      (browser.tabs.sendMessage as jest.Mock).mockResolvedValue({
+        ok: true,
+        element: {
+          tag: "div",
+          id: "card",
+          classes: [],
+          rect: { x: 0, y: 0, w: 0, h: 0 },
+          editable: false,
+        },
+      });
+    });
+
+    afterEach(async () => {
+      const { forceDetachDebugger } = require("../network-capture");
+      await forceDetachDebugger(8);
+    });
+
+    it("click-at engine:cdp dispatches trusted Input.* then reads the descriptor via describe-at", async () => {
+      await messageHandler.handleDecodedMessage({
+        cmd: "click-at",
+        tabId: 8,
+        x: 100,
+        y: 200,
+        engine: "cdp",
+        correlationId: "cdpc",
+      } as ServerMessageRequest);
+
+      expect(dbg.attach).toHaveBeenCalledWith({ tabId: 8 }, "1.3");
+      const mouse = (dbg.sendCommand as jest.Mock).mock.calls.filter(
+        (c: any[]) => c[1] === "Input.dispatchMouseEvent"
+      );
+      expect(mouse[0][2]).toMatchObject({ type: "mousePressed", x: 100, y: 200 });
+      expect(mouse[1][2]).toMatchObject({ type: "mouseReleased", x: 100, y: 200 });
+      // Descriptor read is a read-only describe-at in the isolated world.
+      expect(browser.tabs.sendMessage).toHaveBeenCalledWith(8, {
+        type: "performPointAction",
+        args: { action: "describe-at", x: 100, y: 200 },
+      });
+      expect(transport.sendResourceToServer).toHaveBeenCalledWith({
+        resource: "point-action-result",
+        correlationId: "cdpc",
+        ok: true,
+        element: {
+          tag: "div",
+          id: "card",
+          classes: [],
+          rect: { x: 0, y: 0, w: 0, h: 0 },
+          editable: false,
+        },
+      });
+      expect(dbg.detach).toHaveBeenCalledWith({ tabId: 8 });
+    });
+
+    it("reports ok:false (not a throw) when the debugger attach fails", async () => {
+      dbg.attach.mockRejectedValue(
+        new Error("Another debugger is already attached")
+      );
+      await messageHandler.handleDecodedMessage({
+        cmd: "click-at",
+        tabId: 8,
+        x: 10,
+        y: 20,
+        engine: "cdp",
+        correlationId: "cdpe",
+      } as ServerMessageRequest);
+
+      const call = (transport.sendResourceToServer as jest.Mock).mock.calls.find(
+        (c: any[]) => c[0].correlationId === "cdpe"
+      );
+      expect(call[0].ok).toBe(false);
+      expect(call[0].error).toMatch(/CDP input dispatch failed/);
+    });
+
+    it("synthetic (default engine) still routes to the isolated performPointAction, never CDP", async () => {
+      await messageHandler.handleDecodedMessage({
+        cmd: "click-at",
+        tabId: 8,
+        x: 3,
+        y: 4,
+        correlationId: "syn",
+      } as ServerMessageRequest);
+      expect(dbg.attach).not.toHaveBeenCalled();
+      expect(browser.tabs.sendMessage).toHaveBeenCalledWith(8, {
+        type: "performPointAction",
+        args: { action: "click-at", x: 3, y: 4, doubleClick: undefined, button: undefined },
+      });
+    });
+  });
+
   describe("coordinate tools (Task 2+)", () => {
     const automationConfig = { ...baseConfig, automationMode: true };
 

@@ -38,6 +38,7 @@ export function performPointAction(
     | { action: "type-at"; x: number; y: number; text: string; submit?: boolean }
     | { action: "hover-at"; x: number; y: number }
     | { action: "scroll-at"; x: number; y: number; dx?: number; dy?: number }
+    | { action: "describe-at"; x: number; y: number }
 ): { ok: boolean; error?: string; element?: PointElementDescriptor } {
   try {
     const win = doc.defaultView as (Window & typeof globalThis) | null;
@@ -327,6 +328,17 @@ export function performPointAction(
       const dyWin = typeof args.dy === "number" ? args.dy : viewportH || 600;
       if (win && typeof win.scrollBy === "function") {
         win.scrollBy(dx, dyWin);
+      }
+      return { ok: true, element: describeElement(el) };
+    }
+
+    if (args.action === "describe-at") {
+      // Read-only: describe the element under the point WITHOUT acting on it.
+      // Used by the CDP engine to return the same descriptor shape as the
+      // synthetic path AFTER it has dispatched the trusted Input.* events.
+      const el = elementAt(args.x, args.y);
+      if (!el) {
+        return offPoint(args.x, args.y);
       }
       return { ok: true, element: describeElement(el) };
     }

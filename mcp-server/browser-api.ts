@@ -530,7 +530,11 @@ export class BrowserAPI {
     tabId: number,
     x: number,
     y: number,
-    opts?: { doubleClick?: boolean; button?: "left" | "middle" | "right" }
+    opts?: {
+      doubleClick?: boolean;
+      button?: "left" | "middle" | "right";
+      engine?: "synthetic" | "cdp";
+    }
   ): Promise<PointActionResultExtensionMessage> {
     // Returned unchanged (NOT thrown on ok:false) so the tool can report the
     // element descriptor even when the point missed / hit a non-typable node.
@@ -541,6 +545,7 @@ export class BrowserAPI {
       y,
       doubleClick: opts?.doubleClick,
       button: opts?.button,
+      engine: opts?.engine,
     });
   }
 
@@ -549,7 +554,8 @@ export class BrowserAPI {
     x: number,
     y: number,
     text: string,
-    submit?: boolean
+    submit?: boolean,
+    engine?: "synthetic" | "cdp"
   ): Promise<PointActionResultExtensionMessage> {
     // Returned unchanged (NOT thrown on ok:false) so the tool can report the
     // element descriptor even when the point missed / hit a non-typable node.
@@ -560,13 +566,15 @@ export class BrowserAPI {
       y,
       text,
       submit,
+      engine,
     });
   }
 
   async hoverAt(
     tabId: number,
     x: number,
-    y: number
+    y: number,
+    engine?: "synthetic" | "cdp"
   ): Promise<PointActionResultExtensionMessage> {
     // Returned unchanged (NOT thrown on ok:false) so the tool can report the
     // element descriptor even when the point missed.
@@ -575,6 +583,7 @@ export class BrowserAPI {
       tabId,
       x,
       y,
+      engine,
     });
   }
 
@@ -582,7 +591,7 @@ export class BrowserAPI {
     tabId: number,
     x: number,
     y: number,
-    opts?: { dx?: number; dy?: number }
+    opts?: { dx?: number; dy?: number; engine?: "synthetic" | "cdp" }
   ): Promise<PointActionResultExtensionMessage> {
     // Returned unchanged (NOT thrown on ok:false) so the tool can report the
     // scrolled container's descriptor (or the element at the point when it falls
@@ -594,6 +603,7 @@ export class BrowserAPI {
       y,
       dx: opts?.dx,
       dy: opts?.dy,
+      engine: opts?.engine,
     });
   }
 

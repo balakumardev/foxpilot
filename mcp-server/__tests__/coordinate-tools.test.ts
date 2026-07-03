@@ -129,6 +129,12 @@ describe("BrowserAPI coordinate tools over the broker", () => {
     expect((lastReq as any).dy).toBe(250);
   });
 
+  it("forwards engine:'cdp' on the click-at frame", async () => {
+    await api.clickAt(2, 100, 200, { engine: "cdp" });
+    expect((lastReq as any).cmd).toBe("click-at");
+    expect((lastReq as any).engine).toBe("cdp");
+  });
+
   it("forwards scroll-to and scroll-into-view", async () => {
     const r1 = await api.scrollTo(2, 0, 900);
     expect((lastReq as any).cmd).toBe("scroll-to");

@@ -340,38 +340,58 @@ export class MessageHandler {
         });
         break;
       case "click-at":
-        await this.runPointAction(req.correlationId, req.tabId, {
-          action: "click-at",
-          x: req.x,
-          y: req.y,
-          doubleClick: req.doubleClick,
-          button: req.button,
-        });
+        await this.runPointAction(
+          req.correlationId,
+          req.tabId,
+          {
+            action: "click-at",
+            x: req.x,
+            y: req.y,
+            doubleClick: req.doubleClick,
+            button: req.button,
+          },
+          req.engine
+        );
         break;
       case "type-at":
-        await this.runPointAction(req.correlationId, req.tabId, {
-          action: "type-at",
-          x: req.x,
-          y: req.y,
-          text: req.text,
-          submit: req.submit,
-        });
+        await this.runPointAction(
+          req.correlationId,
+          req.tabId,
+          {
+            action: "type-at",
+            x: req.x,
+            y: req.y,
+            text: req.text,
+            submit: req.submit,
+          },
+          req.engine
+        );
         break;
       case "hover-at":
-        await this.runPointAction(req.correlationId, req.tabId, {
-          action: "hover-at",
-          x: req.x,
-          y: req.y,
-        });
+        await this.runPointAction(
+          req.correlationId,
+          req.tabId,
+          {
+            action: "hover-at",
+            x: req.x,
+            y: req.y,
+          },
+          req.engine
+        );
         break;
       case "scroll-at":
-        await this.runPointAction(req.correlationId, req.tabId, {
-          action: "scroll-at",
-          x: req.x,
-          y: req.y,
-          dx: req.dx,
-          dy: req.dy,
-        });
+        await this.runPointAction(
+          req.correlationId,
+          req.tabId,
+          {
+            action: "scroll-at",
+            x: req.x,
+            y: req.y,
+            dx: req.dx,
+            dy: req.dy,
+          },
+          req.engine
+        );
         break;
       case "scroll-to":
         await this.scrollWindow(req.correlationId, req.tabId, req.x, req.y);
@@ -762,8 +782,20 @@ export class MessageHandler {
   private async runPointAction(
     correlationId: string,
     tabId: number,
-    args: PointActionArgs
+    args: PointActionArgs,
+    engine?: "synthetic" | "cdp"
   ): Promise<void> {
+    if (engine === "cdp") {
+      // Firefox has no chrome.debugger / CDP — the trusted engine is Chrome-only.
+      await this.client.sendResourceToServer({
+        resource: "point-action-result",
+        correlationId,
+        ok: false,
+        error:
+          'CDP engine not supported on Firefox — use the default synthetic engine (omit engine, or pass engine:"synthetic").',
+      });
+      return;
+    }
     const tab = await browser.tabs.get(tabId);
     if (tab.url && (await isDomainInDenyList(tab.url))) {
       throw new Error(`Domain in tab URL is in the deny list`);

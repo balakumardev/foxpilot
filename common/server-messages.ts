@@ -347,6 +347,11 @@ export interface CaptureResponseBodiesServerMessage extends ServerMessageBase {
 // is a backward-compatible Phase 3 addition.
 export interface ClickAtServerMessage extends ServerMessageBase {
   cmd: "click-at";
+  // Dispatch engine. "synthetic" (default) runs covertly in the isolated world
+  // (isTrusted:false). "cdp" (Chrome/Edge only) dispatches TRUSTED Input.*
+  // events via chrome.debugger (isTrusted:true; shows the debugger banner;
+  // errors on Firefox). Back-compat default is "synthetic".
+  engine?: "synthetic" | "cdp";
   tabId: number;
   x: number;
   y: number;
@@ -361,6 +366,8 @@ export interface ClickAtServerMessage extends ServerMessageBase {
 // requestSubmit()s the enclosing form if there is one).
 export interface TypeAtServerMessage extends ServerMessageBase {
   cmd: "type-at";
+  // See ClickAtServerMessage.engine.
+  engine?: "synthetic" | "cdp";
   tabId: number;
   x: number;
   y: number;
@@ -374,6 +381,8 @@ export interface TypeAtServerMessage extends ServerMessageBase {
 // the isolated content-script world. Reports the element under the point.
 export interface HoverAtServerMessage extends ServerMessageBase {
   cmd: "hover-at";
+  // See ClickAtServerMessage.engine.
+  engine?: "synthetic" | "cdp";
   tabId: number;
   x: number;
   y: number;
@@ -388,6 +397,8 @@ export interface HoverAtServerMessage extends ServerMessageBase {
 // container-viewport down. Runs covertly in the isolated content-script world.
 export interface ScrollAtServerMessage extends ServerMessageBase {
   cmd: "scroll-at";
+  // See ClickAtServerMessage.engine.
+  engine?: "synthetic" | "cdp";
   tabId: number;
   x: number;
   y: number;

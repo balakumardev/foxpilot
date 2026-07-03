@@ -628,58 +628,66 @@ mcpServer.tool(
 
 mcpServer.tool(
   "click-at",
-  "Click at viewport pixel coordinates {x,y} (origin = top-left of the visible viewport, as used by document.elementFromPoint). Reach for this when take-snapshot did NOT surface a clickable element (e.g. a custom-React <div onClick> with no role/tabindex) but you can see where it is — e.g. from take-screenshot. Runs covertly in the isolated world (no automation banner, no debugger). Set doubleClick for a double-click, or button to 'middle'/'right'. Returns a descriptor of the element that was under the point (or an error if the point hit nothing).",
+  "Click at viewport pixel coordinates {x,y} (origin = top-left of the visible viewport, as used by document.elementFromPoint). Reach for this when take-snapshot did NOT surface a clickable element (e.g. a custom-React <div onClick> with no role/tabindex) but you can see where it is — e.g. from take-screenshot. Runs covertly in the isolated world (no automation banner, no debugger) by default. Set engine:\"cdp\" (Chrome/Edge only) to dispatch a TRUSTED (isTrusted:true) click via the debugger instead — reach for it only when the default click is ignored by a strict handler; it shows a 'started debugging this browser' banner (detectable) and errors on Firefox. Set doubleClick for a double-click, or button to 'middle'/'right'. Returns a descriptor of the element that was under the point (or an error if the point hit nothing).",
   {
     tabId: z.number(),
     x: z.number(),
     y: z.number(),
     doubleClick: z.boolean().optional(),
     button: z.enum(["left", "middle", "right"]).optional(),
+    engine: z.enum(["synthetic", "cdp"]).optional(),
   },
-  async ({ tabId, x, y, doubleClick, button }) => {
-    const result = await browserApi.clickAt(tabId, x, y, { doubleClick, button });
+  async ({ tabId, x, y, doubleClick, button, engine }) => {
+    const result = await browserApi.clickAt(tabId, x, y, { doubleClick, button, engine });
     return formatPointResult("Clicked", tabId, x, y, result);
   }
 );
 
 mcpServer.tool(
   "type-at",
-  "Type text into the element at viewport pixel coordinates {x,y}. Clicks the point to focus it first, then types — works for <input>/<textarea> AND custom <div contenteditable> chat inputs that take-snapshot may not expose as textboxes. Set submit:true to press Enter afterward (and submit the form if there is one). Runs covertly in the isolated world. Returns a descriptor of the element that was typed into.",
+  "Type text into the element at viewport pixel coordinates {x,y}. Clicks the point to focus it first, then types — works for <input>/<textarea> AND custom <div contenteditable> chat inputs that take-snapshot may not expose as textboxes. Set submit:true to press Enter afterward (and submit the form if there is one). Runs covertly (synthetic) by default. Set engine:\"cdp\" (Chrome/Edge only) to type via TRUSTED events through the debugger — this is the reliable path for strict rich-text editors (Lexical/ProseMirror/Slate) that ignore synthetic keystrokes; it shows a debugging banner and errors on Firefox. Returns a descriptor of the element that was typed into.",
   {
     tabId: z.number(),
     x: z.number(),
     y: z.number(),
     text: z.string(),
     submit: z.boolean().optional(),
+    engine: z.enum(["synthetic", "cdp"]).optional(),
   },
-  async ({ tabId, x, y, text, submit }) => {
-    const result = await browserApi.typeAt(tabId, x, y, text, submit);
+  async ({ tabId, x, y, text, submit, engine }) => {
+    const result = await browserApi.typeAt(tabId, x, y, text, submit, engine);
     return formatPointResult("Typed", tabId, x, y, result);
   }
 );
 
 mcpServer.tool(
   "hover-at",
-  "Hover at viewport pixel coordinates {x,y} to reveal hover-triggered UI (dropdown menus, tooltips) before a follow-up snapshot/click. Runs covertly in the isolated world via synthetic pointer events, so it fires the page's JS mouseover/mouseenter listeners (which open most such menus) but does NOT activate CSS :hover styling (that needs a real, trusted pointer). Returns a descriptor of the element under the point.",
-  { tabId: z.number(), x: z.number(), y: z.number() },
-  async ({ tabId, x, y }) => {
-    const result = await browserApi.hoverAt(tabId, x, y);
+  "Hover at viewport pixel coordinates {x,y} to reveal hover-triggered UI (dropdown menus, tooltips) before a follow-up snapshot/click. Runs covertly in the isolated world via synthetic pointer events by default (fires the page's JS mouseover/mouseenter listeners, which open most such menus, but does NOT activate CSS :hover styling). Set engine:\"cdp\" (Chrome/Edge only) to move a TRUSTED pointer via the debugger (shows a banner; errors on Firefox). Returns a descriptor of the element under the point.",
+  {
+    tabId: z.number(),
+    x: z.number(),
+    y: z.number(),
+    engine: z.enum(["synthetic", "cdp"]).optional(),
+  },
+  async ({ tabId, x, y, engine }) => {
+    const result = await browserApi.hoverAt(tabId, x, y, engine);
     return formatPointResult("Hovered", tabId, x, y, result);
   }
 );
 
 mcpServer.tool(
   "scroll-at",
-  "Scroll the NEAREST SCROLLABLE CONTAINER under viewport pixel coordinates {x,y} by (dx, dy) pixels — this scrolls an inner panel (e.g. a chat message list) rather than the whole window, which press-key PageUp cannot do. Omit dx/dy to scroll one container-viewport down. Falls back to the window when nothing under the point scrolls. Returns a descriptor of the container that was scrolled.",
+  "Scroll the NEAREST SCROLLABLE CONTAINER under viewport pixel coordinates {x,y} by (dx, dy) pixels — this scrolls an inner panel (e.g. a chat message list) rather than the whole window, which press-key PageUp cannot do. Omit dx/dy to scroll one container-viewport down. Falls back to the window when nothing under the point scrolls. Runs covertly (synthetic) by default. Set engine:\"cdp\" (Chrome/Edge only) to dispatch a TRUSTED wheel event via the debugger for sites that honor real wheel events exclusively (shows a banner; errors on Firefox). Returns a descriptor of the container that was scrolled.",
   {
     tabId: z.number(),
     x: z.number(),
     y: z.number(),
     dx: z.number().optional(),
     dy: z.number().optional(),
+    engine: z.enum(["synthetic", "cdp"]).optional(),
   },
-  async ({ tabId, x, y, dx, dy }) => {
-    const result = await browserApi.scrollAt(tabId, x, y, { dx, dy });
+  async ({ tabId, x, y, dx, dy, engine }) => {
+    const result = await browserApi.scrollAt(tabId, x, y, { dx, dy, engine });
     return formatPointResult("Scrolled", tabId, x, y, result);
   }
 );

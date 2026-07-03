@@ -250,4 +250,38 @@ describe("performPointAction (firefox)", () => {
       expect(res.error).toMatch(/not found/);
     });
   });
+
+  describe("describe-at (Phase 3 — read-only descriptor for the CDP engine)", () => {
+    afterEach(() => {
+      document.body.innerHTML = "";
+      (document as any).elementFromPoint = undefined;
+    });
+
+    it("returns the element descriptor WITHOUT dispatching any event", () => {
+      document.body.innerHTML = `<div id="card" role="button" class="a b">Open</div>`;
+      const el = document.getElementById("card")!;
+      (document as any).elementFromPoint = jest.fn(() => el);
+      const onClick = jest.fn();
+      el.addEventListener("click", onClick);
+
+      const res = performPointAction(document, { action: "describe-at", x: 3, y: 4 });
+
+      expect((document as any).elementFromPoint).toHaveBeenCalledWith(3, 4);
+      expect(onClick).not.toHaveBeenCalled(); // read-only
+      expect(res.ok).toBe(true);
+      expect(res.element).toMatchObject({
+        tag: "div",
+        id: "card",
+        role: "button",
+        name: "Open",
+      });
+    });
+
+    it("returns ok:false off-point", () => {
+      (document as any).elementFromPoint = jest.fn(() => null);
+      const res = performPointAction(document, { action: "describe-at", x: 1, y: 2 });
+      expect(res.ok).toBe(false);
+      expect(res.error).toMatch(/No element at point/);
+    });
+  });
 });

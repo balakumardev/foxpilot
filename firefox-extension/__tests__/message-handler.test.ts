@@ -2639,6 +2639,61 @@ describe("MessageHandler", () => {
     });
   });
 
+  describe("coordinate tools — CDP engine rejected on Firefox (Phase 3)", () => {
+    const automationConfig = {
+      secret: "test-secret",
+      ports: [8089],
+      domainDenyList: [] as string[],
+      auditLog: [],
+      automationMode: true,
+      inputRealismMode: "off",
+    };
+
+    beforeEach(() => {
+      (browser.storage.local.get as jest.Mock).mockResolvedValue({
+        config: automationConfig,
+      });
+      (browser.tabs.get as jest.Mock).mockResolvedValue({
+        id: 123,
+        url: "https://example.com",
+      });
+      (browser.permissions.contains as jest.Mock).mockResolvedValue(true);
+    });
+
+    it("click-at engine:cdp replies ok:false with the Firefox-unsupported error and never injects", async () => {
+      await messageHandler.handleDecodedMessage({
+        cmd: "click-at",
+        tabId: 123,
+        x: 1,
+        y: 2,
+        engine: "cdp",
+        correlationId: "fxcdp",
+      } as ServerMessageRequest);
+
+      expect(browser.tabs.executeScript).not.toHaveBeenCalled();
+      expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+        resource: "point-action-result",
+        correlationId: "fxcdp",
+        ok: false,
+        error: expect.stringMatching(/not supported on Firefox/),
+      });
+    });
+
+    it("synthetic (default) still injects performPointAction", async () => {
+      (browser.tabs.executeScript as jest.Mock).mockResolvedValue([
+        { ok: true, element: { tag: "div", classes: [], rect: { x: 0, y: 0, w: 0, h: 0 }, editable: false } },
+      ]);
+      await messageHandler.handleDecodedMessage({
+        cmd: "click-at",
+        tabId: 123,
+        x: 1,
+        y: 2,
+        correlationId: "fxsyn",
+      } as ServerMessageRequest);
+      expect(browser.tabs.executeScript).toHaveBeenCalled();
+    });
+  });
+
   describe("coordinate tools (Task 2+)", () => {
     const automationConfig = {
       secret: "test-secret",
