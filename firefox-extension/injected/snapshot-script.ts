@@ -544,17 +544,32 @@ export function buildSnapshot(
     }
   }
 
+  // --- 6c. page over the collected candidate lines (before the char cut) ---
+  const total = lines.length;
+  const offset =
+    typeof options.offset === "number" && options.offset > 0
+      ? Math.floor(options.offset)
+      : 0;
+  const hasLimit = typeof options.limit === "number" && options.limit >= 0;
+  const limit = hasLimit ? Math.floor(options.limit as number) : undefined;
+  let pagedLines = lines;
+  if (offset > 0 || limit !== undefined) {
+    pagedLines = lines.slice(
+      offset,
+      limit !== undefined ? offset + limit : undefined
+    );
+  }
+  const moreAfterPage = offset + pagedLines.length < total;
+
   // --- 7. join and truncate ---
-  const full = lines.join("\n");
+  const full = pagedLines.join("\n");
   if (full.length > maxLength) {
-    // Truncate to the last COMPLETE line so every emitted line (including the
-    // last) is whole — downstream tools parse `[uid=eN]` and must never see a
-    // dangling token like `[uid=e`. Cut at the last newline at or before
-    // maxLength; if there is none, emit nothing.
+    // Truncate to the last COMPLETE line so no `[uid=eN]` token is cut.
     const sliced = full.slice(0, maxLength);
     const lastNewline = sliced.lastIndexOf("\n");
     const tree = lastNewline >= 0 ? sliced.slice(0, lastNewline) : "";
-    return { tree: tree, isTruncated: true };
+    // The char cut dropped lines too, so more content exists either way.
+    return { tree: tree, isTruncated: true, total: total, hasMore: true };
   }
-  return { tree: full, isTruncated: false };
+  return { tree: full, isTruncated: false, total: total, hasMore: moreAfterPage };
 }

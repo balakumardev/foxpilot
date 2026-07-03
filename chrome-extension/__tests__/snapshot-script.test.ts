@@ -123,5 +123,64 @@ describe("buildSnapshot (chrome)", () => {
       expect(res.error).toMatch(/rootSelector matched no element/);
       expect(res.tree).toBe("");
     });
+
+    it("returns an error for a malformed rootSelector", () => {
+      document.body.innerHTML = `<button>X</button>`;
+      const res = buildSnapshot(document, {
+        verbose: false,
+        maxLength: 25000,
+        rootSelector: ":::",
+      });
+      expect(res.error).toMatch(/Invalid rootSelector/);
+      expect(res.tree).toBe("");
+    });
+  });
+
+  describe("offset/limit paging + total/hasMore (Task 8)", () => {
+    function tenButtons() {
+      let html = "";
+      for (let i = 0; i < 10; i++) html += `<button>Btn ${i}</button>`;
+      document.body.innerHTML = html;
+    }
+
+    it("reports total across the full candidate list", () => {
+      tenButtons();
+      const res = buildSnapshot(document, { verbose: false, maxLength: 25000 });
+      expect(res.total).toBe(10);
+      expect(res.hasMore).toBe(false);
+    });
+
+    it("returns only the requested page and sets hasMore when more remain", () => {
+      tenButtons();
+      const res = buildSnapshot(document, {
+        verbose: false,
+        maxLength: 25000,
+        offset: 0,
+        limit: 3,
+      });
+      expect(res.total).toBe(10);
+      expect(res.hasMore).toBe(true);
+      const lines = res.tree.split("\n").filter(Boolean);
+      expect(lines.length).toBe(3);
+      expect(res.tree).toContain('button "Btn 0"');
+      expect(res.tree).toContain('button "Btn 2"');
+      expect(res.tree).not.toContain('button "Btn 3"');
+    });
+
+    it("pages from an offset and clears hasMore on the last page", () => {
+      tenButtons();
+      const res = buildSnapshot(document, {
+        verbose: false,
+        maxLength: 25000,
+        offset: 8,
+        limit: 5,
+      });
+      expect(res.total).toBe(10);
+      expect(res.hasMore).toBe(false);
+      const lines = res.tree.split("\n").filter(Boolean);
+      expect(lines.length).toBe(2); // items 8 and 9
+      expect(res.tree).toContain('button "Btn 8"');
+      expect(res.tree).toContain('button "Btn 9"');
+    });
   });
 });

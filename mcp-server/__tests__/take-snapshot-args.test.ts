@@ -74,6 +74,17 @@ describe("BrowserAPI.takeSnapshot query args over the broker", () => {
           error: "rootSelector matched no element: #missing",
         };
       }
+      if (typeof (req as any).limit === "number") {
+        return {
+          resource: "snapshot",
+          correlationId: req.correlationId,
+          tabId: (req as any).tabId,
+          snapshot: 'button "Btn 0" [uid=e1]',
+          isTruncated: false,
+          total: 10,
+          hasMore: true,
+        };
+      }
       return {
         resource: "snapshot",
         correlationId: req.correlationId,
@@ -112,5 +123,13 @@ describe("BrowserAPI.takeSnapshot query args over the broker", () => {
     const result = await api.takeSnapshot(9, { rootSelector: "#missing" });
     expect((lastReq as any).rootSelector).toBe("#missing");
     expect(result.error).toMatch(/rootSelector matched no element/);
+  });
+
+  it("forwards offset/limit and surfaces total/hasMore for paging", async () => {
+    const result = await api.takeSnapshot(9, { offset: 0, limit: 3 });
+    expect((lastReq as any).offset).toBe(0);
+    expect((lastReq as any).limit).toBe(3);
+    expect(result.total).toBe(10);
+    expect(result.hasMore).toBe(true);
   });
 });
