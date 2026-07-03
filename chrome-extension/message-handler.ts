@@ -42,7 +42,7 @@ import {
 } from "./network-capture";
 import { Point, mousePath, typingPlan } from "./humanize/motion-model";
 import { performPointAction, type PointElementDescriptor } from "./injected/point-action-script";
-import { cdpInputClick } from "./cdp-input";
+import { cdpInputClick, cdpInputType } from "./cdp-input";
 
 type InputActionArgs =
   | { action: "click"; uid: string; doubleClick?: boolean }
@@ -738,6 +738,9 @@ export class MessageHandler {
             args.button ?? "left",
             !!args.doubleClick
           );
+          break;
+        case "type-at":
+          await cdpInputType(tabId, args.x, args.y, args.text, !!args.submit);
           break;
         default:
           return {

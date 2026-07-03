@@ -76,3 +76,52 @@ export async function cdpInputClick(
     }
   });
 }
+
+export async function cdpInputType(
+  tabId: number,
+  x: number,
+  y: number,
+  text: string,
+  submit: boolean
+): Promise<void> {
+  await withInputAttach(tabId, async (dbg) => {
+    // A trusted click at {x,y} is how CDP establishes focus + caret: the real
+    // click runs the editor's own focus/selection logic and places the caret at
+    // the point (there is no CDP "focus at coordinate" command — the click is
+    // the mechanism). Input.insertText then commits text AT that caret.
+    await dbg.sendCommand({ tabId }, "Input.dispatchMouseEvent", {
+      type: "mousePressed",
+      x,
+      y,
+      button: "left",
+      clickCount: 1,
+    });
+    await dbg.sendCommand({ tabId }, "Input.dispatchMouseEvent", {
+      type: "mouseReleased",
+      x,
+      y,
+      button: "left",
+      clickCount: 1,
+    });
+    if (text.length > 0) {
+      // insertText delivers the whole string as a trusted IME-style commit —
+      // fires real beforeinput/input, which is what strict editors require.
+      await dbg.sendCommand({ tabId }, "Input.insertText", { text });
+    }
+    if (submit) {
+      await dbg.sendCommand({ tabId }, "Input.dispatchKeyEvent", {
+        type: "keyDown",
+        key: "Enter",
+        code: "Enter",
+        windowsVirtualKeyCode: 13,
+        text: "\r",
+      });
+      await dbg.sendCommand({ tabId }, "Input.dispatchKeyEvent", {
+        type: "keyUp",
+        key: "Enter",
+        code: "Enter",
+        windowsVirtualKeyCode: 13,
+      });
+    }
+  });
+}

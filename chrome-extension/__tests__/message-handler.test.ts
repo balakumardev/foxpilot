@@ -494,6 +494,37 @@ describe("MessageHandler (chrome) — foreground-tab preservation", () => {
         args: { action: "click-at", x: 3, y: 4, doubleClick: undefined, button: undefined },
       });
     });
+
+    it("type-at engine:cdp focus-clicks + inserts text then reads the descriptor", async () => {
+      await messageHandler.handleDecodedMessage({
+        cmd: "type-at",
+        tabId: 8,
+        x: 40,
+        y: 50,
+        text: "hi there",
+        submit: true,
+        engine: "cdp",
+        correlationId: "cdpt",
+      } as ServerMessageRequest);
+
+      expect((dbg.sendCommand as jest.Mock).mock.calls).toEqual(
+        expect.arrayContaining([
+          [{ tabId: 8 }, "Input.insertText", { text: "hi there" }],
+        ])
+      );
+      const keys = (dbg.sendCommand as jest.Mock).mock.calls.filter(
+        (c: any[]) => c[1] === "Input.dispatchKeyEvent"
+      );
+      expect(keys).toHaveLength(2); // Enter down + up
+      expect(browser.tabs.sendMessage).toHaveBeenCalledWith(8, {
+        type: "performPointAction",
+        args: { action: "describe-at", x: 40, y: 50 },
+      });
+      const call = (transport.sendResourceToServer as jest.Mock).mock.calls.find(
+        (c: any[]) => c[0].correlationId === "cdpt"
+      );
+      expect(call[0].ok).toBe(true);
+    });
   });
 
   describe("coordinate tools (Task 2+)", () => {
