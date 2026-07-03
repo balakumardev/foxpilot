@@ -602,10 +602,20 @@ mcpServer.tool(
 
 mcpServer.tool(
   "evaluate-script",
-  'Evaluate a JavaScript function in the page\'s real world and return its result. Pass "function" as a function EXPRESSION string, e.g. "() => document.title" or "(sel) => document.querySelector(sel)?.textContent". The function runs in the page context (it can see the page\'s window, frameworks, and DOM), is awaited if it returns a promise, and its result is JSON-serialized back to you. Pass "args" to forward arguments to the function. Note: pages with a strict Content-Security-Policy may block injected scripts; if so this times out with a CSP error.',
-  { tabId: z.number(), function: z.string(), args: z.array(z.any()).optional() },
-  async ({ tabId, function: functionSource, args }) => {
-    const value = await browserApi.evaluateScript(tabId, functionSource, args);
+  'Evaluate a JavaScript function in a browser tab and return its result. Pass "function" as a function EXPRESSION string, e.g. "() => document.title" or "(sel) => document.querySelector(sel)?.textContent". By default (world:"main") it runs in the page\'s real world (sees the page\'s window/frameworks/DOM, is awaited if it returns a promise) — but a page with a strict Content-Security-Policy can block it. Set world:"isolated" to run in the extension\'s isolated content-script world instead: CSP-IMMUNE (works where world:"main" is blocked), can read the DOM, element rects, and non-httpOnly document.cookie, but CANNOT see the page\'s own JS globals/framework state and runs SYNCHRONOUSLY (a returned Promise is not awaited). Pass "args" to forward arguments to the function.',
+  {
+    tabId: z.number(),
+    function: z.string(),
+    args: z.array(z.any()).optional(),
+    world: z.enum(["main", "isolated"]).optional(),
+  },
+  async ({ tabId, function: functionSource, args, world }) => {
+    const value = await browserApi.evaluateScript(
+      tabId,
+      functionSource,
+      args,
+      world
+    );
     return {
       content: [{ type: "text", text: JSON.stringify(value) }],
     };

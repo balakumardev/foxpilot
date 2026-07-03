@@ -659,13 +659,15 @@ export class BrowserAPI {
   async evaluateScript(
     tabId: number,
     functionSource: string,
-    args?: unknown[]
+    args?: unknown[],
+    world?: "main" | "isolated"
   ): Promise<unknown> {
     const message = await this.sendTool<EvalResultExtensionMessage>({
       cmd: "evaluate-script",
       tabId,
       function: functionSource,
       args,
+      world,
     });
     if (!message.ok) {
       throw new Error(message.error ?? "Script evaluation failed");

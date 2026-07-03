@@ -139,6 +139,49 @@ export function buildEvalPageScript(
 }
 
 /**
+ * Builds the ISOLATED-world eval code string for `evaluate-script world:"isolated"`.
+ *
+ * Unlike buildEvalPageScript (which injects a page-world <script>, blockable by
+ * a strict page CSP), this string is handed to `browser.tabs.executeScript`,
+ * which COMPILES it in the isolated content-script world — there is no runtime
+ * `eval()`/`Function()` call, so the extension CSP never triggers and the page
+ * CSP never applies to the isolated world (the same mechanism the snapshot
+ * injection uses). SYNCHRONOUS: a returned Promise cannot be awaited here, so it
+ * is reported as ok:false (use world:"main" for async).
+ *
+ * `functionSource` is embedded RAW (it is arbitrary code by the tool's
+ * contract); a syntax error surfaces as a rejected executeScript, handled by
+ * the caller. `args` is JSON-encoded via jsonForScript.
+ */
+export function buildIsolatedEvalCode(
+  functionSource: string,
+  args: unknown[]
+): string {
+  return (
+    "(function () {" +
+    "try {" +
+    "var __args = " +
+    jsonForScript(args) +
+    ";" +
+    "var __fn = (" +
+    functionSource +
+    ");" +
+    "var __r = (typeof __fn === 'function') ? __fn.apply(null, __args) : __fn;" +
+    "if (__r && typeof __r.then === 'function') {" +
+    "return { ok:false, error: 'isolated-world evaluation is synchronous and cannot await a Promise \\u2014 use world:\"main\" for async results.' };" +
+    "}" +
+    "var __out;" +
+    "if (__r === undefined) { __out = null; }" +
+    "else { try { __out = JSON.parse(JSON.stringify(__r)); } catch (e) { __out = String(__r); } }" +
+    "return { ok:true, value: __out };" +
+    "} catch (err) {" +
+    "return { ok:false, error: String(err && err.message || err) };" +
+    "}" +
+    "})();"
+  );
+}
+
+/**
  * Builds the PAGE-world script for the `upload-file` tool.
  *
  * Browsers forbid setting a file `<input>`'s value from JS, so the only way to

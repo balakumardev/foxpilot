@@ -14,6 +14,7 @@ import {
   buildEvalPageScript,
   buildDialogPageScript,
   buildEmulatePageScript,
+  evalInIsolatedWorld,
 } from "./injected/page-world";
 import { performFileUpload } from "./injected/upload-script";
 
@@ -324,6 +325,12 @@ if ((window as any).__bcmcpContentScriptLoaded) {
               message.resultAttr,
               message.timeoutMs
             );
+            sendResponse(result);
+            break;
+          }
+
+          case "evaluateScriptIsolated": {
+            const result = evalInIsolatedWorld(message.functionSource, message.args);
             sendResponse(result);
             break;
           }

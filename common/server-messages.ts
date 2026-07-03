@@ -154,6 +154,12 @@ export interface EvaluateScriptServerMessage extends ServerMessageBase {
   tabId: number;
   function: string;
   args?: unknown[];
+  // Which JS world to run in. "main" (default) injects a page-world <script>
+  // (sees the page's real window/globals; blockable by a strict page CSP).
+  // "isolated" runs in the extension's isolated content-script world
+  // (CSP-immune; sees the DOM but not page-JS globals; synchronous — a
+  // returned Promise is not awaited). Back-compat default is "main".
+  world?: "main" | "isolated";
 }
 
 // Upload a local file into a file <input> identified by a snapshot uid. The MCP

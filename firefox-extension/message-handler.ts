@@ -13,6 +13,7 @@ import {
   buildDialogPageScript,
   buildEmulatePageScript,
   runInPageWorld,
+  buildIsolatedEvalCode,
 } from "./injected/page-world";
 import { performFileUpload, FileUploadResult } from "./injected/upload-script";
 import { setTabUserAgent } from "./emulate";
@@ -342,7 +343,8 @@ export class MessageHandler {
           req.correlationId,
           req.tabId,
           req.function,
-          req.args
+          req.args,
+          req.world
         );
         break;
       case "upload-file":
@@ -866,7 +868,8 @@ export class MessageHandler {
     correlationId: string,
     tabId: number,
     functionSource: string,
-    args?: unknown[]
+    args?: unknown[],
+    world?: "main" | "isolated"
   ): Promise<void> {
     const tab = await browser.tabs.get(tabId);
     if (tab.url && (await isDomainInDenyList(tab.url))) {
@@ -875,16 +878,37 @@ export class MessageHandler {
 
     await this.checkForUrlPermission(tab.url);
 
-    const resultAttr = `data-bcmcp-result-${Date.now()}-${++evalKeyCounter}`;
-    const pageScript = buildEvalPageScript(functionSource, args ?? [], resultAttr);
-
-    const result = await runInPageWorld(
-      (code) => browser.tabs.executeScript(tabId, { code }),
-      pageScript,
-      resultAttr,
-      EVAL_TIMEOUT_MS,
-      sleep
-    );
+    let result: { ok: boolean; value?: unknown; error?: string };
+    if (world === "isolated") {
+      // executeScript COMPILES the code string in the isolated world (no runtime
+      // eval) — CSP-immune, exactly like the snapshot injection. A compile/syntax
+      // error rejects executeScript; surface it as ok:false.
+      try {
+        const results = await browser.tabs.executeScript(tabId, {
+          code: buildIsolatedEvalCode(functionSource, args ?? []),
+        });
+        result =
+          (results && (results[0] as { ok: boolean; value?: unknown; error?: string })) || {
+            ok: false,
+            error: "isolated evaluation produced no result.",
+          };
+      } catch (e) {
+        result = {
+          ok: false,
+          error: e instanceof Error ? e.message : String(e),
+        };
+      }
+    } else {
+      const resultAttr = `data-bcmcp-result-${Date.now()}-${++evalKeyCounter}`;
+      const pageScript = buildEvalPageScript(functionSource, args ?? [], resultAttr);
+      result = await runInPageWorld(
+        (code) => browser.tabs.executeScript(tabId, { code }),
+        pageScript,
+        resultAttr,
+        EVAL_TIMEOUT_MS,
+        sleep
+      );
+    }
 
     await this.client.sendResourceToServer({
       resource: "eval-result",

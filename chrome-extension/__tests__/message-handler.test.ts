@@ -345,4 +345,47 @@ describe("MessageHandler (chrome) — foreground-tab preservation", () => {
       });
     });
   });
+
+  describe("evaluate-script world (Task 1)", () => {
+    const automationConfig = { ...baseConfig, automationMode: true };
+
+    beforeEach(() => {
+      (browser.storage.local.get as jest.Mock).mockResolvedValue({
+        config: automationConfig,
+      });
+      (browser.tabs.get as jest.Mock).mockResolvedValue({
+        id: 5,
+        url: "https://example.com",
+      });
+      (browser.permissions.contains as jest.Mock).mockResolvedValue(true);
+    });
+
+    it("world:isolated routes to the isolated content-script message and forwards the result", async () => {
+      (browser.tabs.sendMessage as jest.Mock).mockResolvedValue({
+        ok: true,
+        value: 42,
+      });
+
+      await messageHandler.handleDecodedMessage({
+        cmd: "evaluate-script",
+        tabId: 5,
+        function: "() => 42",
+        world: "isolated",
+        correlationId: "ci",
+      } as ServerMessageRequest);
+
+      expect(browser.tabs.sendMessage).toHaveBeenCalledWith(5, {
+        type: "evaluateScriptIsolated",
+        functionSource: "() => 42",
+        args: [],
+      });
+      expect(transport.sendResourceToServer).toHaveBeenCalledWith({
+        resource: "eval-result",
+        correlationId: "ci",
+        ok: true,
+        value: 42,
+        error: undefined,
+      });
+    });
+  });
 });

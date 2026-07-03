@@ -774,6 +774,54 @@ describe("MessageHandler", () => {
     });
   });
 
+  describe("evaluate-script world (Task 1)", () => {
+    const automationConfig = {
+      secret: "test-secret",
+      ports: [8089],
+      domainDenyList: [] as string[],
+      auditLog: [],
+      automationMode: true,
+    };
+
+    beforeEach(() => {
+      (browser.storage.local.get as jest.Mock).mockResolvedValue({
+        config: automationConfig,
+      });
+      (browser.tabs.get as jest.Mock).mockResolvedValue({
+        id: 3,
+        url: "https://example.com",
+      });
+      (browser.permissions.contains as jest.Mock).mockResolvedValue(true);
+    });
+
+    it("world:isolated compiles the source in the isolated world (no page-world <script>) and returns the value", async () => {
+      (browser.tabs.executeScript as jest.Mock).mockResolvedValue([
+        { ok: true, value: "TITLE" },
+      ]);
+
+      await messageHandler.handleDecodedMessage({
+        cmd: "evaluate-script",
+        tabId: 3,
+        function: "() => document.title",
+        world: "isolated",
+        correlationId: "ei",
+      } as ServerMessageRequest);
+
+      // Exactly one executeScript (the compiled isolated eval) — NO inject+poll.
+      expect((browser.tabs.executeScript as jest.Mock).mock.calls.length).toBe(1);
+      const code = (browser.tabs.executeScript as jest.Mock).mock.calls[0][1].code;
+      expect(code).toContain("() => document.title");
+      expect(code).not.toContain("createElement('script')");
+      expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+        resource: "eval-result",
+        correlationId: "ei",
+        ok: true,
+        value: "TITLE",
+        error: undefined,
+      });
+    });
+  });
+
   describe("input realism — synthetic mode", () => {
     it("routes a click through the humanized path (multiple executeScript calls) and replies ok", async () => {
       (browser.storage.local.get as jest.Mock).mockResolvedValue({

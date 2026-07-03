@@ -6,6 +6,7 @@ import {
   buildDialogPageScript,
   buildEmulatePageScript,
   runInPageWorld,
+  buildIsolatedEvalCode,
 } from "../injected/page-world";
 
 /**
@@ -545,5 +546,33 @@ describe("runInPageWorld", () => {
 
     expect(result.ok).toBe(false);
     expect(typeof result.error).toBe("string");
+  });
+});
+
+describe("buildIsolatedEvalCode (Task 1)", () => {
+  it("embeds the source as a compiled expression (no runtime eval/Function)", () => {
+    const code = buildIsolatedEvalCode("() => document.title", []);
+    expect(code).toContain("() => document.title");
+    expect(code).not.toContain("eval(");
+    expect(code).not.toContain("new Function");
+  });
+
+  it("produces a runnable sync IIFE that returns {ok,value}", () => {
+    document.body.innerHTML = `<div id="x">hi</div>`;
+    const code = buildIsolatedEvalCode(
+      "(sel) => document.querySelector(sel).textContent",
+      ["#x"]
+    );
+    // executeScript would return the IIFE's value; emulate that with eval here
+    // (the TEST env has no CSP — this only validates the emitted logic).
+    const result = eval(code);
+    expect(result).toEqual({ ok: true, value: "hi" });
+  });
+
+  it("reports a Promise return as an unsupported-async ok:false", () => {
+    const code = buildIsolatedEvalCode("() => Promise.resolve(1)", []);
+    const result = eval(code);
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/synchronous/i);
   });
 });

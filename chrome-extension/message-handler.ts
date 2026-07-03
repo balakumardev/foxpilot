@@ -111,6 +111,29 @@ async function sendMessageToTab(tabId: number, message: any): Promise<any> {
   }
 }
 
+// Like sendMessageToTab but returns the raw content-script reply WITHOUT
+// throwing on an {ok:false,error} payload — for tools whose ok:false is a
+// legitimate result to report, not a thrown tool-error.
+async function sendMessageToTabRaw(tabId: number, message: any): Promise<any> {
+  try {
+    return await browser.tabs.sendMessage(tabId, message);
+  } catch (e: any) {
+    if (
+      e.message &&
+      (e.message.includes("Receiving end does not exist") ||
+        e.message.includes("Could not establish connection"))
+    ) {
+      await browser.scripting.executeScript({
+        target: { tabId },
+        files: ["dist/content-script.js"],
+      });
+      await sleep(100);
+      return await browser.tabs.sendMessage(tabId, message);
+    }
+    throw e;
+  }
+}
+
 // Offscreen document for screenshot canvas operations.
 //
 // MV3 service workers have no DOM, so canvas/Image compositing is delegated to
@@ -311,7 +334,8 @@ export class MessageHandler {
           req.correlationId,
           req.tabId,
           req.function,
-          req.args
+          req.args,
+          req.world
         );
         break;
       case "upload-file":
@@ -710,7 +734,8 @@ export class MessageHandler {
     correlationId: string,
     tabId: number,
     functionSource: string,
-    args?: unknown[]
+    args?: unknown[],
+    world?: "main" | "isolated"
   ): Promise<void> {
     const tab = await browser.tabs.get(tabId);
     if (tab.url && (await isDomainInDenyList(tab.url))) {
@@ -718,14 +743,26 @@ export class MessageHandler {
     }
     await this.checkForUrlPermission(tab.url);
 
-    const resultAttr = `data-bcmcp-result-${Date.now()}-${++evalKeyCounter}`;
-    const result = await sendMessageToTab(tabId, {
-      type: "evaluateScript",
-      functionSource,
-      args: args ?? [],
-      resultAttr,
-      timeoutMs: EVAL_TIMEOUT_MS,
-    });
+    let result: { ok: boolean; value?: unknown; error?: string };
+    if (world === "isolated") {
+      // Isolated content-script world (CSP-immune DOM reads). Uses the raw
+      // sender so a Chrome-CSP eval degrade comes back as eval-result ok:false
+      // rather than a thrown tool-error.
+      result = await sendMessageToTabRaw(tabId, {
+        type: "evaluateScriptIsolated",
+        functionSource,
+        args: args ?? [],
+      });
+    } else {
+      const resultAttr = `data-bcmcp-result-${Date.now()}-${++evalKeyCounter}`;
+      result = await sendMessageToTab(tabId, {
+        type: "evaluateScript",
+        functionSource,
+        args: args ?? [],
+        resultAttr,
+        timeoutMs: EVAL_TIMEOUT_MS,
+      });
+    }
 
     await this.client.sendResourceToServer({
       resource: "eval-result",

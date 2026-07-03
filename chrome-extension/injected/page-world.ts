@@ -139,6 +139,54 @@ export function buildEvalPageScript(
 }
 
 /**
+ * Runs `evaluate-script world:"isolated"` in Chrome's isolated content-script
+ * world. There is no MV3 `code:` injection API, so the only way to compile an
+ * arbitrary source string is `new Function`. Chrome's DEFAULT isolated-world
+ * extension CSP (`script-src 'self' 'wasm-unsafe-eval'`) BLOCKS eval/new
+ * Function, so on stable Chrome this throws an EvalError — caught below and
+ * reported as a clear, recoverable ok:false (never silent). SYNCHRONOUS: a
+ * returned Promise cannot be awaited, so it is reported as ok:false.
+ */
+export function evalInIsolatedWorld(
+  functionSource: string,
+  args: unknown[]
+): { ok: boolean; value?: unknown; error?: string } {
+  try {
+    const factory = new Function("return (" + functionSource + ")");
+    const fn = factory();
+    const result = typeof fn === "function" ? fn.apply(null, args) : fn;
+    if (result && typeof (result as { then?: unknown }).then === "function") {
+      return {
+        ok: false,
+        error:
+          'isolated-world evaluation is synchronous and cannot await a Promise — use world:"main" for async results.',
+      };
+    }
+    let out: unknown;
+    if (result === undefined) {
+      out = null;
+    } else {
+      try {
+        out = JSON.parse(JSON.stringify(result));
+      } catch (e) {
+        out = String(result);
+      }
+    }
+    return { ok: true, value: out };
+  } catch (err) {
+    const msg = String((err as { message?: unknown })?.message ?? err);
+    if (/unsafe-eval|call to Function|EvalError|Content Security Policy/i.test(msg)) {
+      return {
+        ok: false,
+        error:
+          'isolated-world evaluation is not available on this Chrome build (the extension\'s isolated-world CSP blocks eval). Use world:"main", or read DOM state via take-snapshot / take-screenshot.',
+      };
+    }
+    return { ok: false, error: msg };
+  }
+}
+
+/**
  * Builds the PAGE-world script for the `upload-file` tool.
  *
  * Browsers forbid setting a file `<input>`'s value from JS, so the only way to
