@@ -19,10 +19,30 @@
  */
 export function buildSnapshot(
   doc: Document,
-  options: { verbose: boolean; maxLength: number }
-): { tree: string; isTruncated: boolean } {
+  options: {
+    verbose: boolean;
+    maxLength: number;
+    // Phase-1 additions (all optional; back-compatible):
+    includePointer?: boolean; // default true — capture cursor:pointer elements
+    maxInteractive?: number; // cap on the pointer pass (default 500)
+    selector?: string; // CSS-selector query mode (Task 5)
+    textContains?: string; // visible-text query mode (Task 6)
+    rootSelector?: string; // region scoping (Task 7)
+    offset?: number; // paging (Task 8)
+    limit?: number; // paging (Task 8)
+  }
+): {
+  tree: string;
+  isTruncated: boolean;
+  total?: number;
+  hasMore?: boolean;
+  error?: string;
+} {
   const verbose = !!options.verbose;
   const maxLength = options.maxLength;
+  const includePointer = options.includePointer !== false; // default true
+  const maxInteractive =
+    typeof options.maxInteractive === "number" ? options.maxInteractive : 500;
 
   const UID_ATTR = "data-bcmcp-uid";
   const NAME_MAX = 120;
@@ -344,13 +364,13 @@ export function buildSnapshot(
   // attached via addEventListener), so the base pass can't see them. They are
   // distinguishable only by `cursor: pointer`, which needs getComputedStyle.
   //
-  // This pass is opt-in (verbose) so the default snapshot stays unchanged, and
+  // This pass runs by default (includePointer, on by default) so the default snapshot stays unchanged, and
   // it is feature-guarded so jsdom — which has no layout engine and returns
   // default styles — neither crashes nor alters existing behaviour. The
   // getComputedStyle call is wrapped in try/catch as a further safety net.
   const win = doc.defaultView;
-  if (verbose && win && typeof win.getComputedStyle === "function") {
-    const MAX_CLICKABLES = 300;
+  if (includePointer && win && typeof win.getComputedStyle === "function") {
+    const MAX_CLICKABLES = maxInteractive;
     let added = 0;
 
     function ownDirectText(el: Element): string {

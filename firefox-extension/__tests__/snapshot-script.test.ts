@@ -329,6 +329,37 @@ describe("buildSnapshot", () => {
     expect(tree).toContain("[uid=e3]");
   });
 
+  describe("includePointer (Task 4)", () => {
+    it("captures an inline cursor:pointer div by DEFAULT (includePointer defaults true)", () => {
+      document.body.innerHTML = `<div style="cursor: pointer">Open</div>`;
+      const { tree } = buildSnapshot(document, { verbose: false, maxLength: 25000 });
+      expect(tree).toMatch(/clickable "Open" \[uid=e\d+\]/);
+    });
+
+    it("omits pointer elements when includePointer is explicitly false", () => {
+      document.body.innerHTML = `<div style="cursor: pointer">Open</div>`;
+      const { tree } = buildSnapshot(document, {
+        verbose: false,
+        maxLength: 25000,
+        includePointer: false,
+      });
+      expect(tree).not.toContain("Open");
+    });
+
+    it("honors maxInteractive as the pointer-pass cap", () => {
+      let html = "";
+      for (let i = 0; i < 5; i++) html += `<div style="cursor: pointer">P${i}</div>`;
+      document.body.innerHTML = html;
+      const { tree } = buildSnapshot(document, {
+        verbose: false,
+        maxLength: 25000,
+        maxInteractive: 2,
+      });
+      const matches = tree.match(/clickable "P\d"/g) || [];
+      expect(matches.length).toBe(2);
+    });
+  });
+
   /**
    * The verbose-only second pass captures "visually clickable" non-semantic
    * elements — `<div onClick={...}>`-style controls that modern React apps
@@ -380,13 +411,13 @@ describe("buildSnapshot", () => {
       expect(tree).toContain('textbox "Name"');
     });
 
-    it("captures a non-semantic div with inline cursor:pointer as a clickable (verbose only)", () => {
+    it("captures a non-semantic div with inline cursor:pointer as a clickable (default and verbose)", () => {
       document.body.innerHTML = `<div style="cursor: pointer">Click me</div>`;
       const verbose = build(true);
       expect(verbose.tree).toMatch(/clickable "Click me" \[uid=e\d+\]/);
-      // It is verbose-only: the default snapshot must not contain it.
+      // includePointer now defaults true, so the DEFAULT snapshot includes it too.
       const nonVerbose = build(false);
-      expect(nonVerbose.tree).not.toContain("Click me");
+      expect(nonVerbose.tree).toMatch(/clickable "Click me" \[uid=e\d+\]/);
     });
 
     it("derives the clickable name from aria-label when present", () => {
