@@ -6,6 +6,7 @@ import { BrowserAPI } from "./browser-api";
 import { readFileForUpload } from "./file-upload";
 import { formatPointResult } from "./point-format";
 import { formatNetworkHeaders } from "./network-format";
+import { formatSnapshotResult } from "./snapshot-format";
 import dayjs from "dayjs";
 import relativeTime from "dayjs/plugin/relativeTime";
 
@@ -200,7 +201,7 @@ mcpServer.tool(
 
 mcpServer.tool(
   "take-snapshot",
-  "Take an accessibility snapshot of a browser tab's page. Returns interactive elements each tagged with a stable uid (e.g. [uid=e12]) for the click/fill/hover tools; re-take after the page changes, as uids are reassigned. By default it now also captures visually-clickable elements (cursor:pointer, e.g. React <div onClick> cards) — set includePointer:false to suppress that, or maxInteractive to cap how many are added. Query modes: 'selector' returns exactly the CSS-selector matches (even non-interactive, e.g. selector:'[contenteditable]' for a chat box); 'textContains' returns the deepest elements whose visible text contains the string (case-insensitive). Scope with 'rootSelector' to collect only within one subtree (e.g. the main panel, excluding a huge sidebar), and page large results with 'offset'/'limit' (the reply reports total collected and whether more remain). verbose:true additionally includes headings and aria-labelled elements.",
+  "Take an accessibility snapshot of a browser tab's page. Returns interactive elements each tagged with a uid (e.g. [uid=e12]) for the uid-based tools (click-element / fill-element / hover-element / etc.). IMPORTANT: a [uid=eN] is only valid until the NEXT take-snapshot on the same tab — snapshot, then act on its uids before snapshotting again; a second snapshot reassigns every uid, so a uid from an earlier snapshot will resolve to the wrong element or fail. By default it now also captures visually-clickable elements (cursor:pointer, e.g. React <div onClick> cards) — set includePointer:false to suppress that, or maxInteractive to cap how many are added. Query modes: 'selector' returns exactly the CSS-selector matches (even non-interactive, e.g. selector:'[contenteditable]' for a chat box); 'textContains' returns the deepest elements whose visible text contains the string (case-insensitive). Scope with 'rootSelector' to collect only within one subtree (e.g. the main panel, excluding a huge sidebar), and page large results with 'offset'/'limit' (the reply reports total collected and whether more remain). verbose:true additionally includes headings and aria-labelled elements.",
   {
     tabId: z.number(),
     verbose: z.boolean().optional(),
@@ -233,31 +234,11 @@ mcpServer.tool(
       offset,
       limit,
     });
-    if (result.error) {
-      return {
-        content: [{ type: "text", text: `Snapshot error: ${result.error}` }],
-        isError: true,
-      };
-    }
-    const usedQuery =
-      selector !== undefined ||
-      textContains !== undefined ||
-      rootSelector !== undefined ||
-      offset !== undefined ||
-      limit !== undefined;
-    const truncHint = result.isTruncated
-      ? "[snapshot truncated due to size]\n"
-      : "";
-    // Metadata footer only when a query/paging param was supplied, so the
-    // default `take-snapshot {tabId}` output stays as-is (aside from the
-    // by-design cursor:pointer additions). total/hasMore populate in Task 8.
-    let meta = "";
-    if (usedQuery && typeof result.total === "number") {
-      meta =
-        `[snapshot: ${result.total} element(s) collected` +
-        `${result.hasMore ? ", more available — page with offset/limit" : ""}]\n`;
-    }
-    return { content: [{ type: "text", text: truncHint + meta + result.snapshot }] };
+    // A compact element-count line is ALWAYS prepended (via formatSnapshotResult)
+    // so a cold agent immediately knows the page size and when to scope; the
+    // truncation / more-available hints fold into that one line. See
+    // snapshot-format.ts (extracted so the composed text is unit-testable).
+    return formatSnapshotResult(result);
   }
 );
 
@@ -629,7 +610,7 @@ mcpServer.tool(
 
 mcpServer.tool(
   "click-at",
-  "Click at viewport pixel coordinates {x,y} (origin = top-left of the visible viewport, as used by document.elementFromPoint). Reach for this when take-snapshot did NOT surface a clickable element (e.g. a custom-React <div onClick> with no role/tabindex) but you can see where it is — e.g. from take-screenshot. Runs covertly in the isolated world (no automation banner, no debugger) by default. Set engine:\"cdp\" (Chrome/Edge only) to dispatch a TRUSTED (isTrusted:true) click via the debugger instead — reach for it only when the default click is ignored by a strict handler; it shows a 'started debugging this browser' banner (detectable) and errors on Firefox. Set doubleClick for a double-click, or button to 'middle'/'right'. Returns a descriptor of the element that was under the point (or an error if the point hit nothing).",
+  "Click at viewport pixel coordinates {x,y} (origin = top-left of the visible viewport, as used by document.elementFromPoint). Coordinates are CSS pixels — if you read them off a take-screenshot, that image is CSS-px × devicePixelRatio (typically 2 on Retina/HiDPI), so divide the screenshot pixel coordinates by the DPR first; then use the returned element descriptor to confirm you hit the intended element and re-aim if not. Reach for this when take-snapshot did NOT surface a clickable element (e.g. a custom-React <div onClick> with no role/tabindex) but you can see where it is — e.g. from take-screenshot. Runs covertly in the isolated world (no automation banner, no debugger) by default. Set engine:\"cdp\" (Chrome/Edge only) to dispatch a TRUSTED (isTrusted:true) click via the debugger instead — reach for it only when the default click is ignored by a strict handler; it shows a 'started debugging this browser' banner (detectable) and errors on Firefox. Set doubleClick for a double-click, or button to 'middle'/'right'. Returns a descriptor of the element that was under the point (or an error if the point hit nothing).",
   {
     tabId: z.number(),
     x: z.number(),
@@ -646,7 +627,7 @@ mcpServer.tool(
 
 mcpServer.tool(
   "type-at",
-  "Type text into the element at viewport pixel coordinates {x,y}. Clicks the point to focus it first, then types — works for <input>/<textarea> AND custom <div contenteditable> chat inputs that take-snapshot may not expose as textboxes. Set submit:true to press Enter afterward (and submit the form if there is one). Runs covertly (synthetic) by default. Set engine:\"cdp\" (Chrome/Edge only) to type via TRUSTED events through the debugger — this is the reliable path for strict rich-text editors (Lexical/ProseMirror/Slate) that ignore synthetic keystrokes; it shows a debugging banner and errors on Firefox. Returns a descriptor of the element that was typed into.",
+  "Type text into the element at viewport pixel coordinates {x,y}. Coordinates are CSS pixels — if you read them off a take-screenshot, that image is CSS-px × devicePixelRatio (typically 2 on Retina/HiDPI), so divide the screenshot pixel coordinates by the DPR first; the returned element descriptor reports what was actually under the point, so use it to confirm you targeted the intended field and re-aim if not. Clicks the point to focus it first, then types — works for <input>/<textarea> AND custom <div contenteditable> chat inputs that take-snapshot may not expose as textboxes. Set submit:true to press Enter afterward (and submit the form if there is one). Runs covertly (synthetic) by default. Set engine:\"cdp\" (Chrome/Edge only) to type via TRUSTED events through the debugger — this is the reliable path for strict rich-text editors (Lexical/ProseMirror/Slate) that ignore synthetic keystrokes; it shows a debugging banner and errors on Firefox. Returns a descriptor of the element that was typed into.",
   {
     tabId: z.number(),
     x: z.number(),
@@ -663,7 +644,7 @@ mcpServer.tool(
 
 mcpServer.tool(
   "hover-at",
-  "Hover at viewport pixel coordinates {x,y} to reveal hover-triggered UI (dropdown menus, tooltips) before a follow-up snapshot/click. Runs covertly in the isolated world via synthetic pointer events by default (fires the page's JS mouseover/mouseenter listeners, which open most such menus, but does NOT activate CSS :hover styling). Set engine:\"cdp\" (Chrome/Edge only) to move a TRUSTED pointer via the debugger (shows a banner; errors on Firefox). Returns a descriptor of the element under the point.",
+  "Hover at viewport pixel coordinates {x,y} to reveal hover-triggered UI (dropdown menus, tooltips) before a follow-up snapshot/click. Coordinates are CSS pixels — if you read them off a take-screenshot, that image is CSS-px × devicePixelRatio (typically 2 on Retina/HiDPI), so divide the screenshot pixel coordinates by the DPR first; use the returned element descriptor to confirm you hovered the intended element and re-aim if not. Runs covertly in the isolated world via synthetic pointer events by default (fires the page's JS mouseover/mouseenter listeners, which open most such menus, but does NOT activate CSS :hover styling). Set engine:\"cdp\" (Chrome/Edge only) to move a TRUSTED pointer via the debugger (shows a banner; errors on Firefox). Returns a descriptor of the element under the point.",
   {
     tabId: z.number(),
     x: z.number(),
@@ -678,7 +659,7 @@ mcpServer.tool(
 
 mcpServer.tool(
   "scroll-at",
-  "Scroll the NEAREST SCROLLABLE CONTAINER under viewport pixel coordinates {x,y} by (dx, dy) pixels — this scrolls an inner panel (e.g. a chat message list) rather than the whole window, which press-key PageUp cannot do. Omit dx/dy to scroll one container-viewport down. Falls back to the window when nothing under the point scrolls. Runs covertly (synthetic) by default. Set engine:\"cdp\" (Chrome/Edge only) to dispatch a TRUSTED wheel event via the debugger for sites that honor real wheel events exclusively (shows a banner; errors on Firefox). Returns a descriptor of the container that was scrolled.",
+  "Scroll the NEAREST SCROLLABLE CONTAINER under viewport pixel coordinates {x,y} by (dx, dy) pixels — this scrolls an inner panel (e.g. a chat message list) rather than the whole window, which press-key PageUp cannot do. Coordinates are CSS pixels — if you read them off a take-screenshot, that image is CSS-px × devicePixelRatio (typically 2 on Retina/HiDPI), so divide the screenshot pixel coordinates by the DPR first; the returned descriptor reports which container was scrolled, so use it to confirm you targeted the intended panel and re-aim if not. Omit dx/dy to scroll one container-viewport down. Falls back to the window when nothing under the point scrolls. Runs covertly (synthetic) by default. Set engine:\"cdp\" (Chrome/Edge only) to dispatch a TRUSTED wheel event via the debugger for sites that honor real wheel events exclusively (shows a banner; errors on Firefox). Returns a descriptor of the container that was scrolled.",
   {
     tabId: z.number(),
     x: z.number(),
@@ -844,7 +825,7 @@ mcpServer.tool(
 
 mcpServer.tool(
   "get-network-requests",
-  "Get the network requests captured for a browser tab (URL, method, status, resource type, timing, size). Requires Automation Mode, and only captures requests made AFTER Automation Mode was enabled (reload the page if you see nothing). Pass 'filter' to keep only requests whose URL contains it (case-insensitive) or whose resource type matches it exactly, 'limit' to return only the most recent N, 'includeHeaders' to also print each request's captured request/response headers (credential-bearing values — Cookie/Authorization/Set-Cookie — are redacted by default), 'includeCredentials' to print those credential values UN-REDACTED (only meaningful with includeHeaders; WARNING: this exposes real session cookies/tokens in the tool output — use it only when you must replay the app's own authenticated calls, and never log the values), and 'includeBody' to request best-effort response-body snippets for FUTURE requests (browser-dependent: captured on Firefox; Chrome MV3 cannot capture bodies via webRequest and returns metadata only).",
+  "Get the network requests captured for a browser tab (URL, method, status, resource type, timing, size). Requires Automation Mode, and only captures requests made AFTER Automation Mode was enabled (reload the page if you see nothing). Pass 'filter' to keep only requests whose URL contains it (case-insensitive) or whose resource type matches it exactly, 'limit' to return only the most recent N, 'includeHeaders' to also print each request's captured request/response headers (credential-bearing values — Cookie/Authorization/Set-Cookie — are redacted by default), 'includeCredentials' to print those credential values UN-REDACTED (has an effect ONLY together with includeHeaders:true — it un-redacts the header values that includeHeaders prints, so headers must be shown for it to do anything; WARNING: this exposes real session cookies/tokens in the tool output — use it only when you must replay the app's own authenticated calls, and never log the values), and 'includeBody' to request best-effort response-body snippets for FUTURE requests (browser-dependent: captured on Firefox; Chrome MV3 cannot capture bodies via webRequest and returns metadata only).",
   {
     tabId: z.number(),
     filter: z.string().optional(),
