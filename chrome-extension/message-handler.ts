@@ -670,38 +670,44 @@ export class MessageHandler {
     await this.checkForUrlPermission(tab.url);
 
     const mode = await getInputRealismMode();
-    let result: any;
+    // Build the ONE dispatch promise for the active mode, then race it once
+    // against tab navigation. A click whose handler navigates tears the
+    // content-script world down before its ack can return — hanging the reply
+    // even though the click WORKED — so the background nav watcher lets a nav
+    // that wins report {ok:true,navigated:true} instead of timing out. The
+    // native path is raced too: it FALLS BACK to the synthetic content-script
+    // dispatch (fill/fill-form, a missing screen-rect, an unsupported action, or
+    // an unreachable sidecar), and those fallbacks hang on a navigating click
+    // just the same. A normally-resolving dispatch still wins the race unchanged.
+    let dispatchPromise: Promise<{
+      ok: boolean;
+      error?: string;
+      navigated?: boolean;
+    }>;
     if (mode === "off") {
-      // Covert content-script dispatch: a click whose handler navigates tears
-      // down the page before the ack returns, so race the ack against tab
-      // navigation — a nav that wins reports {ok:true,navigated:true} instead of
-      // hanging until the broker times out.
-      result = await raceInputAgainstNavigation(
-        tabId,
-        sendMessageToTab(tabId, {
-          type: "performInputAction",
-          args,
-        })
-      );
+      // Covert content-script dispatch.
+      dispatchPromise = sendMessageToTab(tabId, {
+        type: "performInputAction",
+        args,
+      });
     } else if (mode === "native") {
-      // Native OS input fires from the sidecar (survives page navigation) — the
-      // ack does not ride the content-script world, so it is not raced.
-      result = await this.runNativeInputAction(tabId, args);
+      // Native OS input from the sidecar, with synthetic content-script fallbacks.
+      dispatchPromise = this.runNativeInputAction(tabId, args);
     } else {
-      // Synthetic (default) also routes through the content-script world → race
-      // it against navigation for the same reason as the "off" path.
-      result = await raceInputAgainstNavigation(
-        tabId,
-        this.runHumanInputAction(tabId, args)
-      );
+      // Synthetic (default) routes through the content-script world.
+      dispatchPromise = this.runHumanInputAction(tabId, args);
     }
+    const result: { ok: boolean; error?: string; navigated?: boolean } =
+      await raceInputAgainstNavigation(tabId, dispatchPromise);
 
     await this.client.sendResourceToServer({
       resource: "action-result",
       correlationId,
       ok: result.ok,
       error: result.error,
-      navigated: (result as { navigated?: boolean }).navigated,
+      ...((result as { navigated?: boolean }).navigated !== undefined
+        ? { navigated: (result as { navigated?: boolean }).navigated }
+        : {}),
     });
   }
 

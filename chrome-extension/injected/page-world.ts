@@ -22,8 +22,11 @@
  * tested directly. `runInPageWorld` is the orchestrator; its `exec` and `sleep`
  * dependencies are injected so it is testable with mocks.
  *
- * This helper is shared: the `evaluate-script` tool uses it now, and the
- * upcoming `upload-file` tool will reuse the same inject/poll machinery.
+ * This helper is shared with firefox-extension/injected/page-world.ts. On Chrome
+ * the exported `runInPageWorld` orchestrator is currently unused (Chrome drives
+ * inject/poll from content-script.ts's own copy); the page-script builders below
+ * are what content-script.ts imports, and this file stays byte-identical to
+ * Firefox's per the mirror rule.
  */
 
 const POLL_INTERVAL_MS = 100;
@@ -426,12 +429,26 @@ export function buildEmulatePageScript(
  * string in the tab's isolated content-script world and resolves to the array of
  * per-frame results. `sleep` is injected for testability.
  *
+ * NOTE: this exported orchestrator is currently UNUSED on Chrome — the Chrome
+ * runtime drives inject/poll from content-script.ts's OWN `runInPageWorld` (the
+ * content script already runs in the isolated world, so it appends the page
+ * `<script>` directly instead of round-tripping through `exec`). This copy is
+ * kept byte-identical to firefox-extension/injected/page-world.ts's
+ * `runInPageWorld` per the shared-injected-function mirror rule.
+ *
  * Steps:
  *   1. Inject the page-world script once.
  *   2. Poll the result attribute every ~100ms until it appears or `timeoutMs`
  *      elapses.
  *   3. Parse the attribute's value (it is the page script's JSON envelope, e.g.
  *      `{ ok, value }` or `{ ok, error }`) and return it.
+ *
+ * When `startedAttr` is provided, a fast CSP probe runs between steps 1 and 2:
+ * the started marker (set synchronously by an ALLOWED inline `<script>`) is
+ * polled for a bounded window and, if it never appears, returns
+ * `{ ok:false, cspBlocked:true }` immediately instead of waiting out the full
+ * `timeoutMs`. Omitting `startedAttr` preserves the original inject → poll →
+ * parse behavior exactly.
  *
  * On timeout returns `{ ok:false, error }` mentioning that the page's
  * Content-Security-Policy may be blocking the injected script. On a JSON parse
@@ -442,10 +459,42 @@ export async function runInPageWorld(
   pageScript: string,
   resultAttr: string,
   timeoutMs: number,
-  sleep: (ms: number) => Promise<void>
-): Promise<{ ok: boolean; value?: any; error?: string }> {
+  sleep: (ms: number) => Promise<void>,
+  startedAttr?: string
+): Promise<{ ok: boolean; value?: any; error?: string; cspBlocked?: boolean }> {
   // 1. Inject the page-world script (one executeScript call).
   await exec(buildInjectorCode(pageScript));
+
+  // 1b. CSP probe (only when the caller passes a startedAttr): an ALLOWED inline
+  // <script> sets the started marker synchronously, so it should appear within a
+  // short window. Poll it for a bounded CSP_PROBE_MS; if it never appears, the
+  // page's Content-Security-Policy blocked the injected <script>, so fail fast
+  // with cspBlocked:true instead of waiting out the full result timeout below.
+  if (startedAttr) {
+    const startedPoller = buildPollerCode(startedAttr);
+    const CSP_PROBE_MS = 1000;
+    const probeDeadline = Date.now() + CSP_PROBE_MS;
+    let started = false;
+    while (true) {
+      const [marker] = await exec(startedPoller);
+      if (marker != null) {
+        started = true;
+        break;
+      }
+      if (Date.now() >= probeDeadline) {
+        break;
+      }
+      await sleep(POLL_INTERVAL_MS);
+    }
+    if (!started) {
+      return {
+        ok: false,
+        cspBlocked: true,
+        error:
+          "CSP blocked the injected script (the page forbids inline script execution). Retrying in the isolated world.",
+      };
+    }
+  }
 
   const pollerCode = buildPollerCode(resultAttr);
   const deadline = Date.now() + timeoutMs;

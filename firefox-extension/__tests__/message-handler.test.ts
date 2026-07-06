@@ -890,23 +890,38 @@ describe("MessageHandler", () => {
         }
       );
 
-      await messageHandler.handleDecodedMessage({
-        cmd: "evaluate-script",
-        tabId: 3,
-        function: "() => document.title",
-        world: "auto",
-        correlationId: "eauto",
-      } as ServerMessageRequest);
-
-      // The main world was CSP-blocked (started marker never appeared) and the
-      // eval succeeded via the CSP-immune isolated fallback.
-      expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
-        resource: "eval-result",
-        correlationId: "eauto",
-        ok: true,
-        value: "ISO",
-        error: undefined,
+      // The started marker never appears, so runInPageWorld's CSP probe would
+      // otherwise spin against the real ~1s CSP_PROBE_MS wall-clock. Advance a
+      // fake Date.now() by more than CSP_PROBE_MS on every call so the probe's
+      // first deadline check trips immediately (its sleep is never reached) —
+      // same fast-clock trick as page-world.test.ts. This does NOT change what
+      // the test asserts, only how long it spends spinning.
+      let nowValue = 1_000_000;
+      const nowSpy = jest.spyOn(Date, "now").mockImplementation(() => {
+        nowValue += 10_000;
+        return nowValue;
       });
+      try {
+        await messageHandler.handleDecodedMessage({
+          cmd: "evaluate-script",
+          tabId: 3,
+          function: "() => document.title",
+          world: "auto",
+          correlationId: "eauto",
+        } as ServerMessageRequest);
+
+        // The main world was CSP-blocked (started marker never appeared) and the
+        // eval succeeded via the CSP-immune isolated fallback.
+        expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+          resource: "eval-result",
+          correlationId: "eauto",
+          ok: true,
+          value: "ISO",
+          error: undefined,
+        });
+      } finally {
+        nowSpy.mockRestore();
+      }
     });
 
     it("engine:cdp replies ok:false naming Chrome/Edge (no debugger on Firefox) and never injects", async () => {
@@ -1100,6 +1115,41 @@ describe("MessageHandler", () => {
         correlationId: "c-native-miss",
         ok: true,
         error: undefined,
+      });
+    });
+
+    it("native-mode input whose synthetic fallback hangs on navigation reports navigated:true", async () => {
+      // fill always FALLS BACK to the synthetic content-script dispatch, even in
+      // native mode. Simulate a navigating fill: the content-script dispatch
+      // (executeScript) never resolves because the page tore down before its ack
+      // could return. Because runInputAction now races the native path too, the
+      // background onUpdated(status:"loading") wins and reports navigated:true
+      // instead of hanging until the broker times out.
+      navUpdatedListeners.length = 0;
+      (browser.tabs.executeScript as jest.Mock).mockReturnValue(
+        new Promise(() => {})
+      );
+
+      const p = messageHandler.handleDecodedMessage({
+        cmd: "fill-element",
+        tabId: 123,
+        uid: "e1",
+        value: "hi",
+        correlationId: "c-native-nav",
+      } as ServerMessageRequest);
+
+      // Let the handler reach the (fallback) dispatch and register its onUpdated
+      // listener, then simulate the tab navigating.
+      await flushToListener();
+      fireTabUpdated(123, "loading");
+      await p;
+
+      expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+        resource: "action-result",
+        correlationId: "c-native-nav",
+        ok: true,
+        error: undefined,
+        navigated: true,
       });
     });
   });

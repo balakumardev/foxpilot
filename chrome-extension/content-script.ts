@@ -73,7 +73,7 @@ if ((window as any).__bcmcpContentScriptLoaded) {
           return;
         }
         if (Date.now() - start > timeoutMs) {
-          resolve({ ok: false, error: "CSP hint: page may have blocked inline script injection" });
+          resolve({ ok: false, error: "Timed out waiting for the script result (the function may be hanging or awaiting a promise that never resolves)." });
           return;
         }
         setTimeout(check, 100);

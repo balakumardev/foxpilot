@@ -753,31 +753,35 @@ export class MessageHandler {
     await this.checkForUrlPermission(tab.url);
 
     const mode = await getInputRealismMode();
-    // The covert (off / synthetic) paths dispatch into the page/content-script
-    // world, which a navigating click tears down before its ack can return —
-    // hanging the reply even though the click WORKED. Race those against tab
-    // navigation so a click that begins a navigation reports success with
-    // navigated:true instead of timing out. The native (sidecar) path acks
-    // out-of-band from the OS input helper, so it is not subject to page teardown
-    // and is left unwrapped.
-    let result: { ok: boolean; error?: string; navigated?: boolean };
+    // Build the ONE dispatch promise for the active mode, then race it once
+    // against tab navigation. A navigating click tears the page/content-script
+    // world down before its ack can return — hanging the reply even though the
+    // click WORKED — so a nav that wins reports {ok:true,navigated:true} instead
+    // of timing out. The native path is raced too: it FALLS BACK to the
+    // synthetic content-script dispatch (fill/fill-form, a missing screen-rect,
+    // an unsupported action, or an unreachable sidecar), and those fallbacks hang
+    // on a navigating click just the same. A normally-resolving dispatch still
+    // wins the race unchanged.
+    let dispatchPromise: Promise<{
+      ok: boolean;
+      error?: string;
+      navigated?: boolean;
+    }>;
     if (mode === "off") {
-      const dispatch = browser.tabs
+      dispatchPromise = browser.tabs
         .executeScript(tabId, {
           code: `(${performInputAction.toString()})(document, ${JSON.stringify(
             args
           )})`,
         })
         .then((results) => results[0] as StepResult);
-      result = await raceInputAgainstNavigation(tabId, dispatch);
     } else if (mode === "native") {
-      result = await this.runNativeInputAction(tabId, args);
+      dispatchPromise = this.runNativeInputAction(tabId, args);
     } else {
-      result = await raceInputAgainstNavigation(
-        tabId,
-        this.runHumanInputAction(tabId, args)
-      );
+      dispatchPromise = this.runHumanInputAction(tabId, args);
     }
+    const result: { ok: boolean; error?: string; navigated?: boolean } =
+      await raceInputAgainstNavigation(tabId, dispatchPromise);
 
     await this.client.sendResourceToServer({
       resource: "action-result",
