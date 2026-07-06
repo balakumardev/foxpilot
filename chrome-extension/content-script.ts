@@ -33,12 +33,30 @@ if ((window as any).__bcmcpContentScriptLoaded) {
   async function runInPageWorld(
     pageScript: string,
     resultAttr: string,
-    timeoutMs: number
-  ): Promise<{ ok: boolean; value?: any; error?: string }> {
+    timeoutMs: number,
+    startedAttr?: string
+  ): Promise<{ ok: boolean; value?: any; error?: string; cspBlocked?: boolean }> {
     const script = document.createElement("script");
     script.textContent = pageScript;
     (document.documentElement || document.head || document.body).appendChild(script);
     script.remove();
+
+    // Definitive CSP detection: an ALLOWED inline <script> executes
+    // synchronously during appendChild, so its `startedAttr` marker is already
+    // present here. If the caller asked for a marker and it is absent, the page
+    // CSP blocked the injection — fail instantly instead of waiting out the 10s
+    // timeout (which must stay long for legitimately-slow async evals).
+    if (startedAttr) {
+      if (document.documentElement.getAttribute(startedAttr) === null) {
+        return {
+          ok: false,
+          cspBlocked: true,
+          error:
+            'CSP blocked the injected script (the page forbids inline script execution). On Chrome/Edge retry with engine:"cdp" (runs via the debugger, bypasses page CSP), or read state with the CSP-immune take-snapshot / take-screenshot / coordinate tools / get-cookies.',
+        };
+      }
+      document.documentElement.removeAttribute(startedAttr);
+    }
 
     return new Promise((resolve) => {
       const start = Date.now();
@@ -343,10 +361,12 @@ if ((window as any).__bcmcpContentScriptLoaded) {
           }
 
           case "evaluateScript": {
+            const startedAttr = message.resultAttr + "-started";
             const result = await runInPageWorld(
-              buildEvalPageScript(message.functionSource, message.args, message.resultAttr),
+              buildEvalPageScript(message.functionSource, message.args, message.resultAttr, startedAttr),
               message.resultAttr,
-              message.timeoutMs
+              message.timeoutMs,
+              startedAttr
             );
             sendResponse(result);
             break;

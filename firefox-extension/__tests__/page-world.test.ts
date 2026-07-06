@@ -608,3 +608,63 @@ describe("buildEvalPageScript started marker (Task A2)", () => {
     ).toBe(noMarker);
   });
 });
+
+// Task A6: runInPageWorld gains an optional `startedAttr` CSP probe. After the
+// initial inject it polls the started marker for a bounded window (CSP_PROBE_MS);
+// if the marker never appears the page CSP blocked the inline <script>, so it
+// returns { ok:false, cspBlocked:true } fast instead of waiting out the full
+// result timeout. When the marker appears it proceeds to the normal result poll
+// unchanged. The 5-arg (no startedAttr) form is untouched — covered above.
+describe("runInPageWorld CSP probe (Task A6)", () => {
+  const noSleep = () => Promise.resolve();
+
+  it("returns cspBlocked when the started marker never appears", async () => {
+    // The started poller always returns null → nothing injected ran. Advance a
+    // fake clock inside `sleep` so the bounded probe loop exits deterministically
+    // (~CSP_PROBE_MS worth of iterations) instead of spinning against real
+    // wall-clock time.
+    let now = 1_000_000;
+    const nowSpy = jest.spyOn(Date, "now").mockImplementation(() => now);
+    const advancingSleep = (ms: number) => {
+      now += ms;
+      return Promise.resolve();
+    };
+    const exec = jest.fn(async () => [null]);
+
+    const r = await runInPageWorld(
+      exec,
+      "PAGESCRIPT",
+      "data-r",
+      10000,
+      advancingSleep,
+      "data-started"
+    );
+
+    expect(r.cspBlocked).toBe(true);
+    expect(r.ok).toBe(false);
+    nowSpy.mockRestore();
+  });
+
+  it("resolves the value when the started marker appears", async () => {
+    // 1st poll (started): the poller code references the started attr → return
+    // the marker; subsequent polls (result): return the JSON envelope. The probe
+    // passes, then the normal result poll parses and returns the value.
+    const exec = jest.fn(async (code: string) => {
+      if (code.includes("data-started")) {
+        return ["1"]; // started marker present
+      }
+      return [JSON.stringify({ ok: true, value: 9 })]; // result envelope
+    });
+
+    const r = await runInPageWorld(
+      exec,
+      "PAGESCRIPT",
+      "data-r",
+      10000,
+      noSleep,
+      "data-started"
+    );
+
+    expect(r).toEqual({ ok: true, value: 9 });
+  });
+});

@@ -430,16 +430,58 @@ export function buildEmulatePageScript(
  * On timeout returns `{ ok:false, error }` mentioning that the page's
  * Content-Security-Policy may be blocking the injected script. On a JSON parse
  * failure returns `{ ok:false, error }` describing the parse problem.
+ *
+ * When `startedAttr` is provided, a fast CSP probe runs BETWEEN steps 1 and 2:
+ * it polls the started marker (which `buildEvalPageScript` sets synchronously as
+ * its first statement) for a short bounded window and, if the marker never
+ * appears — meaning the inline `<script>` was CSP-blocked so nothing ran —
+ * returns `{ ok:false, cspBlocked:true, error }` immediately. That lets the
+ * caller fall back to the isolated world instead of waiting out the full
+ * `timeoutMs` (which must stay long for a legitimately-slow async eval).
+ * Omitting `startedAttr` preserves the original inject → poll → parse behavior
+ * exactly.
  */
 export async function runInPageWorld(
   exec: (code: string) => Promise<any[]>,
   pageScript: string,
   resultAttr: string,
   timeoutMs: number,
-  sleep: (ms: number) => Promise<void>
-): Promise<{ ok: boolean; value?: any; error?: string }> {
+  sleep: (ms: number) => Promise<void>,
+  startedAttr?: string
+): Promise<{ ok: boolean; value?: any; error?: string; cspBlocked?: boolean }> {
   // 1. Inject the page-world script (one executeScript call).
   await exec(buildInjectorCode(pageScript));
+
+  // 1b. CSP probe (only when the caller passes a startedAttr): an ALLOWED inline
+  // <script> sets the started marker synchronously, so it should appear within a
+  // short window. Poll it for a bounded CSP_PROBE_MS; if it never appears, the
+  // page's Content-Security-Policy blocked the injected <script>, so fail fast
+  // with cspBlocked:true instead of waiting out the full result timeout below.
+  if (startedAttr) {
+    const startedPoller = buildPollerCode(startedAttr);
+    const CSP_PROBE_MS = 1000;
+    const probeDeadline = Date.now() + CSP_PROBE_MS;
+    let started = false;
+    while (true) {
+      const [marker] = await exec(startedPoller);
+      if (marker != null) {
+        started = true;
+        break;
+      }
+      if (Date.now() >= probeDeadline) {
+        break;
+      }
+      await sleep(POLL_INTERVAL_MS);
+    }
+    if (!started) {
+      return {
+        ok: false,
+        cspBlocked: true,
+        error:
+          "CSP blocked the injected script (the page forbids inline script execution). Retrying in the isolated world.",
+      };
+    }
+  }
 
   const pollerCode = buildPollerCode(resultAttr);
   const deadline = Date.now() + timeoutMs;
