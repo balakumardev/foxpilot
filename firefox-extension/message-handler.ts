@@ -20,6 +20,7 @@ import {
   runInPageWorld,
   buildIsolatedEvalCode,
 } from "./injected/page-world";
+import { raceInputAgainstNavigation } from "./nav-race";
 import { performFileUpload, FileUploadResult } from "./injected/upload-script";
 import { setTabUserAgent } from "./emulate";
 import {
@@ -413,7 +414,8 @@ export class MessageHandler {
           req.tabId,
           req.function,
           req.args,
-          req.world
+          req.world,
+          req.engine
         );
         break;
       case "upload-file":
@@ -751,18 +753,30 @@ export class MessageHandler {
     await this.checkForUrlPermission(tab.url);
 
     const mode = await getInputRealismMode();
-    let result: StepResult;
+    // The covert (off / synthetic) paths dispatch into the page/content-script
+    // world, which a navigating click tears down before its ack can return —
+    // hanging the reply even though the click WORKED. Race those against tab
+    // navigation so a click that begins a navigation reports success with
+    // navigated:true instead of timing out. The native (sidecar) path acks
+    // out-of-band from the OS input helper, so it is not subject to page teardown
+    // and is left unwrapped.
+    let result: { ok: boolean; error?: string; navigated?: boolean };
     if (mode === "off") {
-      const results = await browser.tabs.executeScript(tabId, {
-        code: `(${performInputAction.toString()})(document, ${JSON.stringify(
-          args
-        )})`,
-      });
-      result = results[0] as StepResult;
+      const dispatch = browser.tabs
+        .executeScript(tabId, {
+          code: `(${performInputAction.toString()})(document, ${JSON.stringify(
+            args
+          )})`,
+        })
+        .then((results) => results[0] as StepResult);
+      result = await raceInputAgainstNavigation(tabId, dispatch);
     } else if (mode === "native") {
       result = await this.runNativeInputAction(tabId, args);
     } else {
-      result = await this.runHumanInputAction(tabId, args);
+      result = await raceInputAgainstNavigation(
+        tabId,
+        this.runHumanInputAction(tabId, args)
+      );
     }
 
     await this.client.sendResourceToServer({
@@ -770,6 +784,9 @@ export class MessageHandler {
       correlationId,
       ok: result.ok,
       error: result.error,
+      ...(result.navigated !== undefined
+        ? { navigated: result.navigated }
+        : {}),
     });
   }
 
@@ -802,20 +819,33 @@ export class MessageHandler {
     }
     await this.checkForUrlPermission(tab.url);
 
-    const results = await browser.tabs.executeScript(tabId, {
-      code: `(${performPointAction.toString()})(document, ${JSON.stringify(args)})`,
-    });
-    const result = (results && results[0]) || {
-      ok: false,
-      error:
-        "point action produced no result (the content script may not be loaded in this tab — reload the page and retry).",
-    };
+    // Race the isolated-world dispatch against tab navigation: a synthetic click
+    // that triggers a page navigation tears the content-script world down before
+    // its ack returns, so report success with navigated:true instead of hanging.
+    const dispatch = browser.tabs
+      .executeScript(tabId, {
+        code: `(${performPointAction.toString()})(document, ${JSON.stringify(
+          args
+        )})`,
+      })
+      .then(
+        (results) =>
+          (results && results[0]) || {
+            ok: false,
+            error:
+              "point action produced no result (the content script may not be loaded in this tab — reload the page and retry).",
+          }
+      );
+    const result = await raceInputAgainstNavigation(tabId, dispatch);
     await this.client.sendResourceToServer({
       resource: "point-action-result",
       correlationId,
       ok: !!result.ok,
       ...(result.error !== undefined ? { error: result.error } : {}),
       ...(result.element !== undefined ? { element: result.element } : {}),
+      ...(result.navigated !== undefined
+        ? { navigated: result.navigated }
+        : {}),
     });
   }
 
@@ -1043,7 +1073,8 @@ export class MessageHandler {
     tabId: number,
     functionSource: string,
     args?: unknown[],
-    world?: "main" | "isolated"
+    world?: "main" | "isolated" | "auto",
+    engine?: "auto" | "cdp"
   ): Promise<void> {
     const tab = await browser.tabs.get(tabId);
     if (tab.url && (await isDomainInDenyList(tab.url))) {
@@ -1052,36 +1083,59 @@ export class MessageHandler {
 
     await this.checkForUrlPermission(tab.url);
 
-    let result: { ok: boolean; value?: unknown; error?: string };
+    // engine:"cdp" runs the eval through chrome.debugger (CSP-immune) on
+    // Chrome/Edge; Firefox has no debugger API, so reject with an actionable
+    // message pointing at the CSP-immune Firefox alternatives.
+    if (engine === "cdp") {
+      await this.client.sendResourceToServer({
+        resource: "eval-result",
+        correlationId,
+        ok: false,
+        error:
+          'engine:"cdp" is only available on Chrome/Edge (no debugger API on Firefox). On Firefox use world:"isolated" (CSP-immune) or world:"auto".',
+      });
+      return;
+    }
+
+    const argv = args ?? [];
+    let result: {
+      ok: boolean;
+      value?: unknown;
+      error?: string;
+      cspBlocked?: boolean;
+    };
+
     if (world === "isolated") {
-      // executeScript COMPILES the code string in the isolated world (no runtime
-      // eval) — CSP-immune, exactly like the snapshot injection. A compile/syntax
-      // error rejects executeScript; surface it as ok:false.
-      try {
-        const results = await browser.tabs.executeScript(tabId, {
-          code: buildIsolatedEvalCode(functionSource, args ?? []),
-        });
-        result =
-          (results && (results[0] as { ok: boolean; value?: unknown; error?: string })) || {
-            ok: false,
-            error: "isolated evaluation produced no result.",
-          };
-      } catch (e) {
-        result = {
-          ok: false,
-          error: e instanceof Error ? e.message : String(e),
-        };
-      }
+      result = await this.evalInIsolatedWorld(tabId, functionSource, argv);
     } else {
+      // "main" and "auto" both inject the page's REAL world. buildEvalPageScript
+      // sets a synchronous started-marker (startedAttr) as its first statement, so
+      // runInPageWorld can detect a strict-CSP block FAST (marker never appears →
+      // cspBlocked) instead of waiting out the full EVAL_TIMEOUT_MS.
       const resultAttr = `data-bcmcp-result-${Date.now()}-${++evalKeyCounter}`;
-      const pageScript = buildEvalPageScript(functionSource, args ?? [], resultAttr);
+      const startedAttr = resultAttr + "-started";
+      const pageScript = buildEvalPageScript(
+        functionSource,
+        argv,
+        resultAttr,
+        startedAttr
+      );
       result = await runInPageWorld(
         (code) => browser.tabs.executeScript(tabId, { code }),
         pageScript,
         resultAttr,
         EVAL_TIMEOUT_MS,
-        sleep
+        sleep,
+        startedAttr
       );
+
+      // world:"auto" (the default): the page CSP blocked the main-world <script>,
+      // so transparently retry in the isolated content-script world, which is
+      // genuinely CSP-immune on Firefox (executeScript compiles the source).
+      // world:"main" opts out of the fallback (no retry).
+      if (world !== "main" && result.cspBlocked) {
+        result = await this.evalInIsolatedWorld(tabId, functionSource, argv);
+      }
     }
 
     await this.client.sendResourceToServer({
@@ -1091,6 +1145,40 @@ export class MessageHandler {
       value: result.value,
       error: result.error,
     });
+  }
+
+  // Runs a JS function expression in the ISOLATED content-script world via
+  // executeScript, which COMPILES the source (no runtime eval) — CSP-immune,
+  // exactly like the snapshot injection. Backs world:"isolated" and the
+  // world:"auto" CSP fallback. A compile/syntax error rejects executeScript and
+  // is surfaced as ok:false. SYNCHRONOUS: a returned Promise is reported ok:false
+  // (buildIsolatedEvalCode) — use world:"main"/"auto" for async results.
+  private async evalInIsolatedWorld(
+    tabId: number,
+    functionSource: string,
+    args: unknown[]
+  ): Promise<{ ok: boolean; value?: unknown; error?: string }> {
+    try {
+      const results = await browser.tabs.executeScript(tabId, {
+        code: buildIsolatedEvalCode(functionSource, args),
+      });
+      return (
+        (results &&
+          (results[0] as {
+            ok: boolean;
+            value?: unknown;
+            error?: string;
+          })) || {
+          ok: false,
+          error: "isolated evaluation produced no result.",
+        }
+      );
+    } catch (e) {
+      return {
+        ok: false,
+        error: e instanceof Error ? e.message : String(e),
+      };
+    }
   }
 
   // Uploads a file into a file <input> identified by a snapshot uid (the input
@@ -1298,7 +1386,10 @@ export class MessageHandler {
     windowId: number | undefined,
     format: ImageFormat
   ): Promise<{ mimeType: string; base64: string }> {
-    const dataUrl = await this.captureWindow(windowId, format);
+    // Route through the bounded retry so a transient post-activation GPU readback
+    // failure (or Firefox's ~1/s captureVisibleTab throttle) is absorbed instead
+    // of surfacing as a hard "image readback failed".
+    const dataUrl = await this.captureWindowWithRetry(windowId, format);
     const { base64 } = stripDataUrlPrefix(dataUrl);
     return { mimeType: mimeTypeForFormat(format), base64 };
   }
@@ -1330,7 +1421,9 @@ export class MessageHandler {
     // Give the browser a moment to settle after scrollIntoView before capturing.
     await sleep(100);
 
-    const dataUrl = await this.captureWindow(windowId, format);
+    // Retry the capture so a transient post-scroll readback failure (or Firefox's
+    // ~1/s captureVisibleTab throttle) doesn't fail the element crop outright.
+    const dataUrl = await this.captureWindowWithRetry(windowId, format);
     return await cropElementFromCapture(dataUrl, rect, format);
   }
 
@@ -1446,7 +1539,10 @@ export class MessageHandler {
     try {
       fallbackUrl = await this.captureWindowWithRetry(windowId, format);
     } catch (e) {
-      throw new Error("image readback failed");
+      throw new Error(
+        "image readback failed: " +
+          ((e as { message?: string })?.message ?? String(e))
+      );
     }
     const { base64 } = stripDataUrlPrefix(fallbackUrl);
     if (!base64) {

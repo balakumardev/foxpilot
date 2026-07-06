@@ -43,6 +43,8 @@ import {
 import { Point, mousePath, typingPlan } from "./humanize/motion-model";
 import { performPointAction, type PointElementDescriptor } from "./injected/point-action-script";
 import { cdpInputClick, cdpInputType, cdpInputHover, cdpInputScroll } from "./cdp-input";
+import { cdpEval } from "./cdp-eval";
+import { raceInputAgainstNavigation } from "./nav-race";
 
 type InputActionArgs =
   | { action: "click"; uid: string; doubleClick?: boolean }
@@ -401,7 +403,8 @@ export class MessageHandler {
           req.tabId,
           req.function,
           req.args,
-          req.world
+          req.world,
+          req.engine
         );
         break;
       case "upload-file":
@@ -669,14 +672,28 @@ export class MessageHandler {
     const mode = await getInputRealismMode();
     let result: any;
     if (mode === "off") {
-      result = await sendMessageToTab(tabId, {
-        type: "performInputAction",
-        args,
-      });
+      // Covert content-script dispatch: a click whose handler navigates tears
+      // down the page before the ack returns, so race the ack against tab
+      // navigation — a nav that wins reports {ok:true,navigated:true} instead of
+      // hanging until the broker times out.
+      result = await raceInputAgainstNavigation(
+        tabId,
+        sendMessageToTab(tabId, {
+          type: "performInputAction",
+          args,
+        })
+      );
     } else if (mode === "native") {
+      // Native OS input fires from the sidecar (survives page navigation) — the
+      // ack does not ride the content-script world, so it is not raced.
       result = await this.runNativeInputAction(tabId, args);
     } else {
-      result = await this.runHumanInputAction(tabId, args);
+      // Synthetic (default) also routes through the content-script world → race
+      // it against navigation for the same reason as the "off" path.
+      result = await raceInputAgainstNavigation(
+        tabId,
+        this.runHumanInputAction(tabId, args)
+      );
     }
 
     await this.client.sendResourceToServer({
@@ -684,6 +701,7 @@ export class MessageHandler {
       correlationId,
       ok: result.ok,
       error: result.error,
+      navigated: (result as { navigated?: boolean }).navigated,
     });
   }
 
@@ -707,7 +725,14 @@ export class MessageHandler {
     const result =
       engine === "cdp"
         ? await this.dispatchCdpPointAction(tabId, args)
-        : await sendMessageToTabRaw(tabId, { type: "performPointAction", args });
+        : // Synthetic dispatch routes through the isolated content-script world,
+          // which a navigating click tears down before the ack — race it against
+          // tab navigation. The CDP path fires from the background (survives
+          // navigation) and is left unwrapped.
+          await raceInputAgainstNavigation(
+            tabId,
+            sendMessageToTabRaw(tabId, { type: "performPointAction", args })
+          );
 
     await this.client.sendResourceToServer({
       resource: "point-action-result",
@@ -715,6 +740,9 @@ export class MessageHandler {
       ok: !!(result && result.ok),
       ...(result && result.error !== undefined ? { error: result.error } : {}),
       ...(result && result.element !== undefined ? { element: result.element } : {}),
+      ...(result && (result as { navigated?: boolean }).navigated !== undefined
+        ? { navigated: (result as { navigated?: boolean }).navigated }
+        : {}),
     });
   }
 
@@ -959,7 +987,8 @@ export class MessageHandler {
     tabId: number,
     functionSource: string,
     args?: unknown[],
-    world?: "main" | "isolated"
+    world?: "main" | "isolated" | "auto",
+    engine?: "auto" | "cdp"
   ): Promise<void> {
     const tab = await browser.tabs.get(tabId);
     if (tab.url && (await isDomainInDenyList(tab.url))) {
@@ -967,8 +996,15 @@ export class MessageHandler {
     }
     await this.checkForUrlPermission(tab.url);
 
+    const argv = args ?? [];
     let result: { ok: boolean; value?: unknown; error?: string };
-    if (world === "isolated") {
+    if (engine === "cdp") {
+      // CSP-immune eval via chrome.debugger Runtime.evaluate (Chrome/Edge only).
+      // Bypasses the page CSP entirely at the cost of the "started debugging this
+      // browser" banner — opt-in, same tradeoff as capture-response-bodies.
+      // engine:"cdp" overrides `world`.
+      result = await cdpEval(tabId, functionSource, argv);
+    } else if (world === "isolated") {
       // Isolated content-script world (CSP-immune DOM reads). Uses the raw
       // sender so a Chrome-CSP eval degrade comes back as eval-result ok:false
       // rather than a thrown tool-error. Guard the empty reply (no content
@@ -977,17 +1013,24 @@ export class MessageHandler {
       result = (await sendMessageToTabRaw(tabId, {
         type: "evaluateScriptIsolated",
         functionSource,
-        args: args ?? [],
+        args: argv,
       })) ?? { ok: false, error: "isolated evaluation produced no result." };
     } else {
+      // "main" and "auto" both inject the page world. On Chrome the isolated
+      // world cannot eval either, so "auto" does NOT retry isolated — the
+      // content-script started-marker probe returns a fast {ok:false,cspBlocked}
+      // with an actionable error (naming engine:"cdp"), which we forward as the
+      // eval-result. Uses the RAW sender so that cspBlocked (and any genuine
+      // eval error) flows through as a reported eval-result instead of being
+      // thrown as a tool-error.
       const resultAttr = `data-bcmcp-result-${Date.now()}-${++evalKeyCounter}`;
-      result = await sendMessageToTab(tabId, {
+      result = (await sendMessageToTabRaw(tabId, {
         type: "evaluateScript",
         functionSource,
-        args: args ?? [],
+        args: argv,
         resultAttr,
         timeoutMs: EVAL_TIMEOUT_MS,
-      });
+      })) ?? { ok: false, error: "evaluation produced no result." };
     }
 
     await this.client.sendResourceToServer({
@@ -1151,7 +1194,9 @@ export class MessageHandler {
     windowId: number | undefined,
     format: ImageFormat
   ): Promise<{ mimeType: string; base64: string }> {
-    const dataUrl = await this.captureWindow(windowId, format);
+    // Retry a transient post-activation GPU readback failure (same helper the
+    // full-page tiler uses) instead of failing the whole screenshot.
+    const dataUrl = await this.captureWindowWithRetry(windowId, format);
     const { base64 } = stripDataUrlPrefix(dataUrl);
     return { mimeType: mimeTypeForFormat(format), base64 };
   }
@@ -1172,7 +1217,7 @@ export class MessageHandler {
       );
     }
     await sleep(100);
-    const dataUrl = await this.captureWindow(windowId, format);
+    const dataUrl = await this.captureWindowWithRetry(windowId, format);
     await ensureOffscreen();
     const result = await browser.runtime.sendMessage({
       type: "cropElement",
@@ -1270,7 +1315,10 @@ export class MessageHandler {
     try {
       fallbackUrl = await this.captureWindowWithRetry(windowId, format);
     } catch (e) {
-      throw new Error("image readback failed");
+      throw new Error(
+        "image readback failed: " +
+          ((e as { message?: string })?.message ?? String(e))
+      );
     }
     const { base64 } = stripDataUrlPrefix(fallbackUrl);
     if (!base64) {

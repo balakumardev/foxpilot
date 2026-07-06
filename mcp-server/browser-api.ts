@@ -514,7 +514,7 @@ export class BrowserAPI {
     tabId: number,
     uid: string,
     doubleClick?: boolean
-  ): Promise<void> {
+  ): Promise<{ navigated?: boolean }> {
     const message = await this.sendTool<ActionResultExtensionMessage>({
       cmd: "click-element",
       tabId,
@@ -524,6 +524,9 @@ export class BrowserAPI {
     if (!message.ok) {
       throw new Error(message.error ?? "Action failed");
     }
+    // Surface the nav-race signal (set true when the click began a navigation
+    // that tore down the content-script world before its ack could return).
+    return { navigated: message.navigated };
   }
 
   async clickAt(

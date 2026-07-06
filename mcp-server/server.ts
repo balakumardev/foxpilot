@@ -404,12 +404,15 @@ mcpServer.tool(
   "Click an element on a page. Pass a 'uid' from a recent take-snapshot (e.g. e12). Set doubleClick to fire a double-click. If the uid is stale, this returns an error asking you to take a fresh snapshot.",
   { tabId: z.number(), uid: z.string(), doubleClick: z.boolean().optional() },
   async ({ tabId, uid, doubleClick }) => {
-    await browserApi.clickElement(tabId, uid, doubleClick);
+    const { navigated } = await browserApi.clickElement(tabId, uid, doubleClick);
+    const verb = doubleClick ? "Double-clicked" : "Clicked";
     return {
       content: [
         {
           type: "text",
-          text: `${doubleClick ? "Double-clicked" : "Clicked"} element ${uid}`,
+          text: navigated
+            ? `${verb} element ${uid} (page navigated)`
+            : `${verb} element ${uid}`,
         },
       ],
     };

@@ -196,4 +196,28 @@ describe("formatPointResult", () => {
       "Typed failed at (8, 9) on tab 5: No element at point (8, 9)"
     );
   });
+
+  it("appends (page navigated) when the point result navigated (no element)", () => {
+    // A navigating click tears down the content-script world before the
+    // descriptor can be captured, so navigated:true arrives with no element.
+    const out = formatPointResult("Clicked", 2, 100, 200, {
+      ok: true,
+      navigated: true,
+    }) as FormatResult;
+    expect(out.isError).toBeUndefined();
+    expect(out.content[0].text).toBe(
+      "Clicked at (100, 200) on tab 2 (page navigated)"
+    );
+  });
+
+  it("appends (page navigated) after the element descriptor when both are present", () => {
+    const out = formatPointResult("Clicked", 2, 100, 200, {
+      ok: true,
+      navigated: true,
+      element: { tag: "a", id: "next" },
+    }) as FormatResult;
+    expect(out.content[0].text).toBe(
+      "Clicked at (100, 200) on tab 2 — element: <a #next> (page navigated)"
+    );
+  });
 });

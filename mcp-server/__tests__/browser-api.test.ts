@@ -141,6 +141,18 @@ describe("BrowserAPI over the broker", () => {
               bodyCaptureSupported: false,
             },
           };
+        case "click-element":
+          return {
+            payload: {
+              resource: "action-result",
+              correlationId: req.correlationId,
+              ok: true,
+              // Echo navigated:true only for the uid that simulates a click
+              // whose handler tore down the page (the nav-race path). A normal
+              // click omits navigated.
+              navigated: (req as { uid?: string }).uid === "nav" ? true : undefined,
+            },
+          };
         case "find-highlight":
           return { error: "boom" };
         default:
@@ -194,6 +206,16 @@ describe("BrowserAPI over the broker", () => {
 
   it("propagates an extension error as a rejection", async () => {
     await expect(api.findHighlight(5, "q")).rejects.toThrow("boom");
+  });
+
+  it("clickElement surfaces navigated:true when the click triggered a navigation", async () => {
+    const result = await api.clickElement(3, "nav");
+    expect(result.navigated).toBe(true);
+  });
+
+  it("clickElement returns a falsy navigated for a non-navigating click", async () => {
+    const result = await api.clickElement(3, "e1");
+    expect(result.navigated).toBeFalsy();
   });
 });
 

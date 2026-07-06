@@ -32,6 +32,33 @@ jest.mock("../native-input-client", () => ({
   })),
 }));
 
+// The shared setup mock (__tests__/setup.ts) does not include
+// browser.tabs.onUpdated, but the nav-race wiring (raceInputAgainstNavigation)
+// registers/removes an onUpdated listener on every covert input dispatch. Install
+// a controllable event mock: addListener records the callback, removeListener
+// drops it, and tests fire a navigation via fireTabUpdated(). Plain closures (not
+// jest.fn) so jest.clearAllMocks() in beforeEach leaves them intact.
+const navUpdatedListeners: Array<
+  (tabId: number, info: { status?: string }) => void
+> = [];
+(browser as any).tabs.onUpdated = {
+  addListener: (cb: (tabId: number, info: { status?: string }) => void) => {
+    navUpdatedListeners.push(cb);
+  },
+  removeListener: (cb: (tabId: number, info: { status?: string }) => void) => {
+    const i = navUpdatedListeners.indexOf(cb);
+    if (i >= 0) navUpdatedListeners.splice(i, 1);
+  },
+};
+function fireTabUpdated(tabId: number, status = "loading"): void {
+  navUpdatedListeners.slice().forEach((cb) => cb(tabId, { status }));
+}
+// Flush pending microtasks (and one macrotask) so an in-flight handler reaches
+// the point where raceInputAgainstNavigation has registered its onUpdated
+// listener before the test fires the simulated navigation.
+const flushToListener = (): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, 0));
+
 describe("MessageHandler", () => {
   let messageHandler: MessageHandler;
   let mockClient: jest.Mocked<WebsocketClient>;
@@ -823,6 +850,139 @@ describe("MessageHandler", () => {
     });
   });
 
+  describe("evaluate-script world:auto + engine:cdp (Task A7)", () => {
+    const automationConfig = {
+      secret: "test-secret",
+      ports: [8089],
+      domainDenyList: [] as string[],
+      auditLog: [],
+      automationMode: true,
+    };
+
+    beforeEach(() => {
+      (browser.storage.local.get as jest.Mock).mockResolvedValue({
+        config: automationConfig,
+      });
+      (browser.tabs.get as jest.Mock).mockResolvedValue({
+        id: 3,
+        url: "https://example.com",
+      });
+      (browser.permissions.contains as jest.Mock).mockResolvedValue(true);
+    });
+
+    afterEach(() => {
+      // The world:auto test installs a code-inspecting mockImplementation; reset
+      // it so it never leaks a base implementation into later suites.
+      (browser.tabs.executeScript as jest.Mock).mockReset();
+    });
+
+    it("world:auto falls back to the isolated world when the main world is CSP-blocked", async () => {
+      // Route executeScript by the injected code: the injector appends a
+      // <script>; the pollers read an attribute (return null so the started
+      // marker never appears → the probe declares the page CSP-blocked); the
+      // isolated fallback eval (buildIsolatedEvalCode) returns the value.
+      (browser.tabs.executeScript as jest.Mock).mockImplementation(
+        async (_tabId: number, details: { code: string }) => {
+          const code = details.code;
+          if (code.includes("createElement('script')")) return [true]; // injector
+          if (code.includes("getAttribute")) return [null]; // started/result poll → marker absent
+          return [{ ok: true, value: "ISO" }]; // isolated-world fallback eval
+        }
+      );
+
+      await messageHandler.handleDecodedMessage({
+        cmd: "evaluate-script",
+        tabId: 3,
+        function: "() => document.title",
+        world: "auto",
+        correlationId: "eauto",
+      } as ServerMessageRequest);
+
+      // The main world was CSP-blocked (started marker never appeared) and the
+      // eval succeeded via the CSP-immune isolated fallback.
+      expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+        resource: "eval-result",
+        correlationId: "eauto",
+        ok: true,
+        value: "ISO",
+        error: undefined,
+      });
+    });
+
+    it("engine:cdp replies ok:false naming Chrome/Edge (no debugger on Firefox) and never injects", async () => {
+      await messageHandler.handleDecodedMessage({
+        cmd: "evaluate-script",
+        tabId: 3,
+        function: "() => document.title",
+        engine: "cdp",
+        correlationId: "ecdp",
+      } as ServerMessageRequest);
+
+      // engine:"cdp" is rejected before any page injection on Firefox.
+      expect(browser.tabs.executeScript).not.toHaveBeenCalled();
+      expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+        resource: "eval-result",
+        correlationId: "ecdp",
+        ok: false,
+        error: expect.stringMatching(/Chrome\/Edge/),
+      });
+    });
+  });
+
+  describe("nav-race wiring (Task B4)", () => {
+    const automationConfig = {
+      secret: "test-secret",
+      ports: [8089],
+      domainDenyList: [] as string[],
+      auditLog: [],
+      automationMode: true,
+      inputRealismMode: "off",
+    };
+
+    beforeEach(() => {
+      navUpdatedListeners.length = 0;
+      (browser.storage.local.get as jest.Mock).mockResolvedValue({
+        config: automationConfig,
+      });
+      (browser.tabs.get as jest.Mock).mockResolvedValue({
+        id: 123,
+        url: "https://example.com",
+      });
+      (browser.permissions.contains as jest.Mock).mockResolvedValue(true);
+    });
+
+    it("click-element reports navigated:true when the tab starts loading before the ack returns", async () => {
+      // Simulate a navigating click: the content-script dispatch (executeScript)
+      // never resolves because the page tore down before its ack could return.
+      // The background onUpdated(status:"loading") fires first, so the race
+      // resolves success with navigated:true instead of hanging.
+      (browser.tabs.executeScript as jest.Mock).mockReturnValue(
+        new Promise(() => {})
+      );
+
+      const p = messageHandler.handleDecodedMessage({
+        cmd: "click-element",
+        tabId: 123,
+        uid: "e1",
+        correlationId: "navclick",
+      } as ServerMessageRequest);
+
+      // Let the handler reach the dispatch and register its onUpdated listener,
+      // then simulate the tab navigating.
+      await flushToListener();
+      fireTabUpdated(123, "loading");
+      await p;
+
+      expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+        resource: "action-result",
+        correlationId: "navclick",
+        ok: true,
+        error: undefined,
+        navigated: true,
+      });
+    });
+  });
+
   describe("input realism — synthetic mode", () => {
     it("routes a click through the humanized path (multiple executeScript calls) and replies ok", async () => {
       (browser.storage.local.get as jest.Mock).mockResolvedValue({
@@ -1431,10 +1591,13 @@ describe("MessageHandler", () => {
     });
 
     it("injects the page-world script, polls the result, and replies eval-result ok:true with the value", async () => {
-      // First executeScript call is the injector (returns [true]); the next is
-      // the poller, which returns the serialized in-page envelope.
+      // executeScript sequence for the main (auto) world: injector (returns
+      // [true]); the started-marker probe poll (returns ["1"] — the inline script
+      // ran, not CSP-blocked); then the result poll returning the serialized
+      // in-page envelope.
       (browser.tabs.executeScript as jest.Mock)
         .mockResolvedValueOnce([true])
+        .mockResolvedValueOnce(["1"])
         .mockResolvedValueOnce([JSON.stringify({ ok: true, value: "Hello" })]);
 
       const request: ServerMessageRequest = {
@@ -1467,6 +1630,7 @@ describe("MessageHandler", () => {
     it("replies eval-result ok:false with the error when the page script throws", async () => {
       (browser.tabs.executeScript as jest.Mock)
         .mockResolvedValueOnce([true])
+        .mockResolvedValueOnce(["1"])
         .mockResolvedValueOnce([
           JSON.stringify({ ok: false, error: "ReferenceError: x is not defined" }),
         ]);
@@ -1492,6 +1656,7 @@ describe("MessageHandler", () => {
     it("forwards args by embedding them in the injected page script", async () => {
       (browser.tabs.executeScript as jest.Mock)
         .mockResolvedValueOnce([true])
+        .mockResolvedValueOnce(["1"])
         .mockResolvedValueOnce([JSON.stringify({ ok: true, value: 7 })]);
 
       const request: ServerMessageRequest = {
@@ -1605,6 +1770,43 @@ describe("MessageHandler", () => {
         correlationId: "test-correlation-id",
         mimeType: "image/png",
         base64: "AAAA",
+      });
+    });
+
+    it("retries a transient readback failure on the viewport path and still replies (Task C2)", async () => {
+      (browser.storage.local.get as jest.Mock).mockResolvedValue({
+        config: automationConfig,
+      });
+      (browser.tabs.get as jest.Mock).mockResolvedValue({
+        id: 123,
+        url: "https://example.com",
+        windowId: 7,
+      });
+      (browser.tabs.query as jest.Mock).mockResolvedValue([{ id: 123 }]);
+      (browser.tabs.update as jest.Mock).mockResolvedValue(undefined);
+      (browser.permissions.contains as jest.Mock).mockResolvedValue(true);
+      // The default viewport path now routes through captureWindowWithRetry: the
+      // first capture rejects (transient post-activation GPU readback failure),
+      // the backed-off retry succeeds.
+      (browser.tabs.captureVisibleTab as jest.Mock)
+        .mockRejectedValueOnce(new Error("image readback failed"))
+        .mockResolvedValue("data:image/png;base64,GOOD");
+
+      await messageHandler.handleDecodedMessage({
+        cmd: "take-screenshot",
+        tabId: 123,
+        correlationId: "vp-retry",
+      } as ServerMessageRequest);
+
+      // Two capture attempts: the transient failure then the success.
+      expect(
+        (browser.tabs.captureVisibleTab as jest.Mock).mock.calls.length
+      ).toBe(2);
+      expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+        resource: "screenshot",
+        correlationId: "vp-retry",
+        mimeType: "image/png",
+        base64: "GOOD",
       });
     });
 

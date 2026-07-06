@@ -1,6 +1,7 @@
 import { MessageHandler } from "../message-handler";
 import type { ExtensionTransport } from "../transport";
 import type { ServerMessageRequest } from "@foxpilot/common";
+import { cdpEval } from "../cdp-eval";
 
 // The native-input client is mocked so importing/constructing the handler never
 // touches a real socket or OS input. None of the paths exercised below use it.
@@ -9,6 +10,25 @@ jest.mock("../native-input-client", () => ({
     sendGesture: jest.fn(),
   })),
 }));
+
+// evaluate-script engine:"cdp" routes through cdpEval (chrome.debugger CDP).
+// Mock the module so the routing can be asserted without a real debugger attach.
+jest.mock("../cdp-eval", () => ({
+  cdpEval: jest.fn(),
+}));
+
+// Poll the macrotask queue until `pred` holds — used to await the point at which
+// an async handler has progressed far enough to register its nav-race listener
+// before the test simulates a tab navigation.
+async function flushUntil(
+  pred: () => boolean,
+  maxTicks = 100
+): Promise<void> {
+  for (let i = 0; i < maxTicks; i++) {
+    if (pred()) return;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+}
 
 function makeTransport(): jest.Mocked<ExtensionTransport> {
   return {
@@ -39,6 +59,15 @@ describe("MessageHandler (chrome) — foreground-tab preservation", () => {
     (browser.storage.local.get as jest.Mock).mockResolvedValue({
       config: baseConfig,
     });
+    // The synthetic input / point-action paths now race their content-script
+    // dispatch against tab navigation (nav-race), which registers a
+    // tabs.onUpdated listener. The shared setup mock has no onUpdated, so give
+    // every test a fresh no-op pair (individual nav tests override it to capture
+    // and fire the listener).
+    (browser as any).tabs.onUpdated = {
+      addListener: jest.fn(),
+      removeListener: jest.fn(),
+    };
   });
 
   describe("open-tab command", () => {
@@ -386,6 +415,61 @@ describe("MessageHandler (chrome) — foreground-tab preservation", () => {
         value: 42,
         error: undefined,
       });
+    });
+
+    it("engine:cdp routes to cdpEval (CSP-immune) and forwards its value as eval-result ok:true", async () => {
+      (cdpEval as jest.Mock).mockResolvedValue({ ok: true, value: 5 });
+
+      await messageHandler.handleDecodedMessage({
+        cmd: "evaluate-script",
+        tabId: 5,
+        function: "() => 5",
+        args: [],
+        engine: "cdp",
+        correlationId: "ce",
+      } as ServerMessageRequest);
+
+      expect(cdpEval).toHaveBeenCalledWith(5, "() => 5", []);
+      // engine:"cdp" bypasses the covert content-script injection entirely.
+      expect(browser.tabs.sendMessage).not.toHaveBeenCalled();
+      expect(transport.sendResourceToServer).toHaveBeenCalledWith({
+        resource: "eval-result",
+        correlationId: "ce",
+        ok: true,
+        value: 5,
+        error: undefined,
+      });
+    });
+
+    it('world:auto forwards the content-script CSP error (naming engine:"cdp") as eval-result ok:false when the main world is blocked', async () => {
+      // On Chrome, world:"auto" does not retry isolated; the started-marker probe
+      // in the content script reports the CSP block as a non-throwing
+      // {ok:false,cspBlocked} result via the RAW sender, and the handler forwards
+      // that actionable error as the eval-result.
+      (browser.tabs.sendMessage as jest.Mock).mockResolvedValue({
+        ok: false,
+        cspBlocked: true,
+        error:
+          'CSP blocked the injected script (the page forbids inline script execution). On Chrome/Edge retry with engine:"cdp" (runs via the debugger, bypasses page CSP).',
+      });
+
+      await messageHandler.handleDecodedMessage({
+        cmd: "evaluate-script",
+        tabId: 5,
+        function: "() => 1",
+        world: "auto",
+        correlationId: "ca",
+      } as ServerMessageRequest);
+
+      // Reached the main-world inject (not cdpEval).
+      expect(cdpEval).not.toHaveBeenCalled();
+      const call = (transport.sendResourceToServer as jest.Mock).mock.calls.find(
+        (c: any[]) => c[0].correlationId === "ca"
+      );
+      expect(call).toBeDefined();
+      expect(call[0].resource).toBe("eval-result");
+      expect(call[0].ok).toBe(false);
+      expect(call[0].error).toContain('engine:"cdp"');
     });
   });
 
@@ -774,6 +858,109 @@ describe("MessageHandler (chrome) — foreground-tab preservation", () => {
       expect(transport.sendResourceToServer).toHaveBeenCalledWith({
         resource: "action-result", correlationId: "sv", ok: false,
         error: "Element uid 'e9' not found — take a fresh snapshot (uids are reassigned each snapshot).",
+      });
+    });
+  });
+
+  describe("input navigation-race (Task B3)", () => {
+    const automationConfig = { ...baseConfig, automationMode: true };
+
+    beforeEach(() => {
+      (browser.storage.local.get as jest.Mock).mockResolvedValue({
+        config: automationConfig,
+      });
+      (browser.tabs.get as jest.Mock).mockResolvedValue({
+        id: 9,
+        url: "https://example.com",
+      });
+      (browser.permissions.contains as jest.Mock).mockResolvedValue(true);
+    });
+
+    it("click-element whose content-script ack never returns resolves {ok:true,navigated:true} once the tab starts loading", async () => {
+      const navListeners: Array<
+        (id: number, info: { status?: string }) => void
+      > = [];
+      (browser as any).tabs.onUpdated = {
+        addListener: jest.fn((cb: any) => navListeners.push(cb)),
+        removeListener: jest.fn((cb: any) => {
+          const i = navListeners.indexOf(cb);
+          if (i >= 0) navListeners.splice(i, 1);
+        }),
+      };
+      // The navigating click tears down the page before the ack returns, so the
+      // content-script reply promise never settles.
+      (browser.tabs.sendMessage as jest.Mock).mockReturnValue(
+        new Promise(() => {})
+      );
+
+      const p = messageHandler.handleDecodedMessage({
+        cmd: "click-element",
+        tabId: 9,
+        uid: "e1",
+        correlationId: "nav1",
+      } as ServerMessageRequest);
+
+      // Once the handler has registered its nav-race listener, simulate the tab
+      // beginning to navigate — the nav must win the race.
+      await flushUntil(() => navListeners.length > 0);
+      navListeners.forEach((cb) => cb(9, { status: "loading" }));
+
+      await p;
+
+      expect(transport.sendResourceToServer).toHaveBeenCalledWith({
+        resource: "action-result",
+        correlationId: "nav1",
+        ok: true,
+        error: undefined,
+        navigated: true,
+      });
+      // The nav-race listener is always cleaned up.
+      expect(
+        (browser as any).tabs.onUpdated.removeListener
+      ).toHaveBeenCalled();
+    });
+  });
+
+  describe("viewport screenshot readback retry (Task C1)", () => {
+    const automationConfig = { ...baseConfig, automationMode: true };
+
+    beforeEach(() => {
+      (browser.storage.local.get as jest.Mock).mockResolvedValue({
+        config: automationConfig,
+      });
+      (browser.tabs.get as jest.Mock).mockResolvedValue({
+        id: 3,
+        url: "https://example.com",
+        windowId: 1,
+      });
+      (browser.tabs.query as jest.Mock).mockResolvedValue([{ id: 3 }]);
+      (browser.tabs.update as jest.Mock).mockResolvedValue(undefined);
+      (browser.permissions.contains as jest.Mock).mockResolvedValue(true);
+    });
+
+    it("retries a transient captureVisibleTab readback failure and still produces the screenshot", async () => {
+      let calls = 0;
+      (browser.tabs.captureVisibleTab as jest.Mock).mockImplementation(() => {
+        calls++;
+        if (calls === 1) {
+          return Promise.reject(new Error("image readback failed"));
+        }
+        return Promise.resolve("data:image/png;base64,GOOD");
+      });
+
+      await messageHandler.handleDecodedMessage({
+        cmd: "take-screenshot",
+        tabId: 3,
+        correlationId: "vpr",
+      } as ServerMessageRequest);
+
+      // The first (transient) failure was retried rather than propagated.
+      expect(browser.tabs.captureVisibleTab).toHaveBeenCalledTimes(2);
+      expect(transport.sendResourceToServer).toHaveBeenCalledWith({
+        resource: "screenshot",
+        correlationId: "vpr",
+        mimeType: "image/png",
+        base64: "GOOD",
       });
     });
   });
