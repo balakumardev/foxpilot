@@ -27,4 +27,20 @@
   card.addEventListener("click", function () {
     log.textContent = "Opened at " + new Date().toISOString();
   });
+
+  // Bug-2 regression target: a real <button> whose click navigates cross-origin.
+  // The navigation tears down this content-script world before the input ack can
+  // return, so it exercises the background-side nav-race — click-element /
+  // click-at / type-at must resolve { ok:true, navigated:true } instead of
+  // hanging until the broker times out. Semantic <button> (implicit role +
+  // accessible name) so take-snapshot surfaces it and click-element can target
+  // its uid.
+  var mainPanel = document.getElementById("main-panel");
+  var continueBtn = document.createElement("button");
+  continueBtn.id = "continue-btn";
+  continueBtn.textContent = "Continue to Example";
+  continueBtn.addEventListener("click", function () {
+    window.location.href = "https://example.com/";
+  });
+  mainPanel.appendChild(continueBtn);
 })();

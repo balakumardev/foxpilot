@@ -766,7 +766,8 @@ export class BrowserAPI {
     tabId: number,
     functionSource: string,
     args?: unknown[],
-    world?: "main" | "isolated"
+    world?: "main" | "isolated" | "auto",
+    engine?: "auto" | "cdp"
   ): Promise<unknown> {
     const message = await this.sendTool<EvalResultExtensionMessage>({
       cmd: "evaluate-script",
@@ -774,6 +775,7 @@ export class BrowserAPI {
       function: functionSource,
       args,
       world,
+      engine,
     });
     if (!message.ok) {
       throw new Error(message.error ?? "Script evaluation failed");

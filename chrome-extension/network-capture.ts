@@ -48,7 +48,7 @@ const recordTabId = new Map<string, number>();
 // run Network.enable only for the network purpose, and only really detach when
 // the LAST purpose releases — so a CDP click on a tab that is already capturing
 // response bodies does not tear the capture down, and vice-versa.
-type DebuggerPurpose = "network" | "input";
+type DebuggerPurpose = "network" | "input" | "eval";
 // Per-tab purpose tracker: a Set (membership), NOT a counter. A Set is correct
 // here — not an undercount waiting to happen — because the broker serializes
 // tool calls per tab (see getMessageTabId / "Serialize per tab" in

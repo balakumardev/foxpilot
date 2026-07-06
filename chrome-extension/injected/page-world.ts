@@ -103,10 +103,23 @@ export function buildPollerCode(resultAttr: string): string {
 export function buildEvalPageScript(
   functionSource: string,
   args: unknown[],
-  resultAttr: string
+  resultAttr: string,
+  startedAttr?: string
 ): string {
   return (
     "(async function () {" +
+    // Synchronous "the injected script executed" marker, emitted only when the
+    // caller passes a startedAttr. It is set as the FIRST statement so that if a
+    // strict page CSP blocks this inline <script>, NEITHER this marker NOR the
+    // result attribute (__attr) is ever set — letting the caller distinguish a
+    // CSP-blocked injection (no marker) from a slow async eval (marker set,
+    // result pending) instead of guessing on the timeout. When startedAttr is
+    // omitted the term is "", so the output is byte-identical to the 3-arg form.
+    (startedAttr === undefined
+      ? ""
+      : "document.documentElement.setAttribute(" +
+        jsonForScript(startedAttr) +
+        ", \"1\");") +
     "var __attr = " +
     jsonForScript(resultAttr) +
     ";" +

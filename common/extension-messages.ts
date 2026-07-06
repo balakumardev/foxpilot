@@ -103,6 +103,10 @@ export interface ActionResultExtensionMessage extends ExtensionMessageBase {
   resource: "action-result";
   ok: boolean;
   error?: string;
+  // Set true when the input dispatched but the page began navigating before the
+  // content-script ack could return (the click worked; the ack was lost to
+  // page teardown). Append-only.
+  navigated?: boolean;
 }
 
 // Reply for the evaluate-script tool. `ok` is false when the in-page evaluation
@@ -306,6 +310,7 @@ export interface PointActionResultExtensionMessage extends ExtensionMessageBase 
   ok: boolean;
   error?: string;
   element?: PointElementDescriptor;
+  navigated?: boolean; // see ActionResultExtensionMessage.navigated
 }
 
 export type ExtensionMessage =

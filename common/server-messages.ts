@@ -154,12 +154,20 @@ export interface EvaluateScriptServerMessage extends ServerMessageBase {
   tabId: number;
   function: string;
   args?: unknown[];
-  // Which JS world to run in. "main" (default) injects a page-world <script>
-  // (sees the page's real window/globals; blockable by a strict page CSP).
-  // "isolated" runs in the extension's isolated content-script world
-  // (CSP-immune; sees the DOM but not page-JS globals; synchronous — a
-  // returned Promise is not awaited). Back-compat default is "main".
-  world?: "main" | "isolated";
+  // Which JS world to run in. "auto" (default) tries the page's real "main"
+  // world first and, if a strict page CSP blocks the injected <script>, on
+  // Firefox transparently retries "isolated" (which is genuinely CSP-immune
+  // there); on Chrome it returns a fast, actionable CSP error (isolated eval is
+  // also blocked on Chrome MV3 — use engine:"cdp"). "main" forces the page world
+  // (no fallback). "isolated" forces the isolated content-script world (CSP-
+  // immune, sees the DOM but not page-JS globals, synchronous).
+  world?: "main" | "isolated" | "auto";
+  // Dispatch engine. "auto" (default) uses the world above (covert injection).
+  // "cdp" (Chrome/Edge only) runs the eval via chrome.debugger Runtime.evaluate,
+  // which BYPASSES the page CSP entirely (runs arbitrary source on strict-CSP
+  // pages) but shows the "started debugging this browser" banner and is
+  // detectable. engine:"cdp" overrides `world`. Errors on Firefox (no debugger).
+  engine?: "auto" | "cdp";
 }
 
 // Upload a local file into a file <input> identified by a snapshot uid. The MCP
