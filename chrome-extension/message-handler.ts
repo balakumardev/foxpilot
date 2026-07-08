@@ -1524,9 +1524,22 @@ export class MessageHandler {
       return;
     }
 
+    // Share ONE overall budget across settle-wait + condition-wait so their sum
+    // stays under the 30s navigate-tab broker cap (mcp-server/timeouts.ts). They
+    // used to run sequentially with independent budgets that ADD (≤8s + ≤29s =
+    // ≤37s), which could time the request out even after the nav had settled.
+    // Settle consumes ≤ settleBudget; conditions get the remainder of the cap.
+    // Defaults are unchanged: any timeoutMs ≤ 20000 still yields the full
+    // condition budget (only larger timeouts get clamped).
+    const OVERALL_CAP_MS = 28000;
     const budget = Math.min(Math.max(opts?.timeoutMs ?? 15000, 0), 29000);
-    await waitForTabReady(tabId, { timeoutMs: Math.min(budget, 8000) });
-    const mismatch = await this.awaitNavConditions(tabId, opts, budget);
+    const settleBudget = Math.min(budget, 8000);
+    await waitForTabReady(tabId, { timeoutMs: settleBudget });
+    const conditionBudget = Math.min(
+      budget,
+      Math.max(0, OVERALL_CAP_MS - settleBudget)
+    );
+    const mismatch = await this.awaitNavConditions(tabId, opts, conditionBudget);
 
     let finalUrl = url;
     try {
