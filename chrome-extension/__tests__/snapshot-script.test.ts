@@ -203,5 +203,12 @@ describe("buildSnapshot (chrome)", () => {
       const { tree } = buildSnapshot(document, { verbose: false, maxLength: 25000 });
       expect(tree).toContain('combobox "Country" | "United States" | Billing [uid=');
     });
+    it("never surfaces a password input's value in the value slot", () => {
+      // A typed/autofilled password must NOT leak into the snapshot value slot.
+      document.body.innerHTML = `<input type="password" aria-label="Password" value="hunter2" />`;
+      const { tree } = buildSnapshot(document, { verbose: false, maxLength: 25000 });
+      expect(tree).toContain('textbox "Password" |  |  [uid=e1]');
+      expect(tree).not.toContain("hunter2");
+    });
   });
 });

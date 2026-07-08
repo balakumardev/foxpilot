@@ -681,6 +681,14 @@ describe("buildSnapshot", () => {
       expect(tree).toContain('checkbox "Agree" |  |  [uid=e1] (checked)');
     });
 
+    it("never surfaces a password input's value in the value slot", () => {
+      // A typed/autofilled password must NOT leak into the snapshot value slot.
+      document.body.innerHTML = `<input type="password" aria-label="Password" value="hunter2" />`;
+      const { tree } = build();
+      expect(tree).toContain('textbox "Password" |  |  [uid=e1]');
+      expect(tree).not.toContain("hunter2");
+    });
+
     it("collapses a literal pipe in slot text to a slash so the delimiter stays unambiguous", () => {
       document.body.innerHTML = `<button>Save | Exit</button>`;
       const { tree } = build();

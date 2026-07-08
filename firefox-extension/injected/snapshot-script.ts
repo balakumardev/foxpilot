@@ -344,7 +344,9 @@ export function buildSnapshot(
     if (tag === "input") {
       const type = (el.getAttribute("type") || "text").toLowerCase();
       // Checkbox/radio carry their state in flags; button/file/hidden/image have
-      // no displayable value. Only text-entry inputs contribute a value slot.
+      // no displayable value; password is excluded so a typed/autofilled secret
+      // never leaks into the snapshot value slot. Only text-entry inputs
+      // contribute a value slot.
       if (
         type === "checkbox" ||
         type === "radio" ||
@@ -353,7 +355,8 @@ export function buildSnapshot(
         type === "reset" ||
         type === "hidden" ||
         type === "file" ||
-        type === "image"
+        type === "image" ||
+        type === "password"
       ) {
         return "";
       }
