@@ -786,6 +786,31 @@ mcpServer.tool(
 );
 
 mcpServer.tool(
+  "dismiss-overlays",
+  "Dismiss cookie-consent banners and modal overlays that cover the page (OneTrust, TrustArc, Cookiebot, Osano/Quantcast, and generic aria-modal dialogs with their backdrops). It PREFERS clicking a Reject / Decline / \"Necessary only\" control (privacy-preserving); only if none exists does it remove the overlay node(s) and restore the page's scroll lock. Idempotent and safe to re-run after an SPA route change re-mounts the banner. Reach for it when click-element reports a click may be intercepted, or when a snapshot is dominated by a consent dialog.",
+  {
+    tabId: z.number(),
+  },
+  async ({ tabId }) => {
+    const result = await browserApi.dismissOverlays(tabId);
+    if (!result.ok) {
+      return {
+        content: [
+          { type: "text", text: `dismiss-overlays failed: ${result.error ?? "unknown error"}` },
+        ],
+        isError: true,
+      };
+    }
+    const list = result.dismissed ?? [];
+    const text =
+      list.length === 0
+        ? "No overlays found to dismiss."
+        : `Dismissed ${list.length} overlay(s) via ${result.method ?? "remove"}: ${list.join(", ")}`;
+    return { content: [{ type: "text", text }] };
+  }
+);
+
+mcpServer.tool(
   "upload-file",
   "Upload a local file into a file <input> on a page. Pass the 'uid' of the file input from a recent take-snapshot and the absolute 'filePath' of the file on the machine running the MCP server. The server reads the file itself and injects it into the input (browsers forbid setting a file input's path from script, so this is the reliable way). Works for arbitrary local paths. Max file size 25 MB.",
   { tabId: z.number(), uid: z.string(), filePath: z.string() },

@@ -370,6 +370,9 @@ export class MessageHandler {
           exact: req.exact,
         });
         break;
+      case "dismiss-overlays":
+        await this.runDismissOverlays(req.correlationId, req.tabId);
+        break;
       case "click-at":
         await this.runPointAction(
           req.correlationId,
@@ -843,6 +846,35 @@ export class MessageHandler {
       ...(result && (result as { navigated?: boolean }).navigated !== undefined
         ? { navigated: (result as { navigated?: boolean }).navigated }
         : {}),
+    });
+  }
+
+  // dismiss-overlays executor. Forwards to the ISOLATED content-script world
+  // (content-script.ts calls dismissOverlays). No nav-race (synchronous; a
+  // reject click stays on the page).
+  private async runDismissOverlays(
+    correlationId: string,
+    tabId: number
+  ): Promise<void> {
+    const tab = await browser.tabs.get(tabId);
+    if (tab.url && (await isDomainInDenyList(tab.url))) {
+      throw new Error(`Domain in tab URL is in the deny list`);
+    }
+    await this.checkForUrlPermission(tab.url);
+
+    const result = (await sendMessageToTabRaw(tabId, {
+      type: "dismissOverlays",
+    })) || { ok: false, dismissed: [], error: "dismiss-overlays produced no result." };
+
+    await this.client.sendResourceToServer({
+      resource: "action-result",
+      correlationId,
+      ok: !!(result && result.ok),
+      ...(result && result.error !== undefined ? { error: result.error } : {}),
+      ...(result && result.dismissed !== undefined
+        ? { dismissed: result.dismissed }
+        : {}),
+      ...(result && result.method !== undefined ? { method: result.method } : {}),
     });
   }
 

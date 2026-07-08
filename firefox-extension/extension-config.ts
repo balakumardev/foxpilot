@@ -228,6 +228,11 @@ export const AVAILABLE_TOOLS: ToolInfo[] = [
     id: "select-option",
     name: "Select Option",
     description: "Allows the MCP server to select an option in a native <select> or a custom dropdown on a page by snapshot uid"
+  },
+  {
+    id: "dismiss-overlays",
+    name: "Dismiss Overlays",
+    description: "Allows the MCP server to dismiss cookie-consent banners and modal overlays covering a page (prefers a Reject/Decline control)"
   }
 ];
 
@@ -275,6 +280,7 @@ export const COMMAND_TO_TOOL_ID: Record<ServerMessageRequest["cmd"], string> = {
   "scroll-to": "scroll-to",
   "scroll-into-view": "scroll-into-view",
   "select-option": "select-option",
+  "dismiss-overlays": "dismiss-overlays",
 };
 
 // Commands that actively control a page (navigation, input, scripting, page
@@ -315,6 +321,7 @@ export const AUTOMATION_COMMANDS: ReadonlySet<string> = new Set<string>([
   "scroll-to",
   "scroll-into-view",
   "select-option",
+  "dismiss-overlays",
 ]);
 
 /**

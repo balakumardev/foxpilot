@@ -693,6 +693,13 @@ export class BrowserAPI {
     });
   }
 
+  async dismissOverlays(tabId: number): Promise<ActionResultExtensionMessage> {
+    return await this.sendTool<ActionResultExtensionMessage>({
+      cmd: "dismiss-overlays",
+      tabId,
+    });
+  }
+
   async fillForm(
     tabId: number,
     fields: { uid: string; value: string }[]

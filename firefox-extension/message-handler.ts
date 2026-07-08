@@ -9,6 +9,7 @@ import {
   scrollElementIntoView,
 } from "./injected/point-action-script";
 import { selectOption } from "./injected/select-option-script";
+import { dismissOverlays } from "./injected/dismiss-overlays-script";
 import { dispatchMouseMoveStep, typeCharStep, readElementScreenRect } from "./injected/humanize-steps";
 import { runHumanInput, HumanInputDeps, StepResult } from "./humanize/run-human-input";
 import { mousePath, typingPlan, Point } from "./humanize/motion-model";
@@ -356,6 +357,9 @@ export class MessageHandler {
           option: req.option,
           exact: req.exact,
         });
+        break;
+      case "dismiss-overlays":
+        await this.runDismissOverlays(req.correlationId, req.tabId);
         break;
       case "click-at":
         await this.runPointAction(
@@ -931,6 +935,40 @@ export class MessageHandler {
       ...(result.error !== undefined ? { error: result.error } : {}),
       ...(result.selected !== undefined ? { selected: result.selected } : {}),
       ...(result.navigated !== undefined ? { navigated: result.navigated } : {}),
+    });
+  }
+
+  // dismiss-overlays executor. Injects the self-contained synchronous
+  // dismissOverlays into the ISOLATED world and replies with the shared
+  // action-result + dismissed/method. No nav-race: a reject/decline click stays
+  // on the page.
+  private async runDismissOverlays(
+    correlationId: string,
+    tabId: number
+  ): Promise<void> {
+    const tab = await browser.tabs.get(tabId);
+    if (tab.url && (await isDomainInDenyList(tab.url))) {
+      throw new Error(`Domain in tab URL is in the deny list`);
+    }
+    await this.checkForUrlPermission(tab.url);
+
+    const results = await browser.tabs.executeScript(tabId, {
+      code: `(${dismissOverlays.toString()})(document)`,
+    });
+    const result = (results && results[0]) || {
+      ok: false,
+      dismissed: [],
+      error:
+        "dismiss-overlays produced no result (the content script may not be loaded in this tab — reload the page and retry).",
+    };
+
+    await this.client.sendResourceToServer({
+      resource: "action-result",
+      correlationId,
+      ok: !!result.ok,
+      ...(result.error !== undefined ? { error: result.error } : {}),
+      ...(result.dismissed !== undefined ? { dismissed: result.dismissed } : {}),
+      ...(result.method !== undefined ? { method: result.method } : {}),
     });
   }
 

@@ -23,6 +23,7 @@ import {
   scrollElementIntoView,
 } from "./injected/point-action-script";
 import { selectOption } from "./injected/select-option-script";
+import { dismissOverlays } from "./injected/dismiss-overlays-script";
 
 // Guard against duplicate injection in the same isolated world.
 if ((window as any).__bcmcpContentScriptLoaded) {
@@ -307,6 +308,12 @@ if ((window as any).__bcmcpContentScriptLoaded) {
 
           case "selectOption": {
             const result = await selectOption(document, message.args);
+            sendResponse(result);
+            break;
+          }
+
+          case "dismissOverlays": {
+            const result = dismissOverlays(document);
             sendResponse(result);
             break;
           }

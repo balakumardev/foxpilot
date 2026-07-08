@@ -470,6 +470,16 @@ export interface SelectOptionServerMessage extends ServerMessageBase {
   exact?: boolean;
 }
 
+// Dismiss cookie-consent banners and modal overlays covering the page (OneTrust,
+// TrustArc, Cookiebot, Osano/Quantcast, generic aria-modal dialogs + backdrops).
+// Prefers a Reject/Decline/"necessary only" control; else removes the node(s) and
+// restores the scroll lock. Idempotent. Runs in the ISOLATED content-script world
+// (CSP-immune). Replies with the shared action-result + additive dismissed/method.
+export interface DismissOverlaysServerMessage extends ServerMessageBase {
+  cmd: "dismiss-overlays";
+  tabId: number;
+}
+
 export type ServerMessage =
   | OpenTabServerMessage
   | CloseTabsServerMessage
@@ -512,6 +522,7 @@ export type ServerMessage =
   | ScrollAtServerMessage
   | ScrollToServerMessage
   | ScrollIntoViewServerMessage
-  | SelectOptionServerMessage;
+  | SelectOptionServerMessage
+  | DismissOverlaysServerMessage;
 
 export type ServerMessageRequest = ServerMessage & { correlationId: string };

@@ -123,6 +123,9 @@ export interface ActionResultExtensionMessage extends ExtensionMessageBase {
   // select-option: the control's resulting displayed value after the pick.
   // Append-only (Wave 3b, after Wave 3a's intercepted?).
   selected?: string;
+  // dismiss-overlays: identifiers of what was dismissed, and how.
+  dismissed?: string[];
+  method?: "reject" | "remove";
 }
 
 // Reply for the evaluate-script tool. `ok` is false when the in-page evaluation
