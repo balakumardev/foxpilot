@@ -391,3 +391,43 @@ export function performInputAction(
     return { ok: false, error: String(e) };
   }
 }
+
+/**
+ * Pure hit-test classifier for click-interception detection. Given the intended
+ * click `target` and the `topmost` element document.elementFromPoint returned at
+ * the target's center, classify their DOM relationship. elementFromPoint is
+ * deliberately NOT called here — the CALLER passes `topmost` in — so this stays a
+ * pure function that jsdom unit tests exercise with fabricated nodes (jsdom has
+ * no layout / no elementFromPoint). Only "unrelated" (a foreign overlay covering
+ * the target) counts as an interception.
+ *
+ *   "self"        topmost IS the target.
+ *   "descendant"  topmost is inside the target (e.g. an inner label) — the click
+ *                 still lands on the target's own subtree; NOT intercepted.
+ *   "ancestor"    the target is inside topmost (topmost is the target's own
+ *                 wrapper / shadow host) — same subtree; NOT intercepted.
+ *   "unrelated"   topmost is in a DIFFERENT subtree — a foreign overlay covers
+ *                 the target. THIS is an interception.
+ *
+ * DUPLICATION NOTE: `performInputAction` carries a byte-identical INNER copy of
+ * this body (it is stringified-and-injected and may not reference module scope).
+ * Keep the two in sync.
+ */
+export function classifyHit(
+  target: Element | null,
+  topmost: Element | null
+): "self" | "ancestor" | "descendant" | "unrelated" {
+  if (!target || !topmost) {
+    return "self";
+  }
+  if (topmost === target) {
+    return "self";
+  }
+  if (target.contains(topmost)) {
+    return "descendant";
+  }
+  if (topmost.contains(target)) {
+    return "ancestor";
+  }
+  return "unrelated";
+}
