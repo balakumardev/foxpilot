@@ -50,6 +50,7 @@ import {
   typeCharStep,
   readElementScreenRect,
 } from "../injected/humanize-steps";
+import { selectOption } from "../injected/select-option-script";
 
 // Tokens that must never appear in the stringified source of an injected
 // function. Each one is either a module-system reference (undefined in a raw
@@ -74,6 +75,7 @@ const INJECTED_FUNCTIONS: ReadonlyArray<[string, (...args: any[]) => any]> = [
   ["dispatchMouseMoveStep", dispatchMouseMoveStep as unknown as (...args: any[]) => any],
   ["typeCharStep", typeCharStep as unknown as (...args: any[]) => any],
   ["readElementScreenRect", readElementScreenRect as unknown as (...args: any[]) => any],
+  ["selectOption", selectOption as unknown as (...args: any[]) => any],
 ];
 
 describe("injected functions are self-contained (safe to stringify-and-inject)", () => {
@@ -95,4 +97,17 @@ describe("injected functions are self-contained (safe to stringify-and-inject)",
       }
     });
   }
+});
+
+describe("selectOption stays natively async (no down-levelled helper leak)", () => {
+  const src = selectOption.toString();
+  it("stringifies as a native async function using await", () => {
+    expect(src).toMatch(/async\s+function/);
+    expect(src).toContain("await ");
+  });
+  it("contains no transpiler async helper reference", () => {
+    for (const t of ["__awaiter", "__generator", "__async", "regeneratorRuntime"]) {
+      expect(src).not.toContain(t);
+    }
+  });
 });
