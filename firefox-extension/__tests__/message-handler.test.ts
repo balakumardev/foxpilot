@@ -32,6 +32,16 @@ jest.mock("../native-input-client", () => ({
   })),
 }));
 
+// Mock nav-ready so navigate-tab's post-nav settle (waitForTabReady) is a
+// deterministic no-op here; its own behavior is covered by nav-ready.test.ts and
+// the settle/waitFor* flow by navigate-tab.test.ts. Without this the real
+// waitForTabReady would poll for the full readiness budget (the module-level
+// onUpdated mock below never fires "complete"), hanging the navigate-tab tests.
+jest.mock("../nav-ready", () => ({
+  waitForTabReady: jest.fn().mockResolvedValue(undefined),
+  execWithReadyRetry: jest.fn(),
+}));
+
 // The shared setup mock (__tests__/setup.ts) does not include
 // browser.tabs.onUpdated, but the nav-race wiring (raceInputAgainstNavigation)
 // registers/removes an onUpdated listener on every covert input dispatch. Install
@@ -1167,9 +1177,13 @@ describe("MessageHandler", () => {
       (browser.storage.local.get as jest.Mock).mockResolvedValue({
         config: automationConfig,
       });
+      // navigate-tab now settles and reports the ACTUAL final URL read back via
+      // tabs.get (the approved accurate-URL behavior change); the mocked tab has
+      // settled at the requested URL.
       (browser.tabs.get as jest.Mock).mockResolvedValue({
         id: 123,
-        url: "https://old.com",
+        url: "https://example.com",
+        status: "complete",
       });
       (browser.tabs.update as jest.Mock).mockResolvedValue(undefined);
 
