@@ -63,6 +63,20 @@ export interface NavigateTabServerMessage extends ServerMessageBase {
   cmd: "navigate-tab";
   tabId: number;
   url: string;
+  // NEW — all optional, additive. Settle behavior + post-settle wait conditions.
+  // "complete" (default) waits for the tab to finish loading AND a live
+  // content-script probe before replying with the accurate settled URL;
+  // "none" restores the old fire-and-forget echo. waitFor* poll until the
+  // condition holds or timeoutMs elapses (then the tool reports the mismatch).
+  // forceLoad forces a real document load (defeats in-app SPA routing).
+  // timeoutMs is the overall settle+condition budget (clamped under the 30s
+  // navigate-tab broker cap in timeouts.ts).
+  waitUntil?: "complete" | "none";
+  waitForSelector?: string;
+  waitForText?: string;
+  waitForUrl?: string; // substring match against the settled URL
+  forceLoad?: boolean;
+  timeoutMs?: number;
 }
 
 export interface NavigatePageHistoryServerMessage extends ServerMessageBase {

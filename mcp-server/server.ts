@@ -244,10 +244,26 @@ mcpServer.tool(
 
 mcpServer.tool(
   "navigate-tab",
-  "Load a URL in an existing browser tab. The URL must be https, or http only for localhost.",
-  { tabId: z.number(), url: z.string() },
-  async ({ tabId, url }) => {
-    const result = await browserApi.navigateTab(tabId, url);
+  "Load a URL in an existing browser tab and wait for it to settle, then report the ACTUAL final URL (a client-side SPA router may land elsewhere). The URL must be https, or http only for localhost. Optional: waitForSelector / waitForText / waitForUrl poll after settle and report a mismatch if unmet; forceLoad forces a real document load to defeat in-app SPA routing; waitUntil:\"none\" restores fire-and-forget; timeoutMs bounds the wait (capped at ~30s).",
+  {
+    tabId: z.number(),
+    url: z.string(),
+    waitUntil: z.enum(["complete", "none"]).optional(),
+    waitForSelector: z.string().optional(),
+    waitForText: z.string().optional(),
+    waitForUrl: z.string().optional(),
+    forceLoad: z.boolean().optional(),
+    timeoutMs: z.number().optional(),
+  },
+  async ({ tabId, url, waitUntil, waitForSelector, waitForText, waitForUrl, forceLoad, timeoutMs }) => {
+    const result = await browserApi.navigateTab(tabId, url, {
+      waitUntil,
+      waitForSelector,
+      waitForText,
+      waitForUrl,
+      forceLoad,
+      timeoutMs,
+    });
     return {
       content: [
         {

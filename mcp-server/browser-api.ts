@@ -460,12 +460,21 @@ export class BrowserAPI {
 
   async navigateTab(
     tabId: number,
-    url: string
+    url: string,
+    opts?: {
+      waitUntil?: "complete" | "none";
+      waitForSelector?: string;
+      waitForText?: string;
+      waitForUrl?: string;
+      forceLoad?: boolean;
+      timeoutMs?: number;
+    }
   ): Promise<NavigatedExtensionMessage> {
     return await this.sendTool<NavigatedExtensionMessage>({
       cmd: "navigate-tab",
       tabId,
       url,
+      ...opts,
     });
   }
 
