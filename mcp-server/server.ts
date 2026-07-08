@@ -756,6 +756,36 @@ mcpServer.tool(
 );
 
 mcpServer.tool(
+  "select-option",
+  "Select an option in a dropdown by snapshot uid — works for BOTH a native <select> AND a custom combobox (react-select/Downshift/Radix and similar, which take-snapshot shows as `combobox` and which click-element/fill-element cannot drive). Pass the visible option text as \"option\"; by default it matches case-insensitively as a trimmed substring, or set exact:true for an exact match. For a custom dropdown it opens the menu, types into the menu's search box if there is one, waits for the option to render, clicks it, and returns the control's resulting displayed value. Get the uid from take-snapshot first.",
+  {
+    tabId: z.number(),
+    uid: z.string(),
+    option: z.string(),
+    exact: z.boolean().optional(),
+  },
+  async ({ tabId, uid, option, exact }) => {
+    const result = await browserApi.selectOption(tabId, uid, option, exact);
+    if (!result.ok) {
+      return {
+        content: [
+          { type: "text", text: `select-option failed: ${result.error ?? "unknown error"}` },
+        ],
+        isError: true,
+      };
+    }
+    const parts = [`Selected option in uid ${uid}`];
+    if (result.selected) {
+      parts.push(`— current value: "${result.selected}"`);
+    }
+    if (result.navigated) {
+      parts.push("(page navigated)");
+    }
+    return { content: [{ type: "text", text: parts.join(" ") }] };
+  }
+);
+
+mcpServer.tool(
   "upload-file",
   "Upload a local file into a file <input> on a page. Pass the 'uid' of the file input from a recent take-snapshot and the absolute 'filePath' of the file on the machine running the MCP server. The server reads the file itself and injects it into the input (browsers forbid setting a file input's path from script, so this is the reliable way). Works for arbitrary local paths. Max file size 25 MB.",
   { tabId: z.number(), uid: z.string(), filePath: z.string() },

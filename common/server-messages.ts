@@ -454,6 +454,22 @@ export interface ScrollIntoViewServerMessage extends ServerMessageBase {
   uid: string;
 }
 
+// Select an option in a dropdown identified by a snapshot uid. Drives BOTH a
+// native <select> and a custom combobox (react-select/Downshift/Radix): opens
+// the menu, types into its search box when present, waits for the option to
+// render, clicks it, and reports the control's resulting displayed value.
+// `option` is the desired visible text; `exact` (default false) toggles exact
+// vs. normalized (trim/lowercase) substring matching. Runs in the ISOLATED
+// content-script world (CSP-immune). Replies with the shared action-result +
+// additive `selected`.
+export interface SelectOptionServerMessage extends ServerMessageBase {
+  cmd: "select-option";
+  tabId: number;
+  uid: string;
+  option: string;
+  exact?: boolean;
+}
+
 export type ServerMessage =
   | OpenTabServerMessage
   | CloseTabsServerMessage
@@ -495,6 +511,7 @@ export type ServerMessage =
   | HoverAtServerMessage
   | ScrollAtServerMessage
   | ScrollToServerMessage
-  | ScrollIntoViewServerMessage;
+  | ScrollIntoViewServerMessage
+  | SelectOptionServerMessage;
 
 export type ServerMessageRequest = ServerMessage & { correlationId: string };

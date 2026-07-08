@@ -363,6 +363,13 @@ export class MessageHandler {
           toUid: req.toUid,
         });
         break;
+      case "select-option":
+        await this.runSelectOption(req.correlationId, req.tabId, {
+          uid: req.uid,
+          option: req.option,
+          exact: req.exact,
+        });
+        break;
       case "click-at":
         await this.runPointAction(
           req.correlationId,
@@ -800,6 +807,39 @@ export class MessageHandler {
       ok: !!(result && result.ok),
       ...(result && result.error !== undefined ? { error: result.error } : {}),
       ...(result && result.element !== undefined ? { element: result.element } : {}),
+      ...(result && (result as { navigated?: boolean }).navigated !== undefined
+        ? { navigated: (result as { navigated?: boolean }).navigated }
+        : {}),
+    });
+  }
+
+  // select-option executor. Forwards to the ISOLATED content-script world
+  // (content-script.ts awaits selectOption) and races against tab navigation.
+  private async runSelectOption(
+    correlationId: string,
+    tabId: number,
+    args: { uid: string; option: string; exact?: boolean }
+  ): Promise<void> {
+    const tab = await browser.tabs.get(tabId);
+    if (tab.url && (await isDomainInDenyList(tab.url))) {
+      throw new Error(`Domain in tab URL is in the deny list`);
+    }
+    await this.checkForUrlPermission(tab.url);
+
+    const result =
+      (await raceInputAgainstNavigation(
+        tabId,
+        sendMessageToTabRaw(tabId, { type: "selectOption", args })
+      )) || { ok: false, error: "select-option produced no result." };
+
+    await this.client.sendResourceToServer({
+      resource: "action-result",
+      correlationId,
+      ok: !!(result && result.ok),
+      ...(result && result.error !== undefined ? { error: result.error } : {}),
+      ...(result && (result as { selected?: string }).selected !== undefined
+        ? { selected: (result as { selected?: string }).selected }
+        : {}),
       ...(result && (result as { navigated?: boolean }).navigated !== undefined
         ? { navigated: (result as { navigated?: boolean }).navigated }
         : {}),

@@ -8,6 +8,7 @@ import {
   scrollWindowTo,
   scrollElementIntoView,
 } from "./injected/point-action-script";
+import { selectOption } from "./injected/select-option-script";
 import { dispatchMouseMoveStep, typeCharStep, readElementScreenRect } from "./injected/humanize-steps";
 import { runHumanInput, HumanInputDeps, StepResult } from "./humanize/run-human-input";
 import { mousePath, typingPlan, Point } from "./humanize/motion-model";
@@ -347,6 +348,13 @@ export class MessageHandler {
           action: "drag",
           fromUid: req.fromUid,
           toUid: req.toUid,
+        });
+        break;
+      case "select-option":
+        await this.runSelectOption(req.correlationId, req.tabId, {
+          uid: req.uid,
+          option: req.option,
+          exact: req.exact,
         });
         break;
       case "click-at":
@@ -879,6 +887,50 @@ export class MessageHandler {
       ...(result.navigated !== undefined
         ? { navigated: result.navigated }
         : {}),
+    });
+  }
+
+  // select-option executor. Injects the self-contained async selectOption into
+  // the ISOLATED world; Firefox's native executeScript awaits the returned
+  // Promise. Raced against tab navigation (a select can navigate) exactly like
+  // runPointAction. A stale uid / unmatched option is a legitimate ok:false.
+  private async runSelectOption(
+    correlationId: string,
+    tabId: number,
+    args: { uid: string; option: string; exact?: boolean }
+  ): Promise<void> {
+    const tab = await browser.tabs.get(tabId);
+    if (tab.url && (await isDomainInDenyList(tab.url))) {
+      throw new Error(`Domain in tab URL is in the deny list`);
+    }
+    await this.checkForUrlPermission(tab.url);
+
+    const dispatch = browser.tabs
+      .executeScript(tabId, {
+        code: `(${selectOption.toString()})(document, ${JSON.stringify(args)})`,
+      })
+      .then(
+        (results) =>
+          (results && results[0]) || {
+            ok: false,
+            error:
+              "select-option produced no result (the content script may not be loaded in this tab — reload the page and retry).",
+          }
+      );
+    const result: {
+      ok: boolean;
+      selected?: string;
+      error?: string;
+      navigated?: boolean;
+    } = await raceInputAgainstNavigation(tabId, dispatch);
+
+    await this.client.sendResourceToServer({
+      resource: "action-result",
+      correlationId,
+      ok: !!result.ok,
+      ...(result.error !== undefined ? { error: result.error } : {}),
+      ...(result.selected !== undefined ? { selected: result.selected } : {}),
+      ...(result.navigated !== undefined ? { navigated: result.navigated } : {}),
     });
   }
 

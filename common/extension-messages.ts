@@ -120,6 +120,9 @@ export interface ActionResultExtensionMessage extends ExtensionMessageBase {
     role?: string;
     name?: string;
   };
+  // select-option: the control's resulting displayed value after the pick.
+  // Append-only (Wave 3b, after Wave 3a's intercepted?).
+  selected?: string;
 }
 
 // Reply for the evaluate-script tool. `ok` is false when the in-page evaluation

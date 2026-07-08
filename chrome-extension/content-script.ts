@@ -22,6 +22,7 @@ import {
   scrollWindowTo,
   scrollElementIntoView,
 } from "./injected/point-action-script";
+import { selectOption } from "./injected/select-option-script";
 
 // Guard against duplicate injection in the same isolated world.
 if ((window as any).__bcmcpContentScriptLoaded) {
@@ -300,6 +301,12 @@ if ((window as any).__bcmcpContentScriptLoaded) {
 
           case "performPointAction": {
             const result = performPointAction(document, message.args);
+            sendResponse(result);
+            break;
+          }
+
+          case "selectOption": {
+            const result = await selectOption(document, message.args);
             sendResponse(result);
             break;
           }

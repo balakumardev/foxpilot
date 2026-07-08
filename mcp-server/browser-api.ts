@@ -678,6 +678,21 @@ export class BrowserAPI {
     }
   }
 
+  async selectOption(
+    tabId: number,
+    uid: string,
+    option: string,
+    exact?: boolean
+  ): Promise<ActionResultExtensionMessage> {
+    return await this.sendTool<ActionResultExtensionMessage>({
+      cmd: "select-option",
+      tabId,
+      uid,
+      option,
+      exact,
+    });
+  }
+
   async fillForm(
     tabId: number,
     fields: { uid: string; value: string }[]

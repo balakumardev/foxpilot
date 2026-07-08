@@ -24,6 +24,9 @@ const COMMAND_TIMEOUTS: Record<string, number> = {
   "stream-start": 30000,
   // stream-poll returns promptly after draining buffered frames.
   "stream-poll": 20000,
+  // select-option polls a custom dropdown's menu (≤ 15 × 300ms) before it can
+  // click the option — give it more than the 5s default.
+  "select-option": 15000,
 };
 
 /**

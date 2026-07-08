@@ -224,6 +224,11 @@ export const AVAILABLE_TOOLS: ToolInfo[] = [
     id: "scroll-into-view",
     name: "Scroll Element into View",
     description: "Allows the MCP server to scroll a snapshot element into view by uid"
+  },
+  {
+    id: "select-option",
+    name: "Select Option",
+    description: "Allows the MCP server to select an option in a native <select> or a custom dropdown on a page by snapshot uid"
   }
 ];
 
@@ -270,6 +275,7 @@ export const COMMAND_TO_TOOL_ID: Record<ServerMessageRequest["cmd"], string> = {
   "scroll-at": "scroll-at",
   "scroll-to": "scroll-to",
   "scroll-into-view": "scroll-into-view",
+  "select-option": "select-option",
 };
 
 // Commands that actively control a page (navigation, input, scripting, page
@@ -310,6 +316,7 @@ export const AUTOMATION_COMMANDS: ReadonlySet<string> = new Set<string>([
   "scroll-at",
   "scroll-to",
   "scroll-into-view",
+  "select-option",
 ]);
 
 /**
