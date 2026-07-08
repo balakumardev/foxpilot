@@ -733,11 +733,17 @@ export function buildSnapshot(
       el.setAttribute(UID_ATTR, uid);
       added += 1;
 
-      let line = 'clickable "' + name + '" [uid=' + uid + "]";
-      if (flags.length > 0) {
-        line += " (" + flags.join(", ") + ")";
-      }
-      lines.push(line);
+      lines.push(
+        makeRow(
+          el,
+          "clickable",
+          name,
+          getCurrentValue(el, "clickable"),
+          getSection(el),
+          flags,
+          uid
+        )
+      );
     }
   }
 

@@ -338,7 +338,7 @@ describe("buildSnapshot", () => {
     it("captures an inline cursor:pointer div by DEFAULT (includePointer defaults true)", () => {
       document.body.innerHTML = `<div style="cursor: pointer">Open</div>`;
       const { tree } = buildSnapshot(document, { verbose: false, maxLength: 25000 });
-      expect(tree).toMatch(/clickable "Open" \[uid=e\d+\]/);
+      expect(tree).toMatch(/clickable "Open" \|  \|  \[uid=e\d+\]/);
     });
 
     it("omits pointer elements when includePointer is explicitly false", () => {
@@ -572,10 +572,10 @@ describe("buildSnapshot", () => {
     it("captures a non-semantic div with inline cursor:pointer as a clickable (default and verbose)", () => {
       document.body.innerHTML = `<div style="cursor: pointer">Click me</div>`;
       const verbose = build(true);
-      expect(verbose.tree).toMatch(/clickable "Click me" \[uid=e\d+\]/);
+      expect(verbose.tree).toMatch(/clickable "Click me" \|  \|  \[uid=e\d+\]/);
       // includePointer now defaults true, so the DEFAULT snapshot includes it too.
       const nonVerbose = build(false);
-      expect(nonVerbose.tree).toMatch(/clickable "Click me" \[uid=e\d+\]/);
+      expect(nonVerbose.tree).toMatch(/clickable "Click me" \|  \|  \[uid=e\d+\]/);
     });
 
     it("derives the clickable name from aria-label when present", () => {
@@ -612,7 +612,7 @@ describe("buildSnapshot", () => {
       // the immediate text node ("Outer"), never the nested content.
       document.body.innerHTML = `<div style="cursor: pointer">Outer<span>deeply nested content that should not be dumped</span></div>`;
       const { tree } = build(true);
-      expect(tree).toMatch(/clickable "Outer" \[uid=e\d+\]/);
+      expect(tree).toMatch(/clickable "Outer" \|  \|  \[uid=e\d+\]/);
       expect(tree).not.toContain("deeply nested content");
     });
 
@@ -641,6 +641,12 @@ describe("buildSnapshot", () => {
       document.body.innerHTML = `<div style="cursor: pointer" aria-label="Toggle" aria-expanded="true"></div>`;
       const { tree } = build(true);
       expect(tree).toMatch(/clickable "Toggle" \|  \|  \[uid=e\d+\] \(expanded\)/);
+    });
+
+    it("emits full 3-slot grammar for a cursor:pointer clickable", () => {
+      document.body.innerHTML = `<div class="card"><h3>Templates</h3><div style="cursor: pointer">Use this</div></div>`;
+      const { tree } = build(true);
+      expect(tree).toContain('clickable "Use this" |  | Templates [uid=');
     });
   });
 
