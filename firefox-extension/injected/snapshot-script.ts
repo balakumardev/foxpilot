@@ -305,6 +305,99 @@ export function buildSnapshot(
     return flags;
   }
 
+  const VALUE_MAX = 80;
+  const SECTION_MAX = 60;
+
+  function formatSlot(s: string, max: number): string {
+    // Collapse whitespace, neutralize the slot delimiter (a literal "|" inside a
+    // slot would make the row ambiguous — collapse it to "/"), then clip to the
+    // slot budget.
+    const cleaned = collapseWhitespace(s).replace(/\|/g, "/");
+    if (cleaned.length > max) {
+      return cleaned.slice(0, max);
+    }
+    return cleaned;
+  }
+
+  function getCurrentValue(el: Element, role: string): string {
+    const tag = el.tagName.toLowerCase();
+    if (tag === "textarea") {
+      return (el as HTMLTextAreaElement).value || "";
+    }
+    if (tag === "input") {
+      const type = (el.getAttribute("type") || "text").toLowerCase();
+      // Checkbox/radio carry their state in flags; button/file/hidden/image have
+      // no displayable value. Only text-entry inputs contribute a value slot.
+      if (
+        type === "checkbox" ||
+        type === "radio" ||
+        type === "button" ||
+        type === "submit" ||
+        type === "reset" ||
+        type === "hidden" ||
+        type === "file" ||
+        type === "image"
+      ) {
+        return "";
+      }
+      return (el as HTMLInputElement).value || "";
+    }
+    if (tag === "select") {
+      const sel = el as HTMLSelectElement;
+      const opts = sel.selectedOptions;
+      if (opts && opts.length > 0 && opts[0].textContent) {
+        return opts[0].textContent;
+      }
+      const idx = sel.selectedIndex;
+      if (
+        idx >= 0 &&
+        sel.options &&
+        sel.options[idx] &&
+        sel.options[idx].textContent
+      ) {
+        return sel.options[idx].textContent as string;
+      }
+      return "";
+    }
+    // Custom-combobox handling is added in Task 12.
+    return "";
+  }
+
+  function makeRow(
+    el: Element,
+    role: string,
+    name: string,
+    value: string,
+    section: string,
+    flags: string[],
+    uid: string
+  ): string {
+    // el is part of the shared signature both the base and pointer passes call
+    // through; every slot is precomputed by the caller, so el is not read here.
+    const nameSlot = formatSlot(name, NAME_MAX);
+    const valueClean = formatSlot(value, VALUE_MAX);
+    const sectionSlot = formatSlot(section, SECTION_MAX);
+    // Drop a value that merely repeats the name (a bare custom combobox whose
+    // only signal is its placeholder ends up in both — show it once, as name).
+    const valueSlot =
+      valueClean && valueClean !== nameSlot ? '"' + valueClean + '"' : "";
+    let line =
+      role +
+      ' "' +
+      nameSlot +
+      '" | ' +
+      valueSlot +
+      " | " +
+      sectionSlot +
+      " [uid=" +
+      uid +
+      "]";
+    if (flags.length > 0) {
+      line += " (" + flags.join(", ") + ")";
+    }
+    return line;
+  }
+
   // --- 1. clear stale uids from prior runs ---
   const stale = doc.querySelectorAll("[" + UID_ATTR + "]");
   for (let i = 0; i < stale.length; i++) {
@@ -443,11 +536,9 @@ export function buildSnapshot(
     const uid = "e" + uidCounter;
     el.setAttribute(UID_ATTR, uid);
 
-    let line = role + ' "' + name + '" [uid=' + uid + "]";
-    if (flags.length > 0) {
-      line += " (" + flags.join(", ") + ")";
-    }
-    lines.push(line);
+    lines.push(
+      makeRow(el, role, name, getCurrentValue(el, role), "", flags, uid)
+    );
   }
 
   // --- 6b. (default via includePointer) second pass: visually-clickable non-semantic

@@ -19,13 +19,13 @@ describe("buildSnapshot", () => {
   it("renders links with the link role, accessible name, and a uid", () => {
     document.body.innerHTML = `<a href="/home">Home</a>`;
     const { tree } = build();
-    expect(tree).toContain('link "Home" [uid=e1]');
+    expect(tree).toContain('link "Home" |  |  [uid=e1]');
   });
 
   it("renders buttons with the button role and accessible name", () => {
     document.body.innerHTML = `<button>Sign in</button>`;
     const { tree } = build();
-    expect(tree).toContain('button "Sign in" [uid=e1]');
+    expect(tree).toContain('button "Sign in" |  |  [uid=e1]');
   });
 
   it("renders text inputs as textbox via the associated label", () => {
@@ -34,7 +34,7 @@ describe("buildSnapshot", () => {
       <input id="email" type="text" />
     `;
     const { tree } = build();
-    expect(tree).toContain('textbox "Email" [uid=');
+    expect(tree).toContain('textbox "Email" |  |  [uid=');
   });
 
   it("derives implicit roles for input types", () => {
@@ -56,7 +56,7 @@ describe("buildSnapshot", () => {
   it("honors an explicit role attribute over the implicit one", () => {
     document.body.innerHTML = `<div role="tab" aria-label="Settings"></div>`;
     const { tree } = build();
-    expect(tree).toContain('tab "Settings" [uid=');
+    expect(tree).toContain('tab "Settings" |  |  [uid=');
   });
 
   it("stamps data-bcmcp-uid attributes on selected elements", () => {
@@ -125,9 +125,9 @@ describe("buildSnapshot", () => {
       <button disabled>Submit</button>
     `;
     const { tree } = build();
-    expect(tree).toContain('textbox "Email" [uid=e1] (required)');
-    expect(tree).toMatch(/checkbox "Agree" \[uid=e\d+\] \(checked\)/);
-    expect(tree).toMatch(/button "Submit" \[uid=e\d+\] \(disabled\)/);
+    expect(tree).toContain('textbox "Email" |  |  [uid=e1] (required)');
+    expect(tree).toMatch(/checkbox "Agree" \|  \|  \[uid=e\d+\] \(checked\)/);
+    expect(tree).toMatch(/button "Submit" \|  \|  \[uid=e\d+\] \(disabled\)/);
   });
 
   it("renders aria-expanded and aria-selected state flags", () => {
@@ -145,7 +145,7 @@ describe("buildSnapshot", () => {
   it("renders aria-disabled as a disabled flag", () => {
     document.body.innerHTML = `<button aria-disabled="true">Nope</button>`;
     const { tree } = build();
-    expect(tree).toMatch(/button "Nope" \[uid=e\d+\] \(disabled\)/);
+    expect(tree).toMatch(/button "Nope" \|  \|  \[uid=e\d+\] \(disabled\)/);
   });
 
   it("prefers aria-label over label, placeholder, and text content", () => {
@@ -179,7 +179,7 @@ describe("buildSnapshot", () => {
       <label>Full name <input type="text" /></label>
     `;
     const { tree } = build();
-    expect(tree).toContain('textbox "Full name" [uid=');
+    expect(tree).toContain('textbox "Full name" |  |  [uid=');
   });
 
   it("uses title and alt as name fallbacks", () => {
@@ -288,7 +288,7 @@ describe("buildSnapshot", () => {
     expect(tree).toBe("");
   });
 
-  it("does not absorb an embedded control's text into a wrapping label's name", () => {
+  it("keeps the wrapping-label name in the name slot and shows the selected option in the value slot", () => {
     document.body.innerHTML = `
       <label>Country
         <select>
@@ -298,8 +298,13 @@ describe("buildSnapshot", () => {
       </label>
     `;
     const { tree } = build();
-    expect(tree).toContain('combobox "Country"');
-    expect(tree).not.toContain("United States");
+    // Name slot is the label text only; the selected option surfaces in VALUE.
+    expect(tree).toContain('combobox "Country" | "United States" |');
+    // The name slot must NOT absorb the option text.
+    expect(tree).not.toContain('combobox "Country United States"');
+    // Value is shown once (dedup does not fire here — name != value).
+    expect(tree).not.toContain('| "United States" | "United States"');
+    // Canada is not selected → must not appear anywhere.
     expect(tree).not.toContain("Canada");
   });
 
@@ -372,7 +377,7 @@ describe("buildSnapshot", () => {
         maxLength: 25000,
         selector: "[contenteditable]",
       });
-      expect(tree).toMatch(/textbox "Message input" \[uid=e\d+\]/);
+      expect(tree).toMatch(/textbox "Message input" \|  \|  \[uid=e\d+\]/);
       // Selector mode is self-contained: unrelated base elements are NOT emitted.
       expect(tree).not.toContain('button "Send"');
     });
@@ -402,7 +407,7 @@ describe("buildSnapshot", () => {
       });
       // The leaf #open-card matches; its ancestors (main/section) do NOT get
       // their own entry (deepest-wins).
-      expect(tree).toMatch(/clickable "Open" \[uid=e\d+\]/);
+      expect(tree).toMatch(/clickable "Open" \|  \|  \[uid=e\d+\]/);
       const clickableLines = (tree.match(/clickable "Open"/g) || []).length;
       expect(clickableLines).toBe(1);
       expect(tree).not.toContain("unrelated");
@@ -576,7 +581,7 @@ describe("buildSnapshot", () => {
     it("derives the clickable name from aria-label when present", () => {
       document.body.innerHTML = `<div style="cursor: pointer" aria-label="Open menu"></div>`;
       const { tree } = build(true);
-      expect(tree).toMatch(/clickable "Open menu" \[uid=e\d+\]/);
+      expect(tree).toMatch(/clickable "Open menu" \|  \|  \[uid=e\d+\]/);
     });
 
     it("skips a cursor:pointer element that has no derivable name (noise)", () => {
@@ -635,7 +640,45 @@ describe("buildSnapshot", () => {
     it("carries state flags on a captured clickable", () => {
       document.body.innerHTML = `<div style="cursor: pointer" aria-label="Toggle" aria-expanded="true"></div>`;
       const { tree } = build(true);
-      expect(tree).toMatch(/clickable "Toggle" \[uid=e\d+\] \(expanded\)/);
+      expect(tree).toMatch(/clickable "Toggle" \|  \|  \[uid=e\d+\] \(expanded\)/);
+    });
+  });
+
+  describe("3-slot grammar (Wave 2)", () => {
+    it("emits empty value and section slots for a plain link", () => {
+      document.body.innerHTML = `<a href="/home">Home</a>`;
+      const { tree } = build();
+      expect(tree).toContain('link "Home" |  |  [uid=e1]');
+    });
+
+    it("emits empty slots for a plain button", () => {
+      document.body.innerHTML = `<button>Sign in</button>`;
+      const { tree } = build();
+      expect(tree).toContain('button "Sign in" |  |  [uid=e1]');
+    });
+
+    it("shows a text input's current value in the value slot", () => {
+      document.body.innerHTML = `<input type="text" aria-label="Search" value="hello world" />`;
+      const { tree } = build();
+      expect(tree).toContain('textbox "Search" | "hello world" |  [uid=e1]');
+    });
+
+    it("shows a native select's selected option in the value slot", () => {
+      document.body.innerHTML = `<select aria-label="Country"><option>US</option><option>UK</option></select>`;
+      const { tree } = build();
+      expect(tree).toContain('combobox "Country" | "US" |  [uid=e1]');
+    });
+
+    it("leaves the value slot empty for a checkbox (state is in flags, not value)", () => {
+      document.body.innerHTML = `<input type="checkbox" aria-label="Agree" checked />`;
+      const { tree } = build();
+      expect(tree).toContain('checkbox "Agree" |  |  [uid=e1] (checked)');
+    });
+
+    it("collapses a literal pipe in slot text to a slash so the delimiter stays unambiguous", () => {
+      document.body.innerHTML = `<button>Save | Exit</button>`;
+      const { tree } = build();
+      expect(tree).toContain('button "Save / Exit" |  |  [uid=e1]');
     });
   });
 });
