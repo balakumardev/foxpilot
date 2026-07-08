@@ -62,6 +62,32 @@ test("custom combobox: clicks the leaf-matching [role=option] already in the DOM
   expect(r.selected).toBe("India");
 });
 
+test("custom combobox with no in-scope search input does NOT type into an unrelated page-level search box", async () => {
+  // The combobox control has no local/owned search input. A document-wide
+  // input[type=search] must NOT be typed into (it could be the site's own search).
+  mount(`
+    <input type="search" id="site-search" aria-label="Search site" />
+    <div data-bcmcp-uid="e1" role="combobox"><span class="select__singleValue"></span></div>
+    <div role="listbox">
+      <div role="option">United States</div>
+      <div role="option">India</div>
+    </div>`);
+  const siteSearch = document.getElementById("site-search") as HTMLInputElement;
+  let siteTyped = false;
+  siteSearch.addEventListener("input", () => { siteTyped = true; });
+  const india = Array.from(document.querySelectorAll('[role="option"]'))
+    .find((o) => (o.textContent || "").includes("India"))!;
+  india.addEventListener("click", () => {
+    (document.querySelector(".select__singleValue") as HTMLElement).textContent = "India";
+  });
+  const r = await selectOption(document, { uid: "e1", option: "India" });
+  expect(r.ok).toBe(true);
+  expect(r.selected).toBe("India");
+  // The unrelated site search box must be untouched.
+  expect(siteTyped).toBe(false);
+  expect(siteSearch.value).toBe("");
+});
+
 test("custom combobox: deepest-wins — a parent listbox row containing the needle is NOT matched over its leaf", async () => {
   mount(`
     <div data-bcmcp-uid="e1" role="combobox"></div>

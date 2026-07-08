@@ -137,22 +137,50 @@ export async function selectOption(
     //    the type-at pattern). The menu is often portaled, so look inside the
     //    control first, then across the document.
     function findSearchInput(control: Element): HTMLInputElement | null {
+      // 0. The control may itself BE the search <input> (Downshift-style combobox
+      //    where role="combobox" sits on the input). Trivially in-scope.
+      if (
+        control.tagName === "INPUT" &&
+        (control.getAttribute("type") || "text").toLowerCase() !== "hidden"
+      ) {
+        return control as HTMLInputElement;
+      }
+      // 1. A filter <input> rendered INSIDE the combobox control (react-select /
+      //    Downshift put one here). Scoped to the control's subtree.
       const local = control.querySelector(
         'input:not([type="hidden"])'
       ) as HTMLInputElement | null;
       if (local) {
         return local;
       }
-      const globals = doc.querySelectorAll(
-        'input[role="combobox"], input[aria-autocomplete="list"], input[type="search"], .select__input input'
-      );
-      for (let i = 0; i < globals.length; i++) {
-        const gi = globals[i] as HTMLInputElement;
-        if ((gi as HTMLElement).offsetParent !== null || gi.value === "") {
-          return gi;
+      // 2. The control's OWNED popup: aria-controls / aria-owns point at the
+      //    (often portaled) listbox/menu. Scope the search-input lookup to THAT
+      //    container only. A document-wide input[type="search"] fallback is
+      //    deliberately avoided — it could type the option text into an unrelated
+      //    site search box and trigger the site's own search.
+      const ref =
+        (control.getAttribute("aria-controls") || "") +
+        " " +
+        (control.getAttribute("aria-owns") || "");
+      const ids = ref.split(/\s+/);
+      for (let i = 0; i < ids.length; i++) {
+        const id = ids[i];
+        if (!id) {
+          continue;
+        }
+        const container = doc.getElementById(id);
+        if (container) {
+          const scoped = container.querySelector(
+            'input:not([type="hidden"])'
+          ) as HTMLInputElement | null;
+          if (scoped) {
+            return scoped;
+          }
         }
       }
-      return (globals[0] as HTMLInputElement) || null;
+      // 3. No in-scope search input — proceed WITHOUT typing (clicking the
+      //    matching option alone drives the pick).
+      return null;
     }
     const search = findSearchInput(el);
     if (search) {
