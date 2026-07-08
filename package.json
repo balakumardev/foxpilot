@@ -15,7 +15,8 @@
   },
   "scripts": {
     "postinstall": "npm install --prefix mcp-server && npm install --prefix firefox-extension && npm install --prefix chrome-extension && npm install --prefix input-sidecar",
-    "build": "nx run-many --target=build --all --parallel"
+    "build": "nx run-many --target=build --all --parallel",
+    "test:e2e": "npm --prefix e2e install && npm --prefix e2e test"
   },
   "devDependencies": {
     "nx": "22.3.3"

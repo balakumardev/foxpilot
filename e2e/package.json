@@ -1,0 +1,13 @@
+{
+  "name": "foxpilot-e2e",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Playwright real-browser regression for FoxPilot injected tools against the spa-widgets fixture. Intentionally SEPARATE from the release-blocking jest path — not built by nx, not installed by the root postinstall, not run in release.yml.",
+  "scripts": {
+    "test": "playwright test",
+    "test:e2e": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.61.1"
+  }
+}
