@@ -715,4 +715,47 @@ describe("buildSnapshot", () => {
       expect(tree).toContain('combobox "Account-scoped" |  |  [uid=e1]');
     });
   });
+
+  describe("section breadcrumb slot (Wave 2)", () => {
+    it("uses a fieldset legend as the breadcrumb", () => {
+      document.body.innerHTML = `
+        <fieldset>
+          <legend>Billing address</legend>
+          <input type="text" aria-label="Street" />
+        </fieldset>`;
+      const { tree } = build();
+      expect(tree).toContain('textbox "Street" |  | Billing address [uid=e1]');
+    });
+
+    it("uses a titled card's heading as the breadcrumb (disambiguates repeats)", () => {
+      document.body.innerHTML = `
+        <div class="card"><h3>Zone resources</h3><button>Use template</button></div>
+        <div class="card"><h3>Account resources</h3><button>Use template</button></div>`;
+      const { tree } = build();
+      expect(tree).toContain('button "Use template" |  | Zone resources [uid=e1]');
+      expect(tree).toContain('button "Use template" |  | Account resources [uid=e2]');
+    });
+
+    it("uses aria-labelledby on a titled container", () => {
+      document.body.innerHTML = `
+        <h2 id="sec">API tokens</h2>
+        <div role="group" aria-labelledby="sec"><button>Create</button></div>`;
+      const { tree } = build();
+      expect(tree).toContain('button "Create" |  | API tokens [uid=');
+    });
+
+    it("walks ancestors + previous siblings to the nearest heading when no container matches", () => {
+      document.body.innerHTML = `
+        <h2>Account settings</h2>
+        <div><button>Save</button></div>`;
+      const { tree } = build();
+      expect(tree).toContain('button "Save" |  | Account settings [uid=e1]');
+    });
+
+    it("leaves the breadcrumb empty when there is no titled context", () => {
+      document.body.innerHTML = `<button>Standalone</button>`;
+      const { tree } = build();
+      expect(tree).toContain('button "Standalone" |  |  [uid=e1]');
+    });
+  });
 });

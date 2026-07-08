@@ -456,6 +456,54 @@ export function buildSnapshot(
     return line;
   }
 
+  function isHeading(el: Element): boolean {
+    const tag = el.tagName.toLowerCase();
+    if (/^h[1-6]$/.test(tag)) {
+      return true;
+    }
+    return el.getAttribute("role") === "heading";
+  }
+
+  function getSection(el: Element): string {
+    // 1. fieldset > legend
+    const fs = el.closest("fieldset");
+    if (fs) {
+      const legend = fs.querySelector("legend");
+      if (legend && collapseWhitespace(legend.textContent || "")) {
+        return legend.textContent || "";
+      }
+    }
+    // 2. nearest titled container: section / role=group / *card* / labelledby.
+    const container = el.closest(
+      'section,[role="group"],[class*="card"],[aria-labelledby]'
+    );
+    if (container) {
+      const labelled = nameFromLabelledBy(container);
+      if (collapseWhitespace(labelled)) {
+        return labelled;
+      }
+      const heading = container.querySelector(
+        'h1,h2,h3,h4,h5,h6,[role="heading"]'
+      );
+      if (heading && collapseWhitespace(heading.textContent || "")) {
+        return heading.textContent || "";
+      }
+    }
+    // 3. ancestor + previousElementSibling walk for the nearest heading.
+    let node: Element | null = el.parentElement;
+    while (node) {
+      let sib: Element | null = node.previousElementSibling;
+      while (sib) {
+        if (isHeading(sib) && collapseWhitespace(sib.textContent || "")) {
+          return sib.textContent || "";
+        }
+        sib = sib.previousElementSibling;
+      }
+      node = node.parentElement;
+    }
+    return "";
+  }
+
   // --- 1. clear stale uids from prior runs ---
   const stale = doc.querySelectorAll("[" + UID_ATTR + "]");
   for (let i = 0; i < stale.length; i++) {
@@ -595,7 +643,7 @@ export function buildSnapshot(
     el.setAttribute(UID_ATTR, uid);
 
     lines.push(
-      makeRow(el, role, name, getCurrentValue(el, role), "", flags, uid)
+      makeRow(el, role, name, getCurrentValue(el, role), getSection(el), flags, uid)
     );
   }
 
