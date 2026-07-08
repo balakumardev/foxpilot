@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SPA widgets fixture</title>
+    <style>
+      * { box-sizing: border-box; }
+      body { margin: 0; font-family: system-ui, sans-serif; }
+      #app { padding: 16px; }
+      #nav a { margin-right: 12px; }
+      .card { border: 1px solid #ccc; border-radius: 8px; padding: 12px; margin: 8px 0; }
+      .rs__control { border: 1px solid #999; border-radius: 6px; padding: 8px; min-width: 220px; cursor: pointer; display: inline-block; }
+      .rs__menu { background: #fff; border: 1px solid #999; border-radius: 6px; box-shadow: 0 4px 16px rgba(0,0,0,.2); z-index: 2000; }
+      .rs__input { width: 100%; box-sizing: border-box; padding: 6px; }
+      .rs__option { padding: 6px 8px; cursor: pointer; }
+      .rs__option:hover { background: #eef; }
+      /* Full-screen fixed consent overlay — the click-interception hazard. */
+      #onetrust-banner-sdk {
+        position: fixed; inset: 0; z-index: 9999;
+        background: rgba(0,0,0,.55); color: #fff;
+        display: flex; flex-direction: column;
+        align-items: center; justify-content: center; gap: 12px;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script src="app.js"></script>
+  </body>
+</html>
