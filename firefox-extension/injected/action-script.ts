@@ -22,14 +22,24 @@
 export function performInputAction(
   doc: Document,
   args:
-    | { action: "click"; uid: string; doubleClick?: boolean }
+    | { action: "click"; uid: string; doubleClick?: boolean; failIfIntercepted?: boolean }
     | { action: "hover"; uid: string }
     | { action: "fill"; uid: string; value: string }
     | { action: "fill-form"; fields: { uid: string; value: string }[] }
     | { action: "type"; text: string; submit?: boolean }
     | { action: "press-key"; key: string; modifiers?: string[] }
     | { action: "drag"; fromUid: string; toUid: string }
-): { ok: boolean; error?: string } {
+): {
+  ok: boolean;
+  error?: string;
+  intercepted?: {
+    tag: string;
+    id?: string;
+    classes?: string;
+    role?: string;
+    name?: string;
+  };
+} {
   const UID_ATTR = "data-bcmcp-uid";
 
   try {
@@ -96,6 +106,71 @@ export function performInputAction(
         // A real double-click fires `dblclick` after the click above.
         el.dispatchEvent(mouseEvt("dblclick"));
       }
+    }
+
+    // --- interception hit-test helpers (inner; classifyHit is a byte-identical
+    //     twin of the exported module-scope classifyHit the unit tests import) ---
+
+    function classifyHit(
+      target: Element | null,
+      topmost: Element | null
+    ): "self" | "ancestor" | "descendant" | "unrelated" {
+      if (!target || !topmost) {
+        return "self";
+      }
+      if (topmost === target) {
+        return "self";
+      }
+      if (target.contains(topmost)) {
+        return "descendant";
+      }
+      if (topmost.contains(target)) {
+        return "ancestor";
+      }
+      return "unrelated";
+    }
+
+    function describeIntercept(el: Element): {
+      tag: string;
+      id?: string;
+      classes?: string;
+      role?: string;
+      name?: string;
+    } {
+      const tag = el.tagName.toLowerCase();
+      const id = el.id ? el.id : undefined;
+      const clsAttr = (el.getAttribute("class") || "")
+        .replace(/\s+/g, " ")
+        .trim();
+      const classes = clsAttr ? clsAttr : undefined;
+      const role = el.getAttribute("role") || undefined;
+      const ariaLabel = el.getAttribute("aria-label");
+      const rawName =
+        ariaLabel || (el.textContent || "").replace(/\s+/g, " ").trim();
+      const name = rawName ? rawName.slice(0, 80) : undefined;
+      return {
+        tag: tag,
+        ...(id ? { id: id } : {}),
+        ...(classes ? { classes: classes } : {}),
+        ...(role ? { role: role } : {}),
+        ...(name ? { name: name } : {}),
+      };
+    }
+
+    function selectorFor(desc: {
+      tag: string;
+      id?: string;
+      classes?: string;
+      role?: string;
+      name?: string;
+    }): string {
+      if (desc.id) {
+        return "#" + desc.id;
+      }
+      if (desc.classes) {
+        return desc.tag + "." + desc.classes.split(" ")[0];
+      }
+      return desc.tag;
     }
 
     function isCheckable(el: Element): boolean {
@@ -188,8 +263,47 @@ export function performInputAction(
         return notFound(args.uid);
       }
       scrollTo(el);
+      // Interception hit-test BEFORE dispatch. elementFromPoint is called HERE
+      // (the caller); the topmost node is handed to the PURE classifyHit, so the
+      // decision logic is unit-testable. jsdom has no layout (elementFromPoint
+      // undefined, zero rects) so this whole block no-ops there — existing click
+      // tests are unaffected; real geometry is Playwright-covered.
+      let intercepted:
+        | {
+            tag: string;
+            id?: string;
+            classes?: string;
+            role?: string;
+            name?: string;
+          }
+        | undefined;
+      const efp = (doc as {
+        elementFromPoint?: (x: number, y: number) => Element | null;
+      }).elementFromPoint;
+      if (typeof efp === "function") {
+        try {
+          const r = el.getBoundingClientRect();
+          if (r.width > 0 && r.height > 0) {
+            const cx = r.left + r.width / 2;
+            const cy = r.top + r.height / 2;
+            const topmost = efp.call(doc, cx, cy);
+            if (topmost && classifyHit(el, topmost) === "unrelated") {
+              intercepted = describeIntercept(topmost);
+            }
+          }
+        } catch (e) {
+          /* no layout / detached — skip the hit-test, never throw */
+        }
+      }
+      if (intercepted && args.failIfIntercepted) {
+        return {
+          ok: false,
+          intercepted: intercepted,
+          error: "click intercepted by " + selectorFor(intercepted),
+        };
+      }
       dispatchClickSequence(el, args.doubleClick);
-      return { ok: true };
+      return intercepted ? { ok: true, intercepted: intercepted } : { ok: true };
     }
 
     if (args.action === "hover") {

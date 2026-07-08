@@ -48,7 +48,7 @@ import { raceInputAgainstNavigation } from "./nav-race";
 import { waitForTabReady } from "./nav-ready";
 
 type InputActionArgs =
-  | { action: "click"; uid: string; doubleClick?: boolean }
+  | { action: "click"; uid: string; doubleClick?: boolean; failIfIntercepted?: boolean }
   | { action: "hover"; uid: string }
   | { action: "fill"; uid: string; value: string }
   | { action: "fill-form"; fields: { uid: string; value: string }[] }
@@ -320,6 +320,7 @@ export class MessageHandler {
           action: "click",
           uid: req.uid,
           doubleClick: req.doubleClick,
+          failIfIntercepted: req.failIfIntercepted,
         });
         break;
       case "hover-element":
@@ -716,6 +717,13 @@ export class MessageHandler {
       ok: boolean;
       error?: string;
       navigated?: boolean;
+      intercepted?: {
+        tag: string;
+        id?: string;
+        classes?: string;
+        role?: string;
+        name?: string;
+      };
     }>;
     if (mode === "off") {
       // Covert content-script dispatch.
@@ -730,8 +738,18 @@ export class MessageHandler {
       // Synthetic (default) routes through the content-script world.
       dispatchPromise = this.runHumanInputAction(tabId, args);
     }
-    const result: { ok: boolean; error?: string; navigated?: boolean } =
-      await raceInputAgainstNavigation(tabId, dispatchPromise);
+    const result: {
+      ok: boolean;
+      error?: string;
+      navigated?: boolean;
+      intercepted?: {
+        tag: string;
+        id?: string;
+        classes?: string;
+        role?: string;
+        name?: string;
+      };
+    } = await raceInputAgainstNavigation(tabId, dispatchPromise);
 
     await this.client.sendResourceToServer({
       resource: "action-result",
@@ -740,6 +758,9 @@ export class MessageHandler {
       error: result.error,
       ...((result as { navigated?: boolean }).navigated !== undefined
         ? { navigated: (result as { navigated?: boolean }).navigated }
+        : {}),
+      ...(result.intercepted !== undefined
+        ? { intercepted: result.intercepted }
         : {}),
     });
   }

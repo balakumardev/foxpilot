@@ -306,6 +306,7 @@ export class MessageHandler {
           action: "click",
           uid: req.uid,
           doubleClick: req.doubleClick,
+          failIfIntercepted: req.failIfIntercepted,
         });
         break;
       case "hover-element":
@@ -774,6 +775,13 @@ export class MessageHandler {
       ok: boolean;
       error?: string;
       navigated?: boolean;
+      intercepted?: {
+        tag: string;
+        id?: string;
+        classes?: string;
+        role?: string;
+        name?: string;
+      };
     }>;
     if (mode === "off") {
       dispatchPromise = browser.tabs
@@ -788,8 +796,18 @@ export class MessageHandler {
     } else {
       dispatchPromise = this.runHumanInputAction(tabId, args);
     }
-    const result: { ok: boolean; error?: string; navigated?: boolean } =
-      await raceInputAgainstNavigation(tabId, dispatchPromise);
+    const result: {
+      ok: boolean;
+      error?: string;
+      navigated?: boolean;
+      intercepted?: {
+        tag: string;
+        id?: string;
+        classes?: string;
+        role?: string;
+        name?: string;
+      };
+    } = await raceInputAgainstNavigation(tabId, dispatchPromise);
 
     await this.client.sendResourceToServer({
       resource: "action-result",
@@ -798,6 +816,9 @@ export class MessageHandler {
       error: result.error,
       ...(result.navigated !== undefined
         ? { navigated: result.navigated }
+        : {}),
+      ...(result.intercepted !== undefined
+        ? { intercepted: result.intercepted }
         : {}),
     });
   }

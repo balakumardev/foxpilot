@@ -107,6 +107,19 @@ export interface ActionResultExtensionMessage extends ExtensionMessageBase {
   // content-script ack could return (the click worked; the ack was lost to
   // page teardown). Append-only.
   navigated?: boolean;
+  // Set (WITH ok:true — the click still dispatched) when a hit-test BEFORE the
+  // click found a FOREIGN element covering the target's center: an overlay
+  // (cookie banner, modal) is likely intercepting the click. `failIfIntercepted`
+  // on the request turns this into ok:false instead. `classes` is the space-
+  // joined class list; the server derives a selector for its warning. Append-
+  // only. (Wave 3a. Wave 3b appends selected?/dismissed?/method? AFTER this.)
+  intercepted?: {
+    tag: string;
+    id?: string;
+    classes?: string;
+    role?: string;
+    name?: string;
+  };
 }
 
 // Reply for the evaluate-script tool. `ok` is false when the in-page evaluation

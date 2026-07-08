@@ -696,6 +696,83 @@ describe("performInputAction", () => {
     });
   });
 
+  describe("click interception (integration through performInputAction)", () => {
+    // jsdom has no layout: stub elementFromPoint + a non-zero rect so the click
+    // arm's hit-test path runs. The pure decision logic is unit-tested separately.
+    function withHitTest(topmost: Element | null) {
+      (document as unknown as {
+        elementFromPoint: (x: number, y: number) => Element | null;
+      }).elementFromPoint = () => topmost;
+      jest.spyOn(Element.prototype, "getBoundingClientRect").mockReturnValue({
+        left: 0, top: 0, width: 20, height: 20,
+        right: 20, bottom: 20, x: 0, y: 0, toJSON: () => ({}),
+      } as DOMRect);
+    }
+    afterEach(() => {
+      jest.restoreAllMocks();
+      delete (document as unknown as { elementFromPoint?: unknown }).elementFromPoint;
+    });
+
+    it("flags intercepted (ok:true, still clicks) when a foreign overlay is topmost", () => {
+      document.body.innerHTML =
+        `<button>Go</button><div id="onetrust-banner-sdk" class="ot-sdk-row">cookies</div>`;
+      const btn = document.querySelector("button")!;
+      const overlay = document.querySelector("#onetrust-banner-sdk")!;
+      btn.setAttribute(UID_ATTR, "e1");
+      const onClick = jest.fn();
+      btn.addEventListener("click", onClick);
+      withHitTest(overlay);
+
+      const res = performInputAction(document, { action: "click", uid: "e1" });
+
+      expect(res.ok).toBe(true);
+      expect(onClick).toHaveBeenCalled();               // default: clicks through
+      expect(res.intercepted).toMatchObject({ tag: "div", id: "onetrust-banner-sdk" });
+    });
+
+    it("does NOT flag when the target itself is topmost", () => {
+      document.body.innerHTML = `<button>Go</button>`;
+      const btn = document.querySelector("button")!;
+      btn.setAttribute(UID_ATTR, "e1");
+      withHitTest(btn);
+      const res = performInputAction(document, { action: "click", uid: "e1" });
+      expect(res.ok).toBe(true);
+      expect(res.intercepted).toBeUndefined();
+    });
+
+    it("does NOT flag when topmost is an inner descendant of the target", () => {
+      document.body.innerHTML = `<button><span>Go</span></button>`;
+      const btn = document.querySelector("button")!;
+      const span = document.querySelector("span")!;
+      btn.setAttribute(UID_ATTR, "e1");
+      withHitTest(span);
+      const res = performInputAction(document, { action: "click", uid: "e1" });
+      expect(res.intercepted).toBeUndefined();
+    });
+
+    it("returns ok:false and does NOT click when failIfIntercepted is set and covered", () => {
+      document.body.innerHTML =
+        `<button>Go</button><div id="onetrust-banner-sdk">cookies</div>`;
+      const btn = document.querySelector("button")!;
+      const overlay = document.querySelector("#onetrust-banner-sdk")!;
+      btn.setAttribute(UID_ATTR, "e1");
+      const onClick = jest.fn();
+      btn.addEventListener("click", onClick);
+      withHitTest(overlay);
+
+      const res = performInputAction(document, {
+        action: "click",
+        uid: "e1",
+        failIfIntercepted: true,
+      });
+
+      expect(res.ok).toBe(false);
+      expect(res.error).toContain("click intercepted by #onetrust-banner-sdk");
+      expect(res.intercepted).toMatchObject({ id: "onetrust-banner-sdk" });
+      expect(onClick).not.toHaveBeenCalled();           // hard-fail dispatches nothing
+    });
+  });
+
   it("never throws — unexpected errors become ok:false", () => {
     // Passing a bogus args shape should be caught by the outer try/catch.
     const res = performInputAction(

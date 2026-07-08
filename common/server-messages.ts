@@ -109,6 +109,11 @@ export interface ClickElementServerMessage extends ServerMessageBase {
   tabId: number;
   uid: string;
   doubleClick?: boolean;
+  // Opt-in: when true, a click whose target is covered by a foreign overlay
+  // returns ok:false ("click intercepted by <selector>") instead of clicking
+  // through. Default false → detect + report via action-result.intercepted but
+  // still perform the click. (Wave 3a.)
+  failIfIntercepted?: boolean;
 }
 
 export interface HoverElementServerMessage extends ServerMessageBase {
