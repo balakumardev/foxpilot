@@ -45,6 +45,7 @@ import { performPointAction, type PointElementDescriptor } from "./injected/poin
 import { cdpInputClick, cdpInputType, cdpInputHover, cdpInputScroll } from "./cdp-input";
 import { cdpEval } from "./cdp-eval";
 import { raceInputAgainstNavigation } from "./nav-race";
+import { waitForTabReady } from "./nav-ready";
 
 type InputActionArgs =
   | { action: "click"; uid: string; doubleClick?: boolean }
@@ -93,8 +94,15 @@ function isNavigableUrl(url: string): boolean {
   return false;
 }
 
-// Ensure content script is loaded in a tab, then send a message.
-async function sendMessageToTab(tabId: number, message: any): Promise<any> {
+// Ensure content script is loaded in a tab, then send a message. Exported for a
+// focused unit test (send-message-to-tab.test.ts). On an injection OR permission
+// failure — both of which appear right after a navigation / SPA route change,
+// when the content script is gone AND the tab may have moved to a new origin
+// before <all_urls> coverage is confirmed — self-heal ONCE: re-read the LIVE
+// url, re-check host permission against the CURRENT origin (the pre-dispatch
+// check may have validated a stale mid-nav url), wait for readiness, re-inject,
+// and retry.
+export async function sendMessageToTab(tabId: number, message: any): Promise<any> {
   const checkResult = (result: any): any => {
     if (result && typeof result === "object" && result.error && result.ok === false) {
       throw new Error(result.error);
@@ -105,17 +113,35 @@ async function sendMessageToTab(tabId: number, message: any): Promise<any> {
     const result = await browser.tabs.sendMessage(tabId, message);
     return checkResult(result);
   } catch (e: any) {
-    // If the content script is not loaded, inject it and retry.
-    if (e.message && (e.message.includes("Receiving end does not exist") || e.message.includes("Could not establish connection"))) {
-      await browser.scripting.executeScript({
-        target: { tabId },
-        files: ["dist/content-script.js"],
-      });
-      await sleep(100);
-      const result = await browser.tabs.sendMessage(tabId, message);
-      return checkResult(result);
+    const msg = (e && e.message) || "";
+    const isConnErr =
+      msg.includes("Receiving end does not exist") ||
+      msg.includes("Could not establish connection");
+    const isPermErr = msg.includes("Missing host permission");
+    if (!isConnErr && !isPermErr) {
+      throw e;
     }
-    throw e;
+    // Re-check host permission for the CURRENT origin.
+    const live = await browser.tabs.get(tabId);
+    if (live && live.url) {
+      const origin = new URL(live.url).origin;
+      const granted = await browser.permissions.contains({
+        origins: [`${origin}/*`],
+      });
+      if (!granted) {
+        throw new Error(
+          `Missing host permission for "${origin}" after navigation. Ask the user to grant access to this domain, then retry.`
+        );
+      }
+    }
+    // Wait for the tab to be ready, re-inject the content script, retry ONCE.
+    await waitForTabReady(tabId, { timeoutMs: 8000 });
+    await browser.scripting.executeScript({
+      target: { tabId },
+      files: ["dist/content-script.js"],
+    });
+    const result = await browser.tabs.sendMessage(tabId, message);
+    return checkResult(result);
   }
 }
 
