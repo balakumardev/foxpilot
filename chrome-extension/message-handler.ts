@@ -284,7 +284,14 @@ export class MessageHandler {
         });
         break;
       case "navigate-tab":
-        await this.navigateTab(req.correlationId, req.tabId, req.url);
+        await this.navigateTab(req.correlationId, req.tabId, req.url, {
+          waitUntil: req.waitUntil,
+          waitForSelector: req.waitForSelector,
+          waitForText: req.waitForText,
+          waitForUrl: req.waitForUrl,
+          forceLoad: req.forceLoad,
+          timeoutMs: req.timeoutMs,
+        });
         break;
       case "navigate-page-history":
         await this.navigatePageHistory(
@@ -1378,7 +1385,15 @@ export class MessageHandler {
   private async navigateTab(
     correlationId: string,
     tabId: number,
-    url: string
+    url: string,
+    opts?: {
+      waitUntil?: "complete" | "none";
+      waitForSelector?: string;
+      waitForText?: string;
+      waitForUrl?: string;
+      forceLoad?: boolean;
+      timeoutMs?: number;
+    }
   ): Promise<void> {
     if (!isNavigableUrl(url)) {
       throw new Error("Invalid URL (must be https, or http for localhost)");
@@ -1386,13 +1401,117 @@ export class MessageHandler {
     if (await isDomainInDenyList(url)) {
       throw new Error("Domain in user defined deny list");
     }
-    await browser.tabs.update(tabId, { url });
+
+    // Force a real document load to defeat in-app SPA routing (reload if the tab
+    // is already at the target url, else navigate to it).
+    if (opts?.forceLoad) {
+      let current: { url?: string } | undefined;
+      try {
+        current = await browser.tabs.get(tabId);
+      } catch {
+        current = undefined;
+      }
+      if (current && current.url === url) {
+        await browser.tabs.reload(tabId, {});
+      } else {
+        await browser.tabs.update(tabId, { url });
+      }
+    } else {
+      await browser.tabs.update(tabId, { url });
+    }
+
+    // waitUntil:"none" restores the old fire-and-forget echo.
+    if (opts?.waitUntil === "none") {
+      await this.client.sendResourceToServer({
+        resource: "navigated",
+        correlationId,
+        tabId,
+        url,
+      });
+      return;
+    }
+
+    const budget = Math.min(Math.max(opts?.timeoutMs ?? 15000, 0), 29000);
+    await waitForTabReady(tabId, { timeoutMs: Math.min(budget, 8000) });
+    const mismatch = await this.awaitNavConditions(tabId, opts, budget);
+
+    let finalUrl = url;
+    try {
+      const finalTab = await browser.tabs.get(tabId);
+      if (finalTab && finalTab.url) finalUrl = finalTab.url;
+    } catch {
+      /* keep the requested url as a best-effort fallback */
+    }
+
     await this.client.sendResourceToServer({
       resource: "navigated",
       correlationId,
       tabId,
-      url,
+      url: mismatch ? `${finalUrl} — ${mismatch}` : finalUrl,
     });
+  }
+
+  // Poll the post-settle wait conditions until all hold or the budget elapses.
+  // Returns a human-readable mismatch string for the first unmet condition, or
+  // undefined when everything is satisfied (or nothing was requested). DOM
+  // predicates run in the isolated world via scripting.executeScript (func) —
+  // CSP-immune; waitForUrl is a pure background tabs.get substring match.
+  private async awaitNavConditions(
+    tabId: number,
+    opts:
+      | { waitForSelector?: string; waitForText?: string; waitForUrl?: string }
+      | undefined,
+    timeoutMs: number
+  ): Promise<string | undefined> {
+    if (!opts) return undefined;
+    const { waitForSelector, waitForText, waitForUrl } = opts;
+    if (!waitForSelector && !waitForText && !waitForUrl) return undefined;
+    const deadline = Date.now() + timeoutMs;
+    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+    while (true) {
+      let selOk = true;
+      let textOk = true;
+      let urlOk = true;
+      if (waitForUrl) {
+        try {
+          const t = await browser.tabs.get(tabId);
+          urlOk = !!(t && t.url && t.url.includes(waitForUrl));
+        } catch {
+          urlOk = false;
+        }
+      }
+      if (waitForSelector) {
+        try {
+          const r = await chrome.scripting.executeScript({
+            target: { tabId },
+            func: (s: string) => !!document.querySelector(s),
+            args: [waitForSelector],
+          });
+          selOk = !!(r && r[0] && (r[0] as { result?: unknown }).result);
+        } catch {
+          selOk = false;
+        }
+      }
+      if (waitForText) {
+        try {
+          const r = await chrome.scripting.executeScript({
+            target: { tabId },
+            func: (t: string) => (document.body?.innerText || "").includes(t),
+            args: [waitForText],
+          });
+          textOk = !!(r && r[0] && (r[0] as { result?: unknown }).result);
+        } catch {
+          textOk = false;
+        }
+      }
+      if (selOk && textOk && urlOk) return undefined;
+      if (Date.now() >= deadline) {
+        if (!urlOk) return `expected url "${waitForUrl}" not found`;
+        if (!selOk) return `expected selector "${waitForSelector}" not found`;
+        return `expected text "${waitForText}" not found`;
+      }
+      await sleep(200);
+    }
   }
 
   private async navigatePageHistory(
