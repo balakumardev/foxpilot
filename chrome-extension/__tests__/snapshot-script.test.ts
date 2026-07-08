@@ -11,7 +11,7 @@ describe("buildSnapshot (chrome)", () => {
   it("captures an inline cursor:pointer div by default (includePointer default true)", () => {
     document.body.innerHTML = `<div style="cursor: pointer">Open</div>`;
     const { tree } = buildSnapshot(document, { verbose: false, maxLength: 25000 });
-    expect(tree).toMatch(/clickable "Open" \[uid=e\d+\]/);
+    expect(tree).toMatch(/clickable "Open" \|  \|  \[uid=e\d+\]/);
   });
 
   it("omits pointer elements when includePointer is false", () => {
@@ -27,8 +27,8 @@ describe("buildSnapshot (chrome)", () => {
   it("still surfaces base-pass semantic elements", () => {
     document.body.innerHTML = `<a href="/h">Home</a><button>Go</button>`;
     const { tree } = buildSnapshot(document, { verbose: false, maxLength: 25000 });
-    expect(tree).toContain('link "Home" [uid=e1]');
-    expect(tree).toContain('button "Go" [uid=e2]');
+    expect(tree).toContain('link "Home" |  |  [uid=e1]');
+    expect(tree).toContain('button "Go" |  |  [uid=e2]');
   });
 
   describe("selector query mode (Task 5)", () => {
@@ -43,7 +43,7 @@ describe("buildSnapshot (chrome)", () => {
         maxLength: 25000,
         selector: "[contenteditable]",
       });
-      expect(tree).toMatch(/textbox "Message input" \[uid=e\d+\]/);
+      expect(tree).toMatch(/textbox "Message input" \|  \|  \[uid=e\d+\]/);
       // Selector mode is self-contained: unrelated base elements are NOT emitted.
       expect(tree).not.toContain('button "Send"');
     });
@@ -73,7 +73,7 @@ describe("buildSnapshot (chrome)", () => {
       });
       // The leaf #open-card matches; its ancestors (main/section) do NOT get
       // their own entry (deepest-wins).
-      expect(tree).toMatch(/clickable "Open" \[uid=e\d+\]/);
+      expect(tree).toMatch(/clickable "Open" \|  \|  \[uid=e\d+\]/);
       const clickableLines = (tree.match(/clickable "Open"/g) || []).length;
       expect(clickableLines).toBe(1);
       expect(tree).not.toContain("unrelated");
@@ -181,6 +181,27 @@ describe("buildSnapshot (chrome)", () => {
       expect(lines.length).toBe(2); // items 8 and 9
       expect(res.tree).toContain('button "Btn 8"');
       expect(res.tree).toContain('button "Btn 9"');
+    });
+  });
+
+  describe("3-slot grammar parity (Wave 2)", () => {
+    it("emits empty value/section slots on a plain button", () => {
+      document.body.innerHTML = `<button>Sign in</button>`;
+      const { tree } = buildSnapshot(document, { verbose: false, maxLength: 25000 });
+      expect(tree).toContain('button "Sign in" |  |  [uid=e1]');
+    });
+    it("shows a native select's selected option in the value slot", () => {
+      document.body.innerHTML = `<select aria-label="Country"><option>US</option></select>`;
+      const { tree } = buildSnapshot(document, { verbose: false, maxLength: 25000 });
+      expect(tree).toContain('combobox "Country" | "US" |  [uid=e1]');
+    });
+    it("shows a react-select singleValue and a card breadcrumb", () => {
+      document.body.innerHTML = `
+        <div class="card"><h3>Billing</h3>
+          <div role="combobox" aria-label="Country"><div class="Select__single-value">United States</div></div>
+        </div>`;
+      const { tree } = buildSnapshot(document, { verbose: false, maxLength: 25000 });
+      expect(tree).toContain('combobox "Country" | "United States" | Billing [uid=');
     });
   });
 });

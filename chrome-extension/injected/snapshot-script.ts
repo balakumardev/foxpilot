@@ -250,9 +250,26 @@ export function buildSnapshot(
       return clip(placeholder);
     }
 
+    // FIX 1: custom comboboxes (react-select) keep their label/value/placeholder
+    // in CHILD nodes, not attributes — probe them for combobox/textbox roles.
+    if (role === "combobox" || role === "textbox") {
+      const childName = childValueText(el);
+      if (collapseWhitespace(childName)) {
+        return clip(childName);
+      }
+    }
+
     // Only fall back to raw textContent for roles where the text is the label
-    // (avoid dumping the contents of large containers).
-    if (role === "link" || role === "button" || role === "heading") {
+    // (avoid dumping the contents of large containers). FIX 2 widens this to
+    // custom (explicit-role) combobox/textbox — but NEVER native
+    // select/textarea/input, whose textContent is option/child noise.
+    const hasExplicitRole = !!el.getAttribute("role");
+    if (
+      role === "link" ||
+      role === "button" ||
+      role === "heading" ||
+      ((role === "combobox" || role === "textbox") && hasExplicitRole)
+    ) {
       const text = el.textContent || "";
       if (collapseWhitespace(text)) {
         return clip(text);
@@ -302,6 +319,188 @@ export function buildSnapshot(
     }
 
     return flags;
+  }
+
+  const VALUE_MAX = 80;
+  const SECTION_MAX = 60;
+
+  function formatSlot(s: string, max: number): string {
+    // Collapse whitespace, neutralize the slot delimiter (a literal "|" inside a
+    // slot would make the row ambiguous — collapse it to "/"), then clip to the
+    // slot budget.
+    const cleaned = collapseWhitespace(s).replace(/\|/g, "/");
+    if (cleaned.length > max) {
+      return cleaned.slice(0, max);
+    }
+    return cleaned;
+  }
+
+  function getCurrentValue(el: Element, role: string): string {
+    const tag = el.tagName.toLowerCase();
+    if (tag === "textarea") {
+      return (el as HTMLTextAreaElement).value || "";
+    }
+    if (tag === "input") {
+      const type = (el.getAttribute("type") || "text").toLowerCase();
+      // Checkbox/radio carry their state in flags; button/file/hidden/image have
+      // no displayable value. Only text-entry inputs contribute a value slot.
+      if (
+        type === "checkbox" ||
+        type === "radio" ||
+        type === "button" ||
+        type === "submit" ||
+        type === "reset" ||
+        type === "hidden" ||
+        type === "file" ||
+        type === "image"
+      ) {
+        return "";
+      }
+      return (el as HTMLInputElement).value || "";
+    }
+    if (tag === "select") {
+      const sel = el as HTMLSelectElement;
+      const opts = sel.selectedOptions;
+      if (opts && opts.length > 0 && opts[0].textContent) {
+        return opts[0].textContent;
+      }
+      const idx = sel.selectedIndex;
+      if (
+        idx >= 0 &&
+        sel.options &&
+        sel.options[idx] &&
+        sel.options[idx].textContent
+      ) {
+        return sel.options[idx].textContent as string;
+      }
+      return "";
+    }
+    // Custom combobox (react-select and similar): value in ARIA or child nodes.
+    if (role === "combobox") {
+      const valueText = el.getAttribute("aria-valuetext");
+      if (valueText && collapseWhitespace(valueText)) {
+        return valueText;
+      }
+      const valueNow = el.getAttribute("aria-valuenow");
+      if (valueNow && collapseWhitespace(valueNow)) {
+        return valueNow;
+      }
+      const single = el.querySelector(
+        '[class*="singleValue"], [class*="single-value"]'
+      );
+      if (single && collapseWhitespace(single.textContent || "")) {
+        return single.textContent || "";
+      }
+      // Nothing selected → the placeholder identifies the empty control.
+      const ph = el.querySelector('[class*="placeholder"]');
+      if (ph && collapseWhitespace(ph.textContent || "")) {
+        return ph.textContent || "";
+      }
+      const phAttr = el.getAttribute("placeholder");
+      if (phAttr && collapseWhitespace(phAttr)) {
+        return phAttr;
+      }
+    }
+    return "";
+  }
+
+  function childValueText(el: Element): string {
+    // react-select / Downshift render the selected value or placeholder in CHILD
+    // nodes rather than an attribute; surface them so a bare combobox is nameable.
+    const single = el.querySelector(
+      '[class*="singleValue"], [class*="single-value"]'
+    );
+    if (single && collapseWhitespace(single.textContent || "")) {
+      return single.textContent || "";
+    }
+    const ph = el.querySelector('[class*="placeholder"]');
+    if (ph && collapseWhitespace(ph.textContent || "")) {
+      return ph.textContent || "";
+    }
+    return "";
+  }
+
+  function makeRow(
+    el: Element,
+    role: string,
+    name: string,
+    value: string,
+    section: string,
+    flags: string[],
+    uid: string
+  ): string {
+    // el is part of the shared signature both the base and pointer passes call
+    // through; every slot is precomputed by the caller, so el is not read here.
+    const nameSlot = formatSlot(name, NAME_MAX);
+    const valueClean = formatSlot(value, VALUE_MAX);
+    const sectionSlot = formatSlot(section, SECTION_MAX);
+    // Drop a value that merely repeats the name (a bare custom combobox whose
+    // only signal is its placeholder ends up in both — show it once, as name).
+    const valueSlot =
+      valueClean && valueClean !== nameSlot ? '"' + valueClean + '"' : "";
+    let line =
+      role +
+      ' "' +
+      nameSlot +
+      '" | ' +
+      valueSlot +
+      " | " +
+      sectionSlot +
+      " [uid=" +
+      uid +
+      "]";
+    if (flags.length > 0) {
+      line += " (" + flags.join(", ") + ")";
+    }
+    return line;
+  }
+
+  function isHeading(el: Element): boolean {
+    const tag = el.tagName.toLowerCase();
+    if (/^h[1-6]$/.test(tag)) {
+      return true;
+    }
+    return el.getAttribute("role") === "heading";
+  }
+
+  function getSection(el: Element): string {
+    // 1. fieldset > legend
+    const fs = el.closest("fieldset");
+    if (fs) {
+      const legend = fs.querySelector("legend");
+      if (legend && collapseWhitespace(legend.textContent || "")) {
+        return legend.textContent || "";
+      }
+    }
+    // 2. nearest titled container: section / role=group / *card* / labelledby.
+    const container = el.closest(
+      'section,[role="group"],[class*="card"],[aria-labelledby]'
+    );
+    if (container) {
+      const labelled = nameFromLabelledBy(container);
+      if (collapseWhitespace(labelled)) {
+        return labelled;
+      }
+      const heading = container.querySelector(
+        'h1,h2,h3,h4,h5,h6,[role="heading"]'
+      );
+      if (heading && collapseWhitespace(heading.textContent || "")) {
+        return heading.textContent || "";
+      }
+    }
+    // 3. ancestor + previousElementSibling walk for the nearest heading.
+    let node: Element | null = el.parentElement;
+    while (node) {
+      let sib: Element | null = node.previousElementSibling;
+      while (sib) {
+        if (isHeading(sib) && collapseWhitespace(sib.textContent || "")) {
+          return sib.textContent || "";
+        }
+        sib = sib.previousElementSibling;
+      }
+      node = node.parentElement;
+    }
+    return "";
   }
 
   // --- 1. clear stale uids from prior runs ---
@@ -442,11 +641,9 @@ export function buildSnapshot(
     const uid = "e" + uidCounter;
     el.setAttribute(UID_ATTR, uid);
 
-    let line = role + ' "' + name + '" [uid=' + uid + "]";
-    if (flags.length > 0) {
-      line += " (" + flags.join(", ") + ")";
-    }
-    lines.push(line);
+    lines.push(
+      makeRow(el, role, name, getCurrentValue(el, role), getSection(el), flags, uid)
+    );
   }
 
   // --- 6b. (default via includePointer) second pass: visually-clickable non-semantic
@@ -535,11 +732,17 @@ export function buildSnapshot(
       el.setAttribute(UID_ATTR, uid);
       added += 1;
 
-      let line = 'clickable "' + name + '" [uid=' + uid + "]";
-      if (flags.length > 0) {
-        line += " (" + flags.join(", ") + ")";
-      }
-      lines.push(line);
+      lines.push(
+        makeRow(
+          el,
+          "clickable",
+          name,
+          getCurrentValue(el, "clickable"),
+          getSection(el),
+          flags,
+          uid
+        )
+      );
     }
   }
 
