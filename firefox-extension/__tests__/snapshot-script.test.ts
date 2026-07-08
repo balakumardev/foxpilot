@@ -681,4 +681,38 @@ describe("buildSnapshot", () => {
       expect(tree).toContain('button "Save / Exit" |  |  [uid=e1]');
     });
   });
+
+  describe("custom combobox (react-select) enrichment (Wave 2)", () => {
+    it("names a bare react-select from its placeholder child and shows it once (dedup)", () => {
+      document.body.innerHTML = `
+        <div role="combobox">
+          <div class="Select__placeholder">Select a country...</div>
+        </div>`;
+      const { tree } = build();
+      // Placeholder is the only signal → it names the control; the value slot is
+      // deduped away (value === name) so it appears exactly once.
+      expect(tree).toContain('combobox "Select a country..." |  |  [uid=e1]');
+    });
+
+    it("shows the selected value (singleValue child) in the value slot", () => {
+      document.body.innerHTML = `
+        <div role="combobox" aria-label="Country">
+          <div class="Select__single-value">United States</div>
+        </div>`;
+      const { tree } = build();
+      expect(tree).toContain('combobox "Country" | "United States" |  [uid=e1]');
+    });
+
+    it("reads aria-valuetext as the value when present", () => {
+      document.body.innerHTML = `<div role="combobox" aria-label="Plan" aria-valuetext="Enterprise"></div>`;
+      const { tree } = build();
+      expect(tree).toContain('combobox "Plan" | "Enterprise" |  [uid=e1]');
+    });
+
+    it("widens the textContent fallback to an explicit-role combobox with no attrs/children", () => {
+      document.body.innerHTML = `<div role="combobox">Account-scoped</div>`;
+      const { tree } = build();
+      expect(tree).toContain('combobox "Account-scoped" |  |  [uid=e1]');
+    });
+  });
 });

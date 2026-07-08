@@ -251,9 +251,26 @@ export function buildSnapshot(
       return clip(placeholder);
     }
 
+    // FIX 1: custom comboboxes (react-select) keep their label/value/placeholder
+    // in CHILD nodes, not attributes — probe them for combobox/textbox roles.
+    if (role === "combobox" || role === "textbox") {
+      const childName = childValueText(el);
+      if (collapseWhitespace(childName)) {
+        return clip(childName);
+      }
+    }
+
     // Only fall back to raw textContent for roles where the text is the label
-    // (avoid dumping the contents of large containers).
-    if (role === "link" || role === "button" || role === "heading") {
+    // (avoid dumping the contents of large containers). FIX 2 widens this to
+    // custom (explicit-role) combobox/textbox — but NEVER native
+    // select/textarea/input, whose textContent is option/child noise.
+    const hasExplicitRole = !!el.getAttribute("role");
+    if (
+      role === "link" ||
+      role === "button" ||
+      role === "heading" ||
+      ((role === "combobox" || role === "textbox") && hasExplicitRole)
+    ) {
       const text = el.textContent || "";
       if (collapseWhitespace(text)) {
         return clip(text);
@@ -359,7 +376,48 @@ export function buildSnapshot(
       }
       return "";
     }
-    // Custom-combobox handling is added in Task 12.
+    // Custom combobox (react-select and similar): value in ARIA or child nodes.
+    if (role === "combobox") {
+      const valueText = el.getAttribute("aria-valuetext");
+      if (valueText && collapseWhitespace(valueText)) {
+        return valueText;
+      }
+      const valueNow = el.getAttribute("aria-valuenow");
+      if (valueNow && collapseWhitespace(valueNow)) {
+        return valueNow;
+      }
+      const single = el.querySelector(
+        '[class*="singleValue"], [class*="single-value"]'
+      );
+      if (single && collapseWhitespace(single.textContent || "")) {
+        return single.textContent || "";
+      }
+      // Nothing selected → the placeholder identifies the empty control.
+      const ph = el.querySelector('[class*="placeholder"]');
+      if (ph && collapseWhitespace(ph.textContent || "")) {
+        return ph.textContent || "";
+      }
+      const phAttr = el.getAttribute("placeholder");
+      if (phAttr && collapseWhitespace(phAttr)) {
+        return phAttr;
+      }
+    }
+    return "";
+  }
+
+  function childValueText(el: Element): string {
+    // react-select / Downshift render the selected value or placeholder in CHILD
+    // nodes rather than an attribute; surface them so a bare combobox is nameable.
+    const single = el.querySelector(
+      '[class*="singleValue"], [class*="single-value"]'
+    );
+    if (single && collapseWhitespace(single.textContent || "")) {
+      return single.textContent || "";
+    }
+    const ph = el.querySelector('[class*="placeholder"]');
+    if (ph && collapseWhitespace(ph.textContent || "")) {
+      return ph.textContent || "";
+    }
     return "";
   }
 
