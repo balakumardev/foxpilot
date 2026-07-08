@@ -7,6 +7,7 @@ import { readFileForUpload } from "./file-upload";
 import { formatPointResult } from "./point-format";
 import { formatNetworkHeaders } from "./network-format";
 import { formatSnapshotResult } from "./snapshot-format";
+import { formatEvalResult } from "./eval-format";
 import dayjs from "dayjs";
 import relativeTime from "dayjs/plugin/relativeTime";
 
@@ -633,9 +634,7 @@ mcpServer.tool(
       world,
       engine
     );
-    return {
-      content: [{ type: "text", text: JSON.stringify(value) }],
-    };
+    return formatEvalResult(value);
   }
 );
 
