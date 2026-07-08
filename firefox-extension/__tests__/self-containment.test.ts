@@ -51,6 +51,7 @@ import {
   readElementScreenRect,
 } from "../injected/humanize-steps";
 import { selectOption } from "../injected/select-option-script";
+import { dismissOverlays } from "../injected/dismiss-overlays-script";
 
 // Tokens that must never appear in the stringified source of an injected
 // function. Each one is either a module-system reference (undefined in a raw
@@ -76,6 +77,7 @@ const INJECTED_FUNCTIONS: ReadonlyArray<[string, (...args: any[]) => any]> = [
   ["typeCharStep", typeCharStep as unknown as (...args: any[]) => any],
   ["readElementScreenRect", readElementScreenRect as unknown as (...args: any[]) => any],
   ["selectOption", selectOption as unknown as (...args: any[]) => any],
+  ["dismissOverlays", dismissOverlays as unknown as (...args: any[]) => any],
 ];
 
 describe("injected functions are self-contained (safe to stringify-and-inject)", () => {
