@@ -417,21 +417,34 @@ mcpServer.tool(
 
 mcpServer.tool(
   "click-element",
-  "Click an element on a page. Pass a 'uid' from a recent take-snapshot (e.g. e12). Set doubleClick to fire a double-click. If the uid is stale, this returns an error asking you to take a fresh snapshot.",
-  { tabId: z.number(), uid: z.string(), doubleClick: z.boolean().optional() },
-  async ({ tabId, uid, doubleClick }) => {
-    const { navigated } = await browserApi.clickElement(tabId, uid, doubleClick);
+  "Click an element on a page. Pass a 'uid' from a recent take-snapshot (e.g. e12). Set doubleClick to fire a double-click. Set failIfIntercepted:true to FAIL (instead of clicking through) when a foreign overlay covers the target — the result then names the covering selector so you can dismiss-overlays first. If the uid is stale, this returns an error asking you to take a fresh snapshot.",
+  {
+    tabId: z.number(),
+    uid: z.string(),
+    doubleClick: z.boolean().optional(),
+    failIfIntercepted: z.boolean().optional(),
+  },
+  async ({ tabId, uid, doubleClick, failIfIntercepted }) => {
+    const { navigated, intercepted } = await browserApi.clickElement(
+      tabId,
+      uid,
+      doubleClick,
+      failIfIntercepted
+    );
     const verb = doubleClick ? "Double-clicked" : "Clicked";
-    return {
-      content: [
-        {
-          type: "text",
-          text: navigated
-            ? `${verb} element ${uid} (page navigated)`
-            : `${verb} element ${uid}`,
-        },
-      ],
-    };
+    let text = navigated
+      ? `${verb} element ${uid} (page navigated)`
+      : `${verb} element ${uid}`;
+    if (intercepted) {
+      // Selector rule mirrors the injected selectorFor(): #id → tag.firstClass → tag.
+      const sel = intercepted.id
+        ? `#${intercepted.id}`
+        : intercepted.classes
+          ? `${intercepted.tag}.${intercepted.classes.split(" ")[0]}`
+          : intercepted.tag;
+      text += `\n⚠ click may be intercepted by ${sel} — consider dismiss-overlays`;
+    }
+    return { content: [{ type: "text", text }] };
   }
 );
 

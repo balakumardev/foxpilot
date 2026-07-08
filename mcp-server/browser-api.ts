@@ -522,20 +522,32 @@ export class BrowserAPI {
   async clickElement(
     tabId: number,
     uid: string,
-    doubleClick?: boolean
-  ): Promise<{ navigated?: boolean }> {
+    doubleClick?: boolean,
+    failIfIntercepted?: boolean
+  ): Promise<{
+    navigated?: boolean;
+    intercepted?: {
+      tag: string;
+      id?: string;
+      classes?: string;
+      role?: string;
+      name?: string;
+    };
+  }> {
     const message = await this.sendTool<ActionResultExtensionMessage>({
       cmd: "click-element",
       tabId,
       uid,
       doubleClick,
+      failIfIntercepted,
     });
     if (!message.ok) {
+      // On a hard failure (failIfIntercepted:true + covered), the extension sets
+      // error to "click intercepted by <selector>", so the throw already names
+      // the overlay. A stale-uid failure throws its own message as before.
       throw new Error(message.error ?? "Action failed");
     }
-    // Surface the nav-race signal (set true when the click began a navigation
-    // that tore down the content-script world before its ack could return).
-    return { navigated: message.navigated };
+    return { navigated: message.navigated, intercepted: message.intercepted };
   }
 
   async clickAt(
