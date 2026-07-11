@@ -676,6 +676,76 @@ describe("MessageHandler", () => {
       ).rejects.toThrow("Domain in tab URL is in the deny list");
       expect(browser.tabs.executeScript).not.toHaveBeenCalled();
     });
+
+    it("activateTab:true activates the target then restores the previous tab", async () => {
+      (browser.storage.local.get as jest.Mock).mockResolvedValue({
+        config: {
+          secret: "test-secret",
+          ports: [8089],
+          domainDenyList: [],
+          auditLog: [],
+          automationMode: true,
+        },
+      });
+      (browser.tabs.get as jest.Mock).mockResolvedValue({
+        id: 123,
+        url: "https://example.com",
+        windowId: 7,
+      });
+      (browser.permissions.contains as jest.Mock).mockResolvedValue(true);
+      (browser.tabs.query as jest.Mock).mockResolvedValue([{ id: 99 }]);
+      (browser.tabs.update as jest.Mock).mockResolvedValue(undefined);
+      (browser.tabs.executeScript as jest.Mock).mockResolvedValue([
+        { tree: 'button "X" [uid=e1]', isTruncated: false },
+      ]);
+
+      await messageHandler.handleDecodedMessage({
+        cmd: "take-snapshot",
+        tabId: 123,
+        activateTab: true,
+        correlationId: "s1",
+      } as ServerMessageRequest);
+
+      expect(browser.tabs.update).toHaveBeenNthCalledWith(1, 123, {
+        active: true,
+      });
+      expect(browser.tabs.update).toHaveBeenNthCalledWith(2, 99, {
+        active: true,
+      });
+      expect(browser.tabs.executeScript).toHaveBeenCalled();
+      expect(mockClient.sendResourceToServer).toHaveBeenCalledWith(
+        expect.objectContaining({ resource: "snapshot", tabId: 123 })
+      );
+    });
+
+    it("without activateTab, tab activation is untouched", async () => {
+      (browser.storage.local.get as jest.Mock).mockResolvedValue({
+        config: {
+          secret: "test-secret",
+          ports: [8089],
+          domainDenyList: [],
+          auditLog: [],
+          automationMode: true,
+        },
+      });
+      (browser.tabs.get as jest.Mock).mockResolvedValue({
+        id: 123,
+        url: "https://example.com",
+        windowId: 7,
+      });
+      (browser.permissions.contains as jest.Mock).mockResolvedValue(true);
+      (browser.tabs.executeScript as jest.Mock).mockResolvedValue([
+        { tree: 'button "X" [uid=e1]', isTruncated: false },
+      ]);
+
+      await messageHandler.handleDecodedMessage({
+        cmd: "take-snapshot",
+        tabId: 123,
+        correlationId: "s2",
+      } as ServerMessageRequest);
+
+      expect(browser.tabs.update).not.toHaveBeenCalled();
+    });
   });
 
   describe("input action commands", () => {

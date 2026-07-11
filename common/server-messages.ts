@@ -25,6 +25,10 @@ export interface GetTabContentServerMessage extends ServerMessageBase {
   cmd: "get-tab-content";
   tabId: number;
   offset?: number;
+  // When true, foreground the target tab for the duration of the call, then
+  // restore the user's previous foreground tab. Fixes empty/timed-out results
+  // on background tabs frozen by Chrome Memory Saver / Edge Sleeping Tabs.
+  activateTab?: boolean;
 }
 
 export interface ReorderTabsServerMessage extends ServerMessageBase {
@@ -57,6 +61,8 @@ export interface TakeSnapshotServerMessage extends ServerMessageBase {
   rootSelector?: string;
   offset?: number;
   limit?: number;
+  // See GetTabContentServerMessage.activateTab.
+  activateTab?: boolean;
 }
 
 export interface NavigateTabServerMessage extends ServerMessageBase {
@@ -77,6 +83,8 @@ export interface NavigateTabServerMessage extends ServerMessageBase {
   waitForUrl?: string; // substring match against the settled URL
   forceLoad?: boolean;
   timeoutMs?: number;
+  // See GetTabContentServerMessage.activateTab.
+  activateTab?: boolean;
 }
 
 export interface NavigatePageHistoryServerMessage extends ServerMessageBase {
@@ -114,12 +122,14 @@ export interface ClickElementServerMessage extends ServerMessageBase {
   // through. Default false → detect + report via action-result.intercepted but
   // still perform the click. (Wave 3a.)
   failIfIntercepted?: boolean;
+  activateTab?: boolean;
 }
 
 export interface HoverElementServerMessage extends ServerMessageBase {
   cmd: "hover-element";
   tabId: number;
   uid: string;
+  activateTab?: boolean;
 }
 
 export interface FillElementServerMessage extends ServerMessageBase {
@@ -127,12 +137,14 @@ export interface FillElementServerMessage extends ServerMessageBase {
   tabId: number;
   uid: string;
   value: string;
+  activateTab?: boolean;
 }
 
 export interface FillFormServerMessage extends ServerMessageBase {
   cmd: "fill-form";
   tabId: number;
   fields: { uid: string; value: string }[];
+  activateTab?: boolean;
 }
 
 export interface TypeTextServerMessage extends ServerMessageBase {
@@ -140,6 +152,7 @@ export interface TypeTextServerMessage extends ServerMessageBase {
   tabId: number;
   text: string;
   submit?: boolean;
+  activateTab?: boolean;
 }
 
 export interface PressKeyServerMessage extends ServerMessageBase {
@@ -147,6 +160,7 @@ export interface PressKeyServerMessage extends ServerMessageBase {
   tabId: number;
   key: string;
   modifiers?: string[];
+  activateTab?: boolean;
 }
 
 // Drag the element identified by `fromUid` onto the element identified by
@@ -157,6 +171,7 @@ export interface DragElementServerMessage extends ServerMessageBase {
   tabId: number;
   fromUid: string;
   toUid: string;
+  activateTab?: boolean;
 }
 
 // Resize the BROWSER WINDOW that hosts the given tab (not the page viewport).
@@ -468,6 +483,7 @@ export interface SelectOptionServerMessage extends ServerMessageBase {
   uid: string;
   option: string;
   exact?: boolean;
+  activateTab?: boolean;
 }
 
 // Dismiss cookie-consent banners and modal overlays covering the page (OneTrust,
@@ -478,6 +494,7 @@ export interface SelectOptionServerMessage extends ServerMessageBase {
 export interface DismissOverlaysServerMessage extends ServerMessageBase {
   cmd: "dismiss-overlays";
   tabId: number;
+  activateTab?: boolean;
 }
 
 export type ServerMessage =

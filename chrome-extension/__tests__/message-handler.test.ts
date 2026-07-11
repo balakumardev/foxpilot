@@ -205,7 +205,7 @@ describe("MessageHandler (chrome) — foreground-tab preservation", () => {
       expect(browser.tabs.update).toHaveBeenCalledWith(123, { active: true });
     });
 
-    it("restores the previously-active tab even when the capture throws", async () => {
+    it("restores the previously-active tab even when both capture paths fail", async () => {
       (browser.storage.local.get as jest.Mock).mockResolvedValue({
         config: automationConfig,
       });
@@ -217,9 +217,15 @@ describe("MessageHandler (chrome) — foreground-tab preservation", () => {
       (browser.tabs.query as jest.Mock).mockResolvedValue([{ id: 99 }]);
       (browser.tabs.update as jest.Mock).mockResolvedValue(undefined);
       (browser.permissions.contains as jest.Mock).mockResolvedValue(true);
+      // captureVisibleTab keeps failing, AND the CDP fallback returns no data —
+      // so the whole capture ultimately rejects. The finally must still restore.
       (browser.tabs.captureVisibleTab as jest.Mock).mockRejectedValue(
         new Error("capture failed")
       );
+      const dbg = (chrome as any).debugger;
+      dbg.attach.mockReset().mockResolvedValue(undefined);
+      dbg.detach.mockReset().mockResolvedValue(undefined);
+      dbg.sendCommand.mockReset().mockResolvedValue({}); // no .data
 
       const request: ServerMessageRequest = {
         cmd: "take-screenshot",
@@ -229,11 +235,128 @@ describe("MessageHandler (chrome) — foreground-tab preservation", () => {
 
       await expect(
         messageHandler.handleDecodedMessage(request)
-      ).rejects.toThrow("capture failed");
+      ).rejects.toThrow(/no data/);
 
       expect(browser.tabs.update).toHaveBeenNthCalledWith(1, 123, {
         active: true,
       });
+      expect(browser.tabs.update).toHaveBeenNthCalledWith(2, 99, {
+        active: true,
+      });
+    });
+
+    it("falls back to CDP Page.captureScreenshot when captureVisibleTab returns empty", async () => {
+      (browser.storage.local.get as jest.Mock).mockResolvedValue({
+        config: automationConfig,
+      });
+      (browser.tabs.get as jest.Mock).mockResolvedValue({
+        id: 123,
+        url: "https://example.com",
+        windowId: 7,
+      });
+      (browser.tabs.query as jest.Mock).mockResolvedValue([{ id: 123 }]);
+      (browser.tabs.update as jest.Mock).mockResolvedValue(undefined);
+      (browser.permissions.contains as jest.Mock).mockResolvedValue(true);
+      // Empty readback on every captureVisibleTab attempt.
+      (browser.tabs.captureVisibleTab as jest.Mock).mockResolvedValue(
+        "data:image/png;base64,"
+      );
+      const dbg = (chrome as any).debugger;
+      dbg.attach.mockReset().mockResolvedValue(undefined);
+      dbg.detach.mockReset().mockResolvedValue(undefined);
+      dbg.sendCommand.mockReset().mockResolvedValue({ data: "Q0RQ" });
+
+      await messageHandler.handleDecodedMessage({
+        cmd: "take-screenshot",
+        tabId: 123,
+        correlationId: "c1",
+      } as ServerMessageRequest);
+
+      expect(dbg.attach).toHaveBeenCalledWith({ tabId: 123 }, "1.3");
+      expect(dbg.sendCommand).toHaveBeenCalledWith(
+        { tabId: 123 },
+        "Page.captureScreenshot",
+        expect.objectContaining({ format: "png" })
+      );
+      expect(dbg.detach).toHaveBeenCalledWith({ tabId: 123 });
+      expect(transport.sendResourceToServer).toHaveBeenCalledWith(
+        expect.objectContaining({
+          resource: "screenshot",
+          base64: "Q0RQ",
+          warning: expect.stringContaining("CDP screenshot fallback"),
+        })
+      );
+    });
+  });
+
+  describe("opt-in activateTab flag (non-screenshot tools)", () => {
+    const automationConfig = { ...baseConfig, automationMode: true };
+
+    beforeEach(() => {
+      (browser.storage.local.get as jest.Mock).mockResolvedValue({
+        config: automationConfig,
+      });
+      (browser.permissions.contains as jest.Mock).mockResolvedValue(true);
+      (browser.tabs.get as jest.Mock).mockResolvedValue({
+        id: 123,
+        url: "https://example.com",
+        windowId: 7,
+      });
+      (browser.tabs.update as jest.Mock).mockResolvedValue(undefined);
+      (browser.tabs.sendMessage as jest.Mock).mockResolvedValue({
+        tree: 'button "Go" [uid=e1]',
+        isTruncated: false,
+      });
+    });
+
+    it("take-snapshot with activateTab:true activates then restores the previous tab", async () => {
+      (browser.tabs.query as jest.Mock).mockResolvedValue([{ id: 99 }]);
+
+      await messageHandler.handleDecodedMessage({
+        cmd: "take-snapshot",
+        tabId: 123,
+        activateTab: true,
+        correlationId: "s1",
+      } as ServerMessageRequest);
+
+      expect(browser.tabs.update).toHaveBeenNthCalledWith(1, 123, {
+        active: true,
+      });
+      expect(browser.tabs.update).toHaveBeenNthCalledWith(2, 99, {
+        active: true,
+      });
+      expect(transport.sendResourceToServer).toHaveBeenCalledWith(
+        expect.objectContaining({ resource: "snapshot", tabId: 123 })
+      );
+    });
+
+    it("take-snapshot WITHOUT activateTab does not touch tab activation", async () => {
+      (browser.tabs.query as jest.Mock).mockResolvedValue([{ id: 99 }]);
+
+      await messageHandler.handleDecodedMessage({
+        cmd: "take-snapshot",
+        tabId: 123,
+        correlationId: "s2",
+      } as ServerMessageRequest);
+
+      expect(browser.tabs.update).not.toHaveBeenCalled();
+    });
+
+    it("restores the previous tab even when the wrapped tool throws", async () => {
+      (browser.tabs.query as jest.Mock).mockResolvedValue([{ id: 99 }]);
+      (browser.tabs.sendMessage as jest.Mock).mockRejectedValue(
+        new Error("snapshot boom")
+      );
+
+      await expect(
+        messageHandler.handleDecodedMessage({
+          cmd: "take-snapshot",
+          tabId: 123,
+          activateTab: true,
+          correlationId: "s3",
+        } as ServerMessageRequest)
+      ).rejects.toThrow("snapshot boom");
+
       expect(browser.tabs.update).toHaveBeenNthCalledWith(2, 99, {
         active: true,
       });

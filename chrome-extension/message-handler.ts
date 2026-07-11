@@ -240,6 +240,47 @@ export class MessageHandler {
       console.error("Failed to add audit log entry:", error);
     });
 
+    // Opt-in: for a tab-scoped command with activateTab:true, foreground the
+    // target tab for the duration of the command, then restore the user's
+    // previous tab. Recovers background tabs frozen by Chrome Memory Saver /
+    // Edge Sleeping Tabs (empty snapshots / timeouts) without stealing focus.
+    if (
+      "activateTab" in req &&
+      (req as { activateTab?: boolean }).activateTab === true &&
+      "tabId" in req
+    ) {
+      await this.withTabActivated((req as { tabId: number }).tabId, () =>
+        this.routeCommand(req)
+      );
+    } else {
+      await this.routeCommand(req);
+    }
+  }
+
+  // Foreground `tabId` for the duration of `fn`, then restore whatever tab was
+  // active before (unless it was already the target). captureVisibleTab and
+  // background-frozen tabs require the target tab to be foregrounded; this makes
+  // that behavior opt-in and non-destructive to the user's current tab.
+  private async withTabActivated<T>(
+    tabId: number,
+    fn: () => Promise<T>
+  ): Promise<T> {
+    const tab = await browser.tabs.get(tabId);
+    const [prevActive] = await browser.tabs.query({
+      active: true,
+      windowId: tab.windowId,
+    });
+    await browser.tabs.update(tabId, { active: true });
+    try {
+      return await fn();
+    } finally {
+      if (prevActive?.id != null && prevActive.id !== tabId) {
+        await browser.tabs.update(prevActive.id, { active: true });
+      }
+    }
+  }
+
+  private async routeCommand(req: ServerMessageRequest): Promise<void> {
     switch (req.cmd) {
       case "open-tab":
         await this.openUrl(req.correlationId, req.url);
@@ -1288,30 +1329,20 @@ export class MessageHandler {
 
     const format: ImageFormat = opts.format === "jpeg" ? "jpeg" : "png";
     // captureVisibleTab only captures the active tab of the window, so activate
-    // the target tab first. Record the currently-active tab so we can restore the
-    // user's foreground tab after the capture (and even if it throws).
-    const [prevActive] = await browser.tabs.query({
-      active: true,
-      windowId: tab.windowId,
-    });
-    await browser.tabs.update(tabId, { active: true });
-
-    let result: { mimeType: string; base64: string; warning?: string };
-    try {
+    // the target tab first and restore the user's foreground tab afterward (even
+    // on throw) via the shared helper.
+    const result = await this.withTabActivated<{
+      mimeType: string;
+      base64: string;
+      warning?: string;
+    }>(tabId, async () => {
       if (opts.uid) {
-        result = await this.captureElement(tabId, tab.windowId, opts.uid, format);
+        return await this.captureElement(tabId, tab.windowId, opts.uid, format);
       } else if (opts.fullPage) {
-        result = await this.captureFullPage(tabId, tab.windowId, format);
-      } else {
-        result = await this.captureViewport(tab.windowId, format);
+        return await this.captureFullPage(tabId, tab.windowId, format);
       }
-    } finally {
-      // Restore the previously-active tab so automation never steals the user's
-      // foreground tab. Skip if the target was already the active tab.
-      if (prevActive?.id != null && prevActive.id !== tabId) {
-        await browser.tabs.update(prevActive.id, { active: true });
-      }
-    }
+      return await this.captureViewport(tabId, tab.windowId, format);
+    });
 
     await this.client.sendResourceToServer({
       resource: "screenshot",
@@ -1323,14 +1354,63 @@ export class MessageHandler {
   }
 
   private async captureViewport(
+    tabId: number,
     windowId: number | undefined,
     format: ImageFormat
-  ): Promise<{ mimeType: string; base64: string }> {
+  ): Promise<{ mimeType: string; base64: string; warning?: string }> {
     // Retry a transient post-activation GPU readback failure (same helper the
     // full-page tiler uses) instead of failing the whole screenshot.
-    const dataUrl = await this.captureWindowWithRetry(windowId, format);
-    const { base64 } = stripDataUrlPrefix(dataUrl);
-    return { mimeType: mimeTypeForFormat(format), base64 };
+    try {
+      const dataUrl = await this.captureWindowWithRetry(windowId, format);
+      const { base64 } = stripDataUrlPrefix(dataUrl);
+      if (base64) {
+        return { mimeType: mimeTypeForFormat(format), base64 };
+      }
+    } catch (e) {
+      // captureVisibleTab failed on every attempt (e.g. the persistent
+      // "image readback failed" / empty-readback path some GPU/compositor
+      // configs hit). Fall through to the CDP capture below.
+    }
+
+    // Fallback: CDP Page.captureScreenshot. Runs through the compositor's own
+    // capture path, which succeeds on machines where captureVisibleTab returns
+    // an empty readback every time. Chrome/Edge only; shows the "started
+    // debugging this browser" banner (opt-in cost, only on the failure path).
+    const base64 = await this.captureViewportCdp(tabId, format);
+    return {
+      mimeType: mimeTypeForFormat(format),
+      base64,
+      warning:
+        "captureVisibleTab returned an empty readback; used the CDP screenshot fallback (a 'started debugging this browser' banner may have appeared).",
+    };
+  }
+
+  // CDP viewport capture via the refcounted debugger ("input" purpose, matching
+  // cdp-input.ts so it coexists with response-body capture). Returns raw base64
+  // (Page.captureScreenshot already returns bare base64, no data: prefix).
+  private async captureViewportCdp(
+    tabId: number,
+    format: ImageFormat
+  ): Promise<string> {
+    const dbg = (chrome as any).debugger;
+    if (!dbg) {
+      throw new Error(
+        "image readback failed and the CDP screenshot fallback is unavailable (chrome.debugger not present)."
+      );
+    }
+    await attachDebugger(tabId, "input");
+    try {
+      const res = (await dbg.sendCommand({ tabId }, "Page.captureScreenshot", {
+        format,
+        ...(format === "jpeg" ? { quality: 90 } : {}),
+      })) as { data?: string };
+      if (!res || !res.data) {
+        throw new Error("CDP Page.captureScreenshot returned no data.");
+      }
+      return res.data;
+    } finally {
+      await detachDebugger(tabId, "input");
+    }
   }
 
   private async captureElement(

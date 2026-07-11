@@ -396,12 +396,14 @@ export class BrowserAPI {
 
   async getTabContent(
     tabId: number,
-    offset: number
+    offset: number,
+    activateTab?: boolean
   ): Promise<TabContentExtensionMessage> {
     return await this.sendTool<TabContentExtensionMessage>({
       cmd: "get-tab-content",
       tabId,
       offset,
+      activateTab,
     });
   }
 
@@ -449,6 +451,7 @@ export class BrowserAPI {
       rootSelector?: string;
       offset?: number;
       limit?: number;
+      activateTab?: boolean;
     }
   ): Promise<SnapshotExtensionMessage> {
     return await this.sendTool<SnapshotExtensionMessage>({
@@ -468,6 +471,7 @@ export class BrowserAPI {
       waitForUrl?: string;
       forceLoad?: boolean;
       timeoutMs?: number;
+      activateTab?: boolean;
     }
   ): Promise<NavigatedExtensionMessage> {
     return await this.sendTool<NavigatedExtensionMessage>({
@@ -523,7 +527,8 @@ export class BrowserAPI {
     tabId: number,
     uid: string,
     doubleClick?: boolean,
-    failIfIntercepted?: boolean
+    failIfIntercepted?: boolean,
+    activateTab?: boolean
   ): Promise<{
     navigated?: boolean;
     intercepted?: {
@@ -540,6 +545,7 @@ export class BrowserAPI {
       uid,
       doubleClick,
       failIfIntercepted,
+      activateTab,
     });
     if (!message.ok) {
       // On a hard failure (failIfIntercepted:true + covered), the extension sets
@@ -655,23 +661,34 @@ export class BrowserAPI {
     });
   }
 
-  async hoverElement(tabId: number, uid: string): Promise<void> {
+  async hoverElement(
+    tabId: number,
+    uid: string,
+    activateTab?: boolean
+  ): Promise<void> {
     const message = await this.sendTool<ActionResultExtensionMessage>({
       cmd: "hover-element",
       tabId,
       uid,
+      activateTab,
     });
     if (!message.ok) {
       throw new Error(message.error ?? "Action failed");
     }
   }
 
-  async fillElement(tabId: number, uid: string, value: string): Promise<void> {
+  async fillElement(
+    tabId: number,
+    uid: string,
+    value: string,
+    activateTab?: boolean
+  ): Promise<void> {
     const message = await this.sendTool<ActionResultExtensionMessage>({
       cmd: "fill-element",
       tabId,
       uid,
       value,
+      activateTab,
     });
     if (!message.ok) {
       throw new Error(message.error ?? "Action failed");
@@ -682,7 +699,8 @@ export class BrowserAPI {
     tabId: number,
     uid: string,
     option: string,
-    exact?: boolean
+    exact?: boolean,
+    activateTab?: boolean
   ): Promise<ActionResultExtensionMessage> {
     return await this.sendTool<ActionResultExtensionMessage>({
       cmd: "select-option",
@@ -690,36 +708,49 @@ export class BrowserAPI {
       uid,
       option,
       exact,
+      activateTab,
     });
   }
 
-  async dismissOverlays(tabId: number): Promise<ActionResultExtensionMessage> {
+  async dismissOverlays(
+    tabId: number,
+    activateTab?: boolean
+  ): Promise<ActionResultExtensionMessage> {
     return await this.sendTool<ActionResultExtensionMessage>({
       cmd: "dismiss-overlays",
       tabId,
+      activateTab,
     });
   }
 
   async fillForm(
     tabId: number,
-    fields: { uid: string; value: string }[]
+    fields: { uid: string; value: string }[],
+    activateTab?: boolean
   ): Promise<void> {
     const message = await this.sendTool<ActionResultExtensionMessage>({
       cmd: "fill-form",
       tabId,
       fields,
+      activateTab,
     });
     if (!message.ok) {
       throw new Error(message.error ?? "Action failed");
     }
   }
 
-  async typeText(tabId: number, text: string, submit?: boolean): Promise<void> {
+  async typeText(
+    tabId: number,
+    text: string,
+    submit?: boolean,
+    activateTab?: boolean
+  ): Promise<void> {
     const message = await this.sendTool<ActionResultExtensionMessage>({
       cmd: "type-text",
       tabId,
       text,
       submit,
+      activateTab,
     });
     if (!message.ok) {
       throw new Error(message.error ?? "Action failed");
@@ -729,13 +760,15 @@ export class BrowserAPI {
   async pressKey(
     tabId: number,
     key: string,
-    modifiers?: string[]
+    modifiers?: string[],
+    activateTab?: boolean
   ): Promise<void> {
     const message = await this.sendTool<ActionResultExtensionMessage>({
       cmd: "press-key",
       tabId,
       key,
       modifiers,
+      activateTab,
     });
     if (!message.ok) {
       throw new Error(message.error ?? "Action failed");
@@ -745,13 +778,15 @@ export class BrowserAPI {
   async dragElement(
     tabId: number,
     fromUid: string,
-    toUid: string
+    toUid: string,
+    activateTab?: boolean
   ): Promise<void> {
     const message = await this.sendTool<ActionResultExtensionMessage>({
       cmd: "drag-element",
       tabId,
       fromUid,
       toUid,
+      activateTab,
     });
     if (!message.ok) {
       throw new Error(message.error ?? "Action failed");

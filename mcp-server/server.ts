@@ -13,6 +13,20 @@ import relativeTime from "dayjs/plugin/relativeTime";
 
 dayjs.extend(relativeTime);
 
+// Shared zod field + description for the opt-in tab-activation flag. Tools that
+// read from or drive a specific tab accept this so an agent can recover when a
+// BACKGROUND tab returns empty/times out (Chrome Memory Saver / Edge Sleeping
+// Tabs freeze background tabs). When true the extension foregrounds the target
+// tab for the call, then restores the user's previous foreground tab.
+const activateTabField = {
+  activateTab: z
+    .boolean()
+    .optional()
+    .describe(
+      "Set true to briefly foreground the target tab for this call, then restore the user's previous tab. Use it when a BACKGROUND tab returns empty content or times out (background tabs get frozen by Chrome Memory Saver / Edge Sleeping Tabs)."
+    ),
+};
+
 const mcpServer = new McpServer({
   name: "FoxPilot",
   version: "1.5.1",
@@ -130,9 +144,9 @@ mcpServer.tool(
     Get the full text content of the webpage and the list of links in the webpage, by tab ID. 
     Use "offset" only for larger documents when the first call was truncated and if you require more content in order to assist the user.
   `,
-  { tabId: z.number(), offset: z.number().default(0) },
-  async ({ tabId, offset }) => {
-    const content = await browserApi.getTabContent(tabId, offset);
+  { tabId: z.number(), offset: z.number().default(0), ...activateTabField },
+  async ({ tabId, offset, activateTab }) => {
+    const content = await browserApi.getTabContent(tabId, offset, activateTab);
     let links: { type: "text"; text: string }[] = [];
     if (offset === 0) {
       // Only include the links if offset is 0 (default value). Otherwise, we can
@@ -213,6 +227,7 @@ mcpServer.tool(
     rootSelector: z.string().optional(),
     offset: z.number().optional(),
     limit: z.number().optional(),
+    ...activateTabField,
   },
   async ({
     tabId,
@@ -224,6 +239,7 @@ mcpServer.tool(
     rootSelector,
     offset,
     limit,
+    activateTab,
   }) => {
     const result = await browserApi.takeSnapshot(tabId, {
       verbose,
@@ -234,6 +250,7 @@ mcpServer.tool(
       rootSelector,
       offset,
       limit,
+      activateTab,
     });
     // A compact element-count line is ALWAYS prepended (via formatSnapshotResult)
     // so a cold agent immediately knows the page size and when to scope; the
@@ -255,8 +272,9 @@ mcpServer.tool(
     waitForUrl: z.string().optional(),
     forceLoad: z.boolean().optional(),
     timeoutMs: z.number().optional(),
+    ...activateTabField,
   },
-  async ({ tabId, url, waitUntil, waitForSelector, waitForText, waitForUrl, forceLoad, timeoutMs }) => {
+  async ({ tabId, url, waitUntil, waitForSelector, waitForText, waitForUrl, forceLoad, timeoutMs, activateTab }) => {
     const result = await browserApi.navigateTab(tabId, url, {
       waitUntil,
       waitForSelector,
@@ -264,6 +282,7 @@ mcpServer.tool(
       waitForUrl,
       forceLoad,
       timeoutMs,
+      activateTab,
     });
     return {
       content: [
@@ -424,13 +443,15 @@ mcpServer.tool(
     uid: z.string(),
     doubleClick: z.boolean().optional(),
     failIfIntercepted: z.boolean().optional(),
+    ...activateTabField,
   },
-  async ({ tabId, uid, doubleClick, failIfIntercepted }) => {
+  async ({ tabId, uid, doubleClick, failIfIntercepted, activateTab }) => {
     const { navigated, intercepted } = await browserApi.clickElement(
       tabId,
       uid,
       doubleClick,
-      failIfIntercepted
+      failIfIntercepted,
+      activateTab
     );
     const verb = doubleClick ? "Double-clicked" : "Clicked";
     let text = navigated
@@ -452,9 +473,9 @@ mcpServer.tool(
 mcpServer.tool(
   "hover-element",
   "Hover the mouse over an element on a page (useful to reveal menus/tooltips). Pass a 'uid' from a recent take-snapshot (e.g. e12).",
-  { tabId: z.number(), uid: z.string() },
-  async ({ tabId, uid }) => {
-    await browserApi.hoverElement(tabId, uid);
+  { tabId: z.number(), uid: z.string(), ...activateTabField },
+  async ({ tabId, uid, activateTab }) => {
+    await browserApi.hoverElement(tabId, uid, activateTab);
     return {
       content: [{ type: "text", text: `Hovered element ${uid}` }],
     };
@@ -464,9 +485,9 @@ mcpServer.tool(
 mcpServer.tool(
   "fill-element",
   "Set the value of a form field (text input, textarea, <select>, checkbox, or radio) on a page. Pass a 'uid' from a recent take-snapshot (e.g. e12) and the value. For checkboxes/radios, use \"true\"/\"false\". For <select>, use the option's value.",
-  { tabId: z.number(), uid: z.string(), value: z.string() },
-  async ({ tabId, uid, value }) => {
-    await browserApi.fillElement(tabId, uid, value);
+  { tabId: z.number(), uid: z.string(), value: z.string(), ...activateTabField },
+  async ({ tabId, uid, value, activateTab }) => {
+    await browserApi.fillElement(tabId, uid, value, activateTab);
     return {
       content: [{ type: "text", text: `Filled element ${uid}` }],
     };
@@ -479,9 +500,10 @@ mcpServer.tool(
   {
     tabId: z.number(),
     fields: z.array(z.object({ uid: z.string(), value: z.string() })),
+    ...activateTabField,
   },
-  async ({ tabId, fields }) => {
-    await browserApi.fillForm(tabId, fields);
+  async ({ tabId, fields, activateTab }) => {
+    await browserApi.fillForm(tabId, fields, activateTab);
     return {
       content: [
         {
@@ -498,9 +520,9 @@ mcpServer.tool(
 mcpServer.tool(
   "type-text",
   "Type text into the currently focused element on a page (click or fill an input first to focus it). Set submit to also press Enter and submit the enclosing form. Fails if no input/textarea is focused.",
-  { tabId: z.number(), text: z.string(), submit: z.boolean().optional() },
-  async ({ tabId, text, submit }) => {
-    await browserApi.typeText(tabId, text, submit);
+  { tabId: z.number(), text: z.string(), submit: z.boolean().optional(), ...activateTabField },
+  async ({ tabId, text, submit, activateTab }) => {
+    await browserApi.typeText(tabId, text, submit, activateTab);
     return {
       content: [
         {
@@ -519,9 +541,10 @@ mcpServer.tool(
     tabId: z.number(),
     key: z.string(),
     modifiers: z.array(z.enum(["ctrl", "shift", "alt", "meta"])).optional(),
+    ...activateTabField,
   },
-  async ({ tabId, key, modifiers }) => {
-    await browserApi.pressKey(tabId, key, modifiers);
+  async ({ tabId, key, modifiers, activateTab }) => {
+    await browserApi.pressKey(tabId, key, modifiers, activateTab);
     const mods = modifiers && modifiers.length ? `${modifiers.join("+")}+` : "";
     return {
       content: [{ type: "text", text: `Pressed ${mods}${key}` }],
@@ -532,9 +555,9 @@ mcpServer.tool(
 mcpServer.tool(
   "drag-element",
   "Drag one element onto another on a page (HTML5 drag-and-drop or sortable lists). Pass 'fromUid' (the element to drag) and 'toUid' (the drop target), both uids from a recent take-snapshot (e.g. e12). Note: drag-and-drop is simulated with synthetic events and is best-effort — some sites that require native/trusted drag events may not respond. If a uid is stale, this returns an error asking you to take a fresh snapshot.",
-  { tabId: z.number(), fromUid: z.string(), toUid: z.string() },
-  async ({ tabId, fromUid, toUid }) => {
-    await browserApi.dragElement(tabId, fromUid, toUid);
+  { tabId: z.number(), fromUid: z.string(), toUid: z.string(), ...activateTabField },
+  async ({ tabId, fromUid, toUid, activateTab }) => {
+    await browserApi.dragElement(tabId, fromUid, toUid, activateTab);
     return {
       content: [
         {
@@ -762,9 +785,10 @@ mcpServer.tool(
     uid: z.string(),
     option: z.string(),
     exact: z.boolean().optional(),
+    ...activateTabField,
   },
-  async ({ tabId, uid, option, exact }) => {
-    const result = await browserApi.selectOption(tabId, uid, option, exact);
+  async ({ tabId, uid, option, exact, activateTab }) => {
+    const result = await browserApi.selectOption(tabId, uid, option, exact, activateTab);
     if (!result.ok) {
       return {
         content: [
@@ -789,9 +813,10 @@ mcpServer.tool(
   "Dismiss cookie-consent banners and modal overlays that cover the page (OneTrust, TrustArc, Cookiebot, Osano/Quantcast, and generic aria-modal dialogs with their backdrops). It PREFERS clicking a Reject / Decline / \"Necessary only\" control (privacy-preserving); only if none exists does it remove the overlay node(s) and restore the page's scroll lock. Idempotent and safe to re-run after an SPA route change re-mounts the banner. Reach for it when click-element reports a click may be intercepted, or when a snapshot is dominated by a consent dialog.",
   {
     tabId: z.number(),
+    ...activateTabField,
   },
-  async ({ tabId }) => {
-    const result = await browserApi.dismissOverlays(tabId);
+  async ({ tabId, activateTab }) => {
+    const result = await browserApi.dismissOverlays(tabId, activateTab);
     if (!result.ok) {
       return {
         content: [

@@ -212,6 +212,33 @@ export function buildSnapshot(
     return parts.join(" ");
   }
 
+  // Roles whose accessible name is computed FROM the element's own text content
+  // (ARIA "Name From: contents"). For these the visible text IS the label, so a
+  // textContent fallback is correct and safe (they are leaf-ish, not large
+  // containers). Lets unlabelled IDS widgets read as option "E2E" / tab
+  // "Secrets" instead of option "" / tab "".
+  function isNameFromContentsRole(role: string): boolean {
+    switch (role) {
+      case "option":
+      case "tab":
+      case "menuitem":
+      case "menuitemcheckbox":
+      case "menuitemradio":
+      case "treeitem":
+      case "radio":
+      case "checkbox":
+      case "switch":
+      case "gridcell":
+      case "cell":
+      case "columnheader":
+      case "rowheader":
+      case "listitem":
+        return true;
+      default:
+        return false;
+    }
+  }
+
   function getAccessibleName(el: Element, role: string): string {
     const ariaLabel = el.getAttribute("aria-label");
     if (ariaLabel && collapseWhitespace(ariaLabel)) {
@@ -263,12 +290,15 @@ export function buildSnapshot(
     // Only fall back to raw textContent for roles where the text is the label
     // (avoid dumping the contents of large containers). FIX 2 widens this to
     // custom (explicit-role) combobox/textbox — but NEVER native
-    // select/textarea/input, whose textContent is option/child noise.
+    // select/textarea/input, whose textContent is option/child noise. Plus the
+    // ARIA "name from contents" roles (option/tab/menuitem/etc.), so IDS custom
+    // widgets surface e.g. tab "Secrets" instead of tab "".
     const hasExplicitRole = !!el.getAttribute("role");
     if (
       role === "link" ||
       role === "button" ||
       role === "heading" ||
+      isNameFromContentsRole(role) ||
       ((role === "combobox" || role === "textbox") && hasExplicitRole)
     ) {
       const text = el.textContent || "";

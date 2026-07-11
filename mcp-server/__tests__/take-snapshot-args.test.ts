@@ -132,4 +132,9 @@ describe("BrowserAPI.takeSnapshot query args over the broker", () => {
     expect(result.total).toBe(10);
     expect(result.hasMore).toBe(true);
   });
+
+  it("forwards the activateTab flag in the snapshot frame", async () => {
+    await api.takeSnapshot(9, { activateTab: true });
+    expect((lastReq as any).activateTab).toBe(true);
+  });
 });

@@ -31,6 +31,55 @@ describe("buildSnapshot (chrome)", () => {
     expect(tree).toContain('button "Go" |  |  [uid=e2]');
   });
 
+  describe("name-from-contents fallback for custom-widget roles", () => {
+    // Regression: IDS combobox options / tabs with no aria-label used to
+    // snapshot as option "" / tab "", indistinguishable from one another.
+    it("labels role=option / role=tab from their own text when unlabelled", () => {
+      document.body.innerHTML = `
+        <div role="tab">Secrets</div>
+        <div role="tab">Application Identities</div>
+        <div role="option">E2E</div>
+        <div role="option">PRD</div>
+      `;
+      const { tree } = buildSnapshot(document, {
+        verbose: false,
+        maxLength: 25000,
+        includePointer: false,
+      });
+      expect(tree).toContain('tab "Secrets"');
+      expect(tree).toContain('tab "Application Identities"');
+      expect(tree).toContain('option "E2E"');
+      expect(tree).toContain('option "PRD"');
+    });
+
+    it("labels menuitem / treeitem / switch from their own text", () => {
+      document.body.innerHTML = `
+        <div role="menuitem">Delete</div>
+        <div role="treeitem">Node A</div>
+        <div role="switch">Dark mode</div>
+      `;
+      const { tree } = buildSnapshot(document, {
+        verbose: false,
+        maxLength: 25000,
+        includePointer: false,
+      });
+      expect(tree).toContain('menuitem "Delete"');
+      expect(tree).toContain('treeitem "Node A"');
+      expect(tree).toContain('switch "Dark mode"');
+    });
+
+    it("aria-label still wins over contents", () => {
+      document.body.innerHTML = `<div role="tab" aria-label="Tab one">ignored inner</div>`;
+      const { tree } = buildSnapshot(document, {
+        verbose: false,
+        maxLength: 25000,
+        includePointer: false,
+      });
+      expect(tree).toContain('tab "Tab one"');
+      expect(tree).not.toContain("ignored inner");
+    });
+  });
+
   describe("selector query mode (Task 5)", () => {
     it("returns exactly the selector matches with fresh uids, even non-interactive", () => {
       document.body.innerHTML = `
