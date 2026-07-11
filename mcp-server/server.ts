@@ -27,10 +27,34 @@ const activateTabField = {
     ),
 };
 
-const mcpServer = new McpServer({
-  name: "FoxPilot",
-  version: "1.5.1",
-});
+const mcpServer = new McpServer(
+  {
+    name: "FoxPilot",
+    version: "1.5.1",
+  },
+  {
+    instructions:
+      "FoxPilot drives a real browser tab (Chrome/Firefox) for AI automation. " +
+      "CORE LOOP for driving any page: (1) get-list-of-open-tabs to find the target tabId; " +
+      "(2) take-snapshot to see interactive elements — each is tagged [uid=eN]; " +
+      "(3) act on a uid with click-element / fill-element / select-option / hover-element; " +
+      "(4) take a FRESH snapshot before the next action. " +
+      "UIDS ARE EPHEMERAL: every take-snapshot reassigns all uids, so a uid from an earlier " +
+      "snapshot silently resolves to the wrong element or fails — never reuse a uid across snapshots. " +
+      "FIND ELEMENTS BY TEXT: pass textContains:'visible label' to take-snapshot to locate a control " +
+      "by its on-screen text (case-insensitive) instead of dumping the whole page; this is the reliable " +
+      "way to click nav items, tabs, and menu entries. " +
+      "BACKGROUND TABS: if the target tab is NOT the user's foreground tab, its content is frozen by " +
+      "Chrome Memory Saver / Edge Sleeping Tabs — take-snapshot returns empty and clicks time out. " +
+      "PASS activateTab:true on take-snapshot / click-element / fill-element / navigate-tab / etc. to " +
+      "briefly foreground the tab for that one call and restore the user's tab after. When a snapshot " +
+      "comes back empty or a call times out on a tab you did not just navigate, retry with activateTab:true. " +
+      "SPA NAVIGATION: after a click that expands a menu or changes the view, take a fresh snapshot before " +
+      "the next click; content may render lazily. Prefer take-snapshot over evaluate-script (many app pages " +
+      "have a strict CSP that blocks page-world script). Custom dropdowns (react-select/Radix) use select-option, " +
+      "not fill-element.",
+  }
+);
 
 mcpServer.tool(
   "open-browser-tab",
@@ -216,7 +240,7 @@ mcpServer.tool(
 
 mcpServer.tool(
   "take-snapshot",
-  "Take an accessibility snapshot of a browser tab's page. Returns interactive elements each tagged with a uid (e.g. [uid=e12]) for the uid-based tools (click-element / fill-element / hover-element / etc.). IMPORTANT: a [uid=eN] is only valid until the NEXT take-snapshot on the same tab — snapshot, then act on its uids before snapshotting again; a second snapshot reassigns every uid, so a uid from an earlier snapshot will resolve to the wrong element or fail. By default it now also captures visually-clickable elements (cursor:pointer, e.g. React <div onClick> cards) — set includePointer:false to suppress that, or maxInteractive to cap how many are added. Query modes: 'selector' returns exactly the CSS-selector matches (even non-interactive, e.g. selector:'[contenteditable]' for a chat box); 'textContains' returns the deepest elements whose visible text contains the string (case-insensitive). Scope with 'rootSelector' to collect only within one subtree (e.g. the main panel, excluding a huge sidebar), and page large results with 'offset'/'limit' (the reply reports total collected and whether more remain). verbose:true additionally includes headings and aria-labelled elements.",
+  "Take an accessibility snapshot of a browser tab's page — the START of the drive-a-page loop (snapshot → act on a uid → fresh snapshot). Returns interactive elements each tagged with a uid (e.g. [uid=e12]) for the uid-based tools (click-element / fill-element / hover-element / select-option / etc.). IMPORTANT: a [uid=eN] is only valid until the NEXT take-snapshot on the same tab — snapshot, then act on its uids before snapshotting again; a second snapshot reassigns every uid, so a uid from an earlier snapshot will resolve to the wrong element or fail. BACKGROUND TAB: if this returns an empty/near-empty tree for a tab that is NOT the user's foreground tab, the tab is frozen by Chrome Memory Saver / Edge Sleeping Tabs — retry with activateTab:true to briefly foreground it for the call. TO FIND A SPECIFIC CONTROL by its visible text (nav item, tab, menu entry, button), pass textContains:'the label' rather than reading the whole page. By default it now also captures visually-clickable elements (cursor:pointer, e.g. React <div onClick> cards) — set includePointer:false to suppress that, or maxInteractive to cap how many are added. Query modes: 'selector' returns exactly the CSS-selector matches (even non-interactive, e.g. selector:'[contenteditable]' for a chat box); 'textContains' returns the deepest elements whose visible text contains the string (case-insensitive). Scope with 'rootSelector' to collect only within one subtree (e.g. the main panel, excluding a huge sidebar), and page large results with 'offset'/'limit' (the reply reports total collected and whether more remain). verbose:true additionally includes headings and aria-labelled elements.",
   {
     tabId: z.number(),
     verbose: z.boolean().optional(),
