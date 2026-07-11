@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "FoxPilot",
-  "version": "1.0.16",
+  "version": "1.0.17",
   "description": "An extension that lets a local MCP server drive Chrome: tabs, history, content, and opt-in page automation.",
   "author": "Bala Kumar",
   "homepage_url": "https://github.com/balakumardev/foxpilot",

@@ -1,7 +1,7 @@
 {
   "dxt_version": "0.1",
   "name": "foxpilot",
-  "version": "1.0.16",
+  "version": "1.0.17",
   "display_name": "FoxPilot",
   "description": "Control Mozilla Firefox: tabs, history and web content (privacy aware)",
   "long_description": "This MCP server provides AI assistants with access to the browser's tab management, browsing history, page search, and webpage text content through a local MCP (Model Context Protocol) connection.\n\nIt also provides advanced page automation: page interaction (click, type, fill, navigate), accessibility snapshots, screenshots, JavaScript evaluation, file upload, and console/network inspection. These powerful automation tools require enabling \"Automation Mode\" in the browser extension.\n\nBefore accessing any webpage content, explicit user consent is required for each domain through browser-side permissions.\n\n**Setup:** This extension requires a separate browser add-on component, which is available at [https://addons.mozilla.org/en-US/firefox/addon/foxpilot/](https://addons.mozilla.org/en-US/firefox/addon/foxpilot/). Install this DXT, then install the browser add-on — it connects to the local server automatically, with no secret to copy or paste. The optional secret key below is only needed for advanced/remote (containerized) deployments.",
