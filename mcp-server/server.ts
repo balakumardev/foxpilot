@@ -8,6 +8,7 @@ import { formatPointResult } from "./point-format";
 import { formatNetworkHeaders } from "./network-format";
 import { formatSnapshotResult } from "./snapshot-format";
 import { formatEvalResult } from "./eval-format";
+import { allowedNavUrl, NAV_URL_MESSAGE } from "./url-policy";
 import dayjs from "dayjs";
 import relativeTime from "dayjs/plugin/relativeTime";
 
@@ -26,6 +27,18 @@ const activateTabField = {
       "Set true to briefly foreground the target tab for this call, then restore the user's previous tab. Use it when a BACKGROUND tab returns empty content or times out (background tabs get frozen by Chrome Memory Saver / Edge Sleeping Tabs)."
     ),
 };
+
+// Shared URL validator for tools that open or navigate a tab. open-browser-tab
+// and navigate-tab MUST accept the same URLs (https, or http only for
+// localhost/127.0.0.1/[::1]) — otherwise a local dev/test server can be
+// navigated to but not opened in a new tab. `allowedNavUrl` mirrors the
+// extension-side `isNavigableUrl` gate; see url-policy.ts.
+const navUrl = z
+  .string()
+  .refine(allowedNavUrl, { message: NAV_URL_MESSAGE })
+  .describe(
+    "An http(s) URL. Must be https, or http only for localhost / 127.0.0.1 / [::1]."
+  );
 
 const mcpServer = new McpServer(
   {
@@ -58,8 +71,8 @@ const mcpServer = new McpServer(
 
 mcpServer.tool(
   "open-browser-tab",
-  "Open a new tab in the user's browser (useful when the user asks to open a website)",
-  { url: z.string() },
+  "Open a new tab in the user's browser (useful when the user asks to open a website). The URL must be https, or http only for localhost.",
+  { url: navUrl },
   async ({ url }) => {
     const openedTabId = await browserApi.openTab(url);
     if (openedTabId !== undefined) {
@@ -289,7 +302,7 @@ mcpServer.tool(
   "Load a URL in an existing browser tab and wait for it to settle, then report the ACTUAL final URL (a client-side SPA router may land elsewhere). The URL must be https, or http only for localhost. Optional: waitForSelector / waitForText / waitForUrl poll after settle and report a mismatch if unmet; forceLoad forces a real document load to defeat in-app SPA routing; waitUntil:\"none\" restores fire-and-forget; timeoutMs bounds the wait (capped at ~30s).",
   {
     tabId: z.number(),
-    url: z.string(),
+    url: navUrl,
     waitUntil: z.enum(["complete", "none"]).optional(),
     waitForSelector: z.string().optional(),
     waitForText: z.string().optional(),
@@ -461,21 +474,23 @@ mcpServer.tool(
 
 mcpServer.tool(
   "click-element",
-  "Click an element on a page. Pass a 'uid' from a recent take-snapshot (e.g. e12). Set doubleClick to fire a double-click. Set failIfIntercepted:true to FAIL (instead of clicking through) when a foreign overlay covers the target — the result then names the covering selector so you can dismiss-overlays first. If the uid is stale, this returns an error asking you to take a fresh snapshot.",
+  "Click an element on a page. Pass a 'uid' from a recent take-snapshot (e.g. e12). Set doubleClick to fire a double-click. Set failIfIntercepted:true to FAIL (instead of clicking through) when a foreign overlay covers the target — the result then names the covering selector so you can dismiss-overlays first. If the uid is stale, this returns an error asking you to take a fresh snapshot. Runs covertly (synthetic) by default. Set engine:\"cdp\" (Chrome/Edge only) to dispatch a TRUSTED (isTrusted:true) click via the debugger for strict apps that ignore synthetic events — it shows a 'started debugging this browser' banner (detectable) and errors on Firefox.",
   {
     tabId: z.number(),
     uid: z.string(),
     doubleClick: z.boolean().optional(),
     failIfIntercepted: z.boolean().optional(),
+    engine: z.enum(["synthetic", "cdp"]).optional(),
     ...activateTabField,
   },
-  async ({ tabId, uid, doubleClick, failIfIntercepted, activateTab }) => {
+  async ({ tabId, uid, doubleClick, failIfIntercepted, engine, activateTab }) => {
     const { navigated, intercepted } = await browserApi.clickElement(
       tabId,
       uid,
       doubleClick,
       failIfIntercepted,
-      activateTab
+      activateTab,
+      engine
     );
     const verb = doubleClick ? "Double-clicked" : "Clicked";
     let text = navigated
@@ -496,10 +511,15 @@ mcpServer.tool(
 
 mcpServer.tool(
   "hover-element",
-  "Hover the mouse over an element on a page (useful to reveal menus/tooltips). Pass a 'uid' from a recent take-snapshot (e.g. e12).",
-  { tabId: z.number(), uid: z.string(), ...activateTabField },
-  async ({ tabId, uid, activateTab }) => {
-    await browserApi.hoverElement(tabId, uid, activateTab);
+  "Hover the mouse over an element on a page (useful to reveal menus/tooltips). Pass a 'uid' from a recent take-snapshot (e.g. e12). Runs covertly (synthetic) by default. Set engine:\"cdp\" (Chrome/Edge only) to move a TRUSTED pointer via the debugger for strict apps that ignore synthetic events — it shows the debugger banner and errors on Firefox.",
+  {
+    tabId: z.number(),
+    uid: z.string(),
+    engine: z.enum(["synthetic", "cdp"]).optional(),
+    ...activateTabField,
+  },
+  async ({ tabId, uid, engine, activateTab }) => {
+    await browserApi.hoverElement(tabId, uid, activateTab, engine);
     return {
       content: [{ type: "text", text: `Hovered element ${uid}` }],
     };
@@ -508,10 +528,16 @@ mcpServer.tool(
 
 mcpServer.tool(
   "fill-element",
-  "Set the value of a form field (text input, textarea, <select>, checkbox, or radio) on a page. Pass a 'uid' from a recent take-snapshot (e.g. e12) and the value. For checkboxes/radios, use \"true\"/\"false\". For <select>, use the option's value.",
-  { tabId: z.number(), uid: z.string(), value: z.string(), ...activateTabField },
-  async ({ tabId, uid, value, activateTab }) => {
-    await browserApi.fillElement(tabId, uid, value, activateTab);
+  "Set the value of a form field (text input, textarea, <select>, checkbox, or radio) on a page. Pass a 'uid' from a recent take-snapshot (e.g. e12) and the value. For checkboxes/radios, use \"true\"/\"false\". For <select>, use the option's value. Runs covertly (synthetic) by default. Set engine:\"cdp\" (Chrome/Edge only) to focus + type the value via TRUSTED events through the debugger for strict rich-text editors (Lexical/ProseMirror/Slate) that ignore synthetic input — it shows the debugger banner and errors on Firefox.",
+  {
+    tabId: z.number(),
+    uid: z.string(),
+    value: z.string(),
+    engine: z.enum(["synthetic", "cdp"]).optional(),
+    ...activateTabField,
+  },
+  async ({ tabId, uid, value, engine, activateTab }) => {
+    await browserApi.fillElement(tabId, uid, value, activateTab, engine);
     return {
       content: [{ type: "text", text: `Filled element ${uid}` }],
     };
@@ -520,14 +546,15 @@ mcpServer.tool(
 
 mcpServer.tool(
   "fill-form",
-  "Fill multiple form fields in one step. Provide an array of { uid, value } pairs, each uid taken from a recent take-snapshot. Filling stops at the first uid that cannot be resolved and reports it.",
+  "Fill multiple form fields in one step. Provide an array of { uid, value } pairs, each uid taken from a recent take-snapshot. Filling stops at the first uid that cannot be resolved and reports it. Runs covertly (synthetic) by default. Set engine:\"cdp\" (Chrome/Edge only) to fill each field via TRUSTED events through the debugger for strict apps that ignore synthetic input — it shows the debugger banner and errors on Firefox.",
   {
     tabId: z.number(),
     fields: z.array(z.object({ uid: z.string(), value: z.string() })),
+    engine: z.enum(["synthetic", "cdp"]).optional(),
     ...activateTabField,
   },
-  async ({ tabId, fields, activateTab }) => {
-    await browserApi.fillForm(tabId, fields, activateTab);
+  async ({ tabId, fields, engine, activateTab }) => {
+    await browserApi.fillForm(tabId, fields, activateTab, engine);
     return {
       content: [
         {
@@ -560,15 +587,16 @@ mcpServer.tool(
 
 mcpServer.tool(
   "press-key",
-  "Press a keyboard key on a page (e.g. 'Enter', 'Escape', 'ArrowDown', 'a'). Optionally hold modifiers (ctrl, shift, alt, meta). Targets the focused element, or the page body if nothing is focused.",
+  "Press a keyboard key on a page (e.g. 'Enter', 'Escape', 'ArrowDown', 'a'). Optionally hold modifiers (ctrl, shift, alt, meta). Targets the focused element, or the page body if nothing is focused. Runs covertly (synthetic) by default. Set engine:\"cdp\" (Chrome/Edge only) to dispatch a TRUSTED key event via the debugger for strict apps that ignore synthetic key events — it shows the debugger banner and errors on Firefox.",
   {
     tabId: z.number(),
     key: z.string(),
     modifiers: z.array(z.enum(["ctrl", "shift", "alt", "meta"])).optional(),
+    engine: z.enum(["synthetic", "cdp"]).optional(),
     ...activateTabField,
   },
-  async ({ tabId, key, modifiers, activateTab }) => {
-    await browserApi.pressKey(tabId, key, modifiers, activateTab);
+  async ({ tabId, key, modifiers, engine, activateTab }) => {
+    await browserApi.pressKey(tabId, key, modifiers, activateTab, engine);
     const mods = modifiers && modifiers.length ? `${modifiers.join("+")}+` : "";
     return {
       content: [{ type: "text", text: `Pressed ${mods}${key}` }],

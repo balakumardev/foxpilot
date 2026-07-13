@@ -46,8 +46,38 @@ export function performInputAction(
 
     // --- inner helpers (must stay inside this function body) ---
 
+    function bcmcpSig(el: any): string {
+      var role = el.getAttribute && (el.getAttribute("role") || "");
+      var name =
+        (el.getAttribute &&
+          (el.getAttribute("aria-label") ||
+            el.getAttribute("name") ||
+            el.getAttribute("data-testid") ||
+            "")) ||
+        "";
+      var t = (el.tagName || "") + "|" + role + "|" + (el.id || "") + "|" + name;
+      var h = 0;
+      for (var i = 0; i < t.length; i++) {
+        h = ((h << 5) - h + t.charCodeAt(i)) | 0;
+      }
+      return (h >>> 0).toString(36);
+    }
+
     function resolve(uid: string): Element | null {
-      return doc.querySelector("[" + UID_ATTR + '="' + uid + '"]');
+      const node = doc.querySelector("[" + UID_ATTR + '="' + uid + '"]');
+      if (!node) {
+        return null;
+      }
+      // Identity guard: the snapshot also stamps data-bcmcp-sig. If the stored
+      // signature no longer matches the node's current identity, the framework
+      // recycled this DOM node under a reassigned uid — treat it as stale so the
+      // caller takes a fresh snapshot instead of silently acting on the wrong
+      // element. A node with no sig (older snapshot) skips the check (back-compat).
+      const sig = node.getAttribute("data-bcmcp-sig");
+      if (sig && bcmcpSig(node) !== sig) {
+        return null;
+      }
+      return node;
     }
 
     function notFound(uid: string): { ok: boolean; error?: string } {
@@ -70,20 +100,69 @@ export function performInputAction(
       }
     }
 
-    function mouseEvt(type: string): Event {
-      return new MouseEvent(type, {
-        bubbles: true,
+    function elementCenter(el: Element): { x: number; y: number } {
+      try {
+        const r = el.getBoundingClientRect();
+        if (r && (r.width || r.height || r.left || r.top)) {
+          return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+        }
+      } catch (e) {
+        /* jsdom / detached — fall through to origin */
+      }
+      return { x: 0, y: 0 };
+    }
+
+    // Builds a MouseEvent (or PointerEvent for `pointer*` types when the engine
+    // has PointerEvent) carrying viewport coordinates, the pressed-button bitmask
+    // and `composed:true`. screenX/screenY approximate clientX/clientY; pageX/pageY
+    // are derived natively by the engine from clientX/clientY + scroll. `enter`
+    // variants correctly do not bubble.
+    function mouseEvt(
+      type: string,
+      opts?: { x?: number; y?: number; buttons?: number }
+    ): Event {
+      const o = opts || {};
+      const x = typeof o.x === "number" ? o.x : 0;
+      const y = typeof o.y === "number" ? o.y : 0;
+      const isEnter =
+        type === "mouseenter" ||
+        type === "mouseleave" ||
+        type === "pointerenter" ||
+        type === "pointerleave";
+      const init: MouseEventInit = {
+        bubbles: !isEnter,
         cancelable: true,
+        composed: true,
         view: win as Window,
-      });
+        button: 0,
+        buttons: typeof o.buttons === "number" ? o.buttons : 0,
+        clientX: x,
+        clientY: y,
+        screenX: x,
+        screenY: y,
+      };
+      const PE =
+        win && (win as { PointerEvent?: typeof PointerEvent }).PointerEvent;
+      if (type.indexOf("pointer") === 0 && typeof PE === "function") {
+        const pinit = init as PointerEventInit;
+        pinit.pointerId = 1;
+        pinit.pointerType = "mouse";
+        pinit.isPrimary = true;
+        return new (PE as typeof PointerEvent)(type, pinit);
+      }
+      return new MouseEvent(type, init);
     }
 
     function dispatchClickSequence(el: Element, doubleClick?: boolean): void {
-      // Realistic press sequence. None of these activate the element, so they
+      const c = elementCenter(el);
+      // Realistic covert press sequence: symmetric pointer/mouse pairs with
+      // coordinates and button state. None of these activate the element, so they
       // are safe to dispatch alongside the single real activation below.
-      el.dispatchEvent(mouseEvt("pointerdown"));
-      el.dispatchEvent(mouseEvt("mousedown"));
-      el.dispatchEvent(mouseEvt("mouseup"));
+      el.dispatchEvent(mouseEvt("pointerover", { x: c.x, y: c.y }));
+      el.dispatchEvent(mouseEvt("pointerenter", { x: c.x, y: c.y }));
+      el.dispatchEvent(mouseEvt("pointermove", { x: c.x, y: c.y }));
+      el.dispatchEvent(mouseEvt("pointerdown", { x: c.x, y: c.y, buttons: 1 }));
+      el.dispatchEvent(mouseEvt("mousedown", { x: c.x, y: c.y, buttons: 1 }));
       // Real clicks move focus to the clicked element so a following type-text
       // targets it. Synthetic el.click() does NOT move focus, so do it
       // explicitly (no-op for non-focusable elements).
@@ -92,6 +171,8 @@ export function performInputAction(
       } catch (e) {
         /* not focusable — ignore */
       }
+      el.dispatchEvent(mouseEvt("pointerup", { x: c.x, y: c.y, buttons: 0 }));
+      el.dispatchEvent(mouseEvt("mouseup", { x: c.x, y: c.y, buttons: 0 }));
       // Exactly ONE activation: el.click() fires the element's `click` event
       // AND performs the default action (follows links, toggles checkboxes,
       // submits forms). We deliberately do NOT also dispatch a synthetic
@@ -103,7 +184,7 @@ export function performInputAction(
       }
       if (doubleClick) {
         // A real double-click fires `dblclick` after the click above.
-        el.dispatchEvent(mouseEvt("dblclick"));
+        el.dispatchEvent(mouseEvt("dblclick", { x: c.x, y: c.y }));
       }
     }
 
@@ -208,27 +289,74 @@ export function performInputAction(
       }
     }
 
-    function fillElement(el: Element, value: string): void {
+    function fillElement(el: Element, value: string): { ok: boolean; error?: string } {
       scrollTo(el);
 
       if (el.tagName === "SELECT") {
-        (el as { value?: string }).value = value;
+        // Resolve the option by exact value OR trimmed visible text / label, then
+        // set it through the native HTMLSelectElement value setter so a
+        // React-controlled <select> observes the change; fire input + change.
+        const sel = el as HTMLSelectElement;
+        const opts = sel.options;
+        const wantNorm = (value || "").replace(/\s+/g, " ").trim();
+        let chosen: HTMLOptionElement | null = null;
+        for (let i = 0; i < opts.length; i++) {
+          if (opts[i].value === value) {
+            chosen = opts[i];
+            break;
+          }
+        }
+        if (!chosen) {
+          for (let j = 0; j < opts.length; j++) {
+            const o = opts[j];
+            const t = (o.textContent || "").replace(/\s+/g, " ").trim();
+            const lbl = (o.getAttribute("label") || "").replace(/\s+/g, " ").trim();
+            if (t === wantNorm || lbl === wantNorm) {
+              chosen = o;
+              break;
+            }
+          }
+        }
+        if (!chosen) {
+          return {
+            ok: false,
+            error:
+              'No <option> matching "' +
+              value +
+              '" in the <select> (matched neither an option value nor its visible text).',
+          };
+        }
+        const proto = win!.HTMLSelectElement.prototype;
+        const descriptor = Object.getOwnPropertyDescriptor(proto, "value");
+        const setter = descriptor && descriptor.set;
+        if (setter) {
+          setter.call(el, chosen.value);
+        } else {
+          (el as { value?: string }).value = chosen.value;
+        }
+        el.dispatchEvent(new Event("input", { bubbles: true }));
         el.dispatchEvent(new Event("change", { bubbles: true }));
-        return;
+        return { ok: true };
       }
 
       if (isCheckable(el)) {
-        // Set the desired state directly — do NOT dispatch a synthetic click.
-        // A click would itself fire `change`, so combined with the explicit
-        // `change` below it would fire change twice (and toggle relative to the
-        // current state rather than landing on the requested value). Setting
-        // `checked` and firing input + change once each is deterministic
-        // regardless of the element's starting state.
+        // React binds a checkbox/radio's onChange to the native CLICK (its
+        // ChangeEventPlugin uses shouldUseClickEvent), so assigning `.checked`
+        // directly is swallowed and reverts on the next render. Drive the real
+        // covert click sequence instead — it toggles the state AND fires the
+        // input/change that React observes. Let the click flip the state; do NOT
+        // also assign `.checked` (that would double-toggle or fight the click).
         const target = truthyValue(value);
-        (el as { checked?: boolean }).checked = target;
-        el.dispatchEvent(new Event("input", { bubbles: true }));
-        el.dispatchEvent(new Event("change", { bubbles: true }));
-        return;
+        const isRadio = (el.getAttribute("type") || "").toLowerCase() === "radio";
+        const cur = (el as { checked?: boolean }).checked === true;
+        if (isRadio) {
+          if (target && !cur) {
+            dispatchClickSequence(el);
+          }
+        } else if (cur !== target) {
+          dispatchClickSequence(el);
+        }
+        return { ok: true };
       }
 
       // Text input / textarea.
@@ -236,6 +364,52 @@ export function performInputAction(
       nativeSetValue(el, value);
       el.dispatchEvent(new Event("input", { bubbles: true }));
       el.dispatchEvent(new Event("change", { bubbles: true }));
+      return { ok: true };
+    }
+
+    // Maps a KeyboardEvent.key to its physical `code` and legacy `keyCode`, so
+    // synthetic key events carry the identity that React/editor handlers branch
+    // on (e.g. keyCode===13 for Enter). Without this they see keyCode 0 and no-op.
+    function keyInfo(key: string): { code: string; keyCode: number } {
+      const named: { [k: string]: [string, number] } = {
+        Enter: ["Enter", 13],
+        Tab: ["Tab", 9],
+        Escape: ["Escape", 27],
+        Esc: ["Escape", 27],
+        Backspace: ["Backspace", 8],
+        Delete: ["Delete", 46],
+        ArrowUp: ["ArrowUp", 38],
+        ArrowDown: ["ArrowDown", 40],
+        ArrowLeft: ["ArrowLeft", 37],
+        ArrowRight: ["ArrowRight", 39],
+        Home: ["Home", 36],
+        End: ["End", 35],
+        PageUp: ["PageUp", 33],
+        PageDown: ["PageDown", 34],
+        " ": ["Space", 32],
+        Spacebar: ["Space", 32],
+      };
+      if (named[key]) {
+        return { code: named[key][0], keyCode: named[key][1] };
+      }
+      if (key && key.length === 1) {
+        const c = key;
+        if (c >= "a" && c <= "z") {
+          return { code: "Key" + c.toUpperCase(), keyCode: c.toUpperCase().charCodeAt(0) };
+        }
+        if (c >= "A" && c <= "Z") {
+          return { code: "Key" + c, keyCode: c.charCodeAt(0) };
+        }
+        if (c >= "0" && c <= "9") {
+          return { code: "Digit" + c, keyCode: c.charCodeAt(0) };
+        }
+        return { code: "", keyCode: c.charCodeAt(0) };
+      }
+      return { code: "", keyCode: 0 };
+    }
+
+    function isPrintableKey(key: string): boolean {
+      return !!key && key.length === 1;
     }
 
     function keyEvt(
@@ -244,14 +418,110 @@ export function performInputAction(
       modifiers?: { ctrl?: boolean; shift?: boolean; alt?: boolean; meta?: boolean }
     ): KeyboardEvent {
       const mods = modifiers || {};
-      return new KeyboardEvent(type, {
+      const info = keyInfo(key);
+      const ev = new KeyboardEvent(type, {
         key: key,
+        code: info.code,
         bubbles: true,
+        cancelable: true,
+        composed: true,
+        view: win as Window,
         ctrlKey: !!mods.ctrl,
         shiftKey: !!mods.shift,
         altKey: !!mods.alt,
         metaKey: !!mods.meta,
       });
+      // Chrome ignores keyCode/which passed to the KeyboardEvent constructor, so
+      // define them after construction.
+      try {
+        Object.defineProperty(ev, "keyCode", {
+          get: function () {
+            return info.keyCode;
+          },
+        });
+        Object.defineProperty(ev, "which", {
+          get: function () {
+            return info.keyCode;
+          },
+        });
+      } catch (e) {
+        /* some engines disallow redefining — best effort */
+      }
+      return ev;
+    }
+
+    function contentEditableHost(el: Element): boolean {
+      if ((el as { isContentEditable?: boolean }).isContentEditable === true) {
+        return true;
+      }
+      const ce = el.getAttribute("contenteditable");
+      return ce === "" || ce === "true" || ce === "plaintext-only";
+    }
+
+    // Inserts text into a contenteditable host the way a real edit does: a
+    // cancelable beforeinput, then (if not prevented) the insertion, then input —
+    // both as InputEvent carrying inputType:"insertText" + data. Falls back to a
+    // plain Event with the same props where InputEvent is unavailable.
+    function insertIntoContentEditable(el: Element, text: string): void {
+      const IE = (win as { InputEvent?: typeof InputEvent } | null) &&
+        (win as { InputEvent?: typeof InputEvent }).InputEvent;
+      let beforeEv: Event;
+      if (typeof IE === "function") {
+        beforeEv = new (IE as typeof InputEvent)("beforeinput", {
+          inputType: "insertText",
+          data: text,
+          bubbles: true,
+          cancelable: true,
+          composed: true,
+        });
+      } else {
+        beforeEv = new Event("beforeinput", { bubbles: true, cancelable: true });
+        try {
+          Object.defineProperty(beforeEv, "inputType", { value: "insertText" });
+          Object.defineProperty(beforeEv, "data", { value: text });
+        } catch (e) {
+          /* best effort */
+        }
+      }
+      // A canceled beforeinput means the editor (Lexical/ProseMirror) is driving
+      // its own model: perform NEITHER the insertion NOR the input — firing input
+      // anyway would be a spurious signal. dispatchEvent returns false = canceled.
+      const notPrevented = el.dispatchEvent(beforeEv);
+      if (notPrevented) {
+        let inserted = false;
+        const doExec = (doc as {
+          execCommand?: (c: string, s?: boolean, v?: string) => boolean;
+        }).execCommand;
+        if (typeof doExec === "function") {
+          try {
+            inserted = doExec.call(doc, "insertText", false, text);
+          } catch (e) {
+            inserted = false;
+          }
+        }
+        if (!inserted) {
+          (el as { textContent?: string }).textContent =
+            (el.textContent || "") + text;
+        }
+        let inputEv: Event;
+        if (typeof IE === "function") {
+          inputEv = new (IE as typeof InputEvent)("input", {
+            inputType: "insertText",
+            data: text,
+            bubbles: true,
+            composed: true,
+          });
+        } else {
+          inputEv = new Event("input", { bubbles: true });
+          try {
+            Object.defineProperty(inputEv, "inputType", { value: "insertText" });
+            Object.defineProperty(inputEv, "data", { value: text });
+          } catch (e) {
+            /* best effort */
+          }
+        }
+        el.dispatchEvent(inputEv);
+      }
     }
 
     // --- dispatch on the requested action ---
@@ -311,15 +581,13 @@ export function performInputAction(
         return notFound(args.uid);
       }
       scrollTo(el);
-      el.dispatchEvent(mouseEvt("mouseover"));
-      el.dispatchEvent(
-        new MouseEvent("mouseenter", {
-          bubbles: false,
-          cancelable: true,
-          view: win as Window,
-        })
-      );
-      el.dispatchEvent(mouseEvt("mousemove"));
+      const hc = elementCenter(el);
+      el.dispatchEvent(mouseEvt("pointerover", { x: hc.x, y: hc.y }));
+      el.dispatchEvent(mouseEvt("pointerenter", { x: hc.x, y: hc.y }));
+      el.dispatchEvent(mouseEvt("pointermove", { x: hc.x, y: hc.y }));
+      el.dispatchEvent(mouseEvt("mouseover", { x: hc.x, y: hc.y }));
+      el.dispatchEvent(mouseEvt("mouseenter", { x: hc.x, y: hc.y }));
+      el.dispatchEvent(mouseEvt("mousemove", { x: hc.x, y: hc.y }));
       return { ok: true };
     }
 
@@ -328,8 +596,7 @@ export function performInputAction(
       if (!el) {
         return notFound(args.uid);
       }
-      fillElement(el, args.value);
-      return { ok: true };
+      return fillElement(el, args.value);
     }
 
     if (args.action === "fill-form") {
@@ -339,7 +606,10 @@ export function performInputAction(
         if (!el) {
           return notFound(field.uid);
         }
-        fillElement(el, field.value);
+        const r = fillElement(el, field.value);
+        if (!r.ok) {
+          return r;
+        }
       }
       return { ok: true };
     }
@@ -348,7 +618,8 @@ export function performInputAction(
       const active = doc.activeElement;
       const tag = active ? active.tagName : "";
       const isField = tag === "INPUT" || tag === "TEXTAREA";
-      if (!active || !isField) {
+      const isCE = !!active && contentEditableHost(active as Element);
+      if (!active || (!isField && !isCE)) {
         return {
           ok: false,
           error: "No focused element to type into — click or fill an input first.",
@@ -356,12 +627,21 @@ export function performInputAction(
       }
       const el = active as Element;
       const text = args.text;
-      const current = ((el as { value?: string }).value || "") as string;
-      nativeSetValue(el, current + text);
-      el.dispatchEvent(new Event("input", { bubbles: true }));
+      if (isField) {
+        const current = ((el as { value?: string }).value || "") as string;
+        nativeSetValue(el, current + text);
+        el.dispatchEvent(new Event("input", { bubbles: true }));
+      } else {
+        // contenteditable host — insert via a real beforeinput/input pair rather
+        // than rejecting it (the SPA rich-text-editor case).
+        insertIntoContentEditable(el, text);
+      }
       for (let i = 0; i < text.length; i++) {
         const ch = text.charAt(i);
         el.dispatchEvent(keyEvt("keydown", ch));
+        if (isPrintableKey(ch)) {
+          el.dispatchEvent(keyEvt("keypress", ch));
+        }
         el.dispatchEvent(keyEvt("keyup", ch));
       }
       if (args.submit) {
@@ -406,6 +686,12 @@ export function performInputAction(
         }
       }
       target.dispatchEvent(keyEvt("keydown", args.key, mods));
+      // A printable key with no ctrl/alt/meta held also produces a keypress (the
+      // legacy character-input signal some handlers still read). Modifier chords
+      // (Ctrl+A etc.) and named keys do not.
+      if (isPrintableKey(args.key) && !mods.ctrl && !mods.alt && !mods.meta) {
+        target.dispatchEvent(keyEvt("keypress", args.key, mods));
+      }
       target.dispatchEvent(keyEvt("keyup", args.key, mods));
       return { ok: true };
     }

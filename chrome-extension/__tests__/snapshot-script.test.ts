@@ -261,3 +261,150 @@ describe("buildSnapshot (chrome)", () => {
     });
   });
 });
+
+describe("B10: snapshot stamps a data-bcmcp-sig identity signature", () => {
+  afterEach(() => {
+    document.body.innerHTML = "";
+    document.head.innerHTML = "";
+  });
+
+  it("stamps both uid and sig, and re-stamps fresh ones on the next snapshot", () => {
+    document.body.innerHTML = `<button aria-label="Save">S</button>`;
+    const btn = document.querySelector("button")!;
+    buildSnapshot(document, { verbose: false, maxLength: 25000 });
+    expect(btn.getAttribute("data-bcmcp-uid")).toMatch(/^e\d+$/);
+    expect(btn.getAttribute("data-bcmcp-sig")).toBeTruthy();
+
+    buildSnapshot(document, { verbose: false, maxLength: 25000 });
+    expect(btn.getAttribute("data-bcmcp-uid")).toMatch(/^e\d+$/);
+    expect(btn.getAttribute("data-bcmcp-sig")).toBeTruthy();
+  });
+
+  it("produces a different sig once the element identity (aria-label) changes", () => {
+    document.body.innerHTML = `<button aria-label="Save">S</button>`;
+    const btn = document.querySelector("button")!;
+    buildSnapshot(document, { verbose: false, maxLength: 25000 });
+    const sigA = btn.getAttribute("data-bcmcp-sig");
+    btn.setAttribute("aria-label", "Delete");
+    buildSnapshot(document, { verbose: false, maxLength: 25000 });
+    const sigB = btn.getAttribute("data-bcmcp-sig");
+    expect(sigA).toBeTruthy();
+    expect(sigB).toBeTruthy();
+    expect(sigA).not.toBe(sigB);
+  });
+
+  it("also stamps a sig on pointer-pass (cursor:pointer div) elements", () => {
+    // Force the pointer pass to see cursor:pointer via a getComputedStyle stub.
+    document.body.innerHTML = `<div>Card</div>`;
+    const div = document.querySelector("div")!;
+    jest
+      .spyOn(window, "getComputedStyle")
+      .mockImplementation(
+        () => ({ display: "block", visibility: "visible", opacity: "", cursor: "pointer" }) as unknown as CSSStyleDeclaration
+      );
+    buildSnapshot(document, { verbose: false, maxLength: 25000 });
+    jest.restoreAllMocks();
+    expect(div.getAttribute("data-bcmcp-uid")).toMatch(/^e\d+$/);
+    expect(div.getAttribute("data-bcmcp-sig")).toBeTruthy();
+  });
+});
+
+describe("B11: visibility filter uses computed style (runtime-guarded)", () => {
+  afterEach(() => {
+    jest.restoreAllMocks();
+    document.body.innerHTML = "";
+    document.head.innerHTML = "";
+  });
+
+  it("excludes an element whose computed display is none (CSS class), keeps siblings", () => {
+    document.body.innerHTML = `<button class="ghost">Ghost</button><button>Visible</button>`;
+    const ghost = document.querySelector(".ghost")!;
+    jest.spyOn(window, "getComputedStyle").mockImplementation((el: Element) => {
+      const base = { visibility: "visible", opacity: "", cursor: "" };
+      if (el === ghost) {
+        return { ...base, display: "none" } as unknown as CSSStyleDeclaration;
+      }
+      return { ...base, display: "block" } as unknown as CSSStyleDeclaration;
+    });
+
+    const { tree } = buildSnapshot(document, {
+      verbose: false,
+      maxLength: 25000,
+      includePointer: false,
+    });
+
+    expect(tree).toContain('button "Visible"');
+    expect(tree).not.toContain("Ghost");
+  });
+
+  it("excludes visibility:hidden but KEEPS opacity:0 (still in a11y tree / interactive)", () => {
+    document.body.innerHTML = `<button class="invis">Invis</button><button class="faded">Faded</button><button>Shown</button>`;
+    const invis = document.querySelector(".invis")!;
+    const faded = document.querySelector(".faded")!;
+    jest.spyOn(window, "getComputedStyle").mockImplementation((el: Element) => {
+      const base = { display: "block", visibility: "visible", opacity: "", cursor: "" };
+      if (el === invis) return { ...base, visibility: "hidden" } as unknown as CSSStyleDeclaration;
+      if (el === faded) return { ...base, opacity: "0" } as unknown as CSSStyleDeclaration;
+      return base as unknown as CSSStyleDeclaration;
+    });
+
+    const { tree } = buildSnapshot(document, {
+      verbose: false,
+      maxLength: 25000,
+      includePointer: false,
+    });
+
+    expect(tree).toContain('button "Shown"');
+    expect(tree).not.toContain("Invis");
+    // opacity:0 elements stay reachable (focusable/clickable) and remain in the
+    // a11y tree, so they are NOT hidden — they must still be enumerated.
+    expect(tree).toContain('button "Faded"');
+  });
+
+  it("excludes an element whose ANCESTOR has computed display:none", () => {
+    document.body.innerHTML = `<div class="wrap"><button>Inside Hidden</button></div><button>Outside</button>`;
+    const wrap = document.querySelector(".wrap")!;
+    jest.spyOn(window, "getComputedStyle").mockImplementation((el: Element) => {
+      const base = { display: "block", visibility: "visible", opacity: "", cursor: "" };
+      if (el === wrap) return { ...base, display: "none" } as unknown as CSSStyleDeclaration;
+      return base as unknown as CSSStyleDeclaration;
+    });
+
+    const { tree } = buildSnapshot(document, {
+      verbose: false,
+      maxLength: 25000,
+      includePointer: false,
+    });
+
+    expect(tree).toContain('button "Outside"');
+    expect(tree).not.toContain("Inside Hidden");
+  });
+
+  it("falls back to inline-only detection when getComputedStyle is unavailable (jsdom path)", () => {
+    document.body.innerHTML = `<button style="display:none">Inline Hidden</button><button>Shown</button>`;
+    const orig = window.getComputedStyle;
+    (window as unknown as { getComputedStyle?: unknown }).getComputedStyle = undefined;
+    try {
+      const { tree } = buildSnapshot(document, {
+        verbose: false,
+        maxLength: 25000,
+        includePointer: false,
+      });
+      expect(tree).not.toContain("Inline Hidden");
+      expect(tree).toContain('button "Shown"');
+    } finally {
+      (window as unknown as { getComputedStyle?: unknown }).getComputedStyle = orig;
+    }
+  });
+
+  it("does not regress: normal elements stay visible under real jsdom getComputedStyle", () => {
+    document.body.innerHTML = `<button>Alpha</button><a href="/x">Beta</a>`;
+    const { tree } = buildSnapshot(document, {
+      verbose: false,
+      maxLength: 25000,
+      includePointer: false,
+    });
+    expect(tree).toContain('button "Alpha"');
+    expect(tree).toContain('link "Beta"');
+  });
+});

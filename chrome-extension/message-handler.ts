@@ -42,7 +42,14 @@ import {
 } from "./network-capture";
 import { Point, mousePath, typingPlan } from "./humanize/motion-model";
 import { performPointAction, type PointElementDescriptor } from "./injected/point-action-script";
-import { cdpInputClick, cdpInputType, cdpInputHover, cdpInputScroll } from "./cdp-input";
+import {
+  cdpInputClick,
+  cdpInputType,
+  cdpInputHover,
+  cdpInputScroll,
+  cdpInputFill,
+  cdpInputKey,
+} from "./cdp-input";
 import { cdpEval } from "./cdp-eval";
 import { raceInputAgainstNavigation } from "./nav-race";
 import { waitForTabReady } from "./nav-ready";
@@ -357,31 +364,51 @@ export class MessageHandler {
         );
         break;
       case "click-element":
-        await this.runInputAction(req.correlationId, req.tabId, {
-          action: "click",
-          uid: req.uid,
-          doubleClick: req.doubleClick,
-          failIfIntercepted: req.failIfIntercepted,
-        });
+        await this.runInputAction(
+          req.correlationId,
+          req.tabId,
+          {
+            action: "click",
+            uid: req.uid,
+            doubleClick: req.doubleClick,
+            failIfIntercepted: req.failIfIntercepted,
+          },
+          req.engine
+        );
         break;
       case "hover-element":
-        await this.runInputAction(req.correlationId, req.tabId, {
-          action: "hover",
-          uid: req.uid,
-        });
+        await this.runInputAction(
+          req.correlationId,
+          req.tabId,
+          {
+            action: "hover",
+            uid: req.uid,
+          },
+          req.engine
+        );
         break;
       case "fill-element":
-        await this.runInputAction(req.correlationId, req.tabId, {
-          action: "fill",
-          uid: req.uid,
-          value: req.value,
-        });
+        await this.runInputAction(
+          req.correlationId,
+          req.tabId,
+          {
+            action: "fill",
+            uid: req.uid,
+            value: req.value,
+          },
+          req.engine
+        );
         break;
       case "fill-form":
-        await this.runInputAction(req.correlationId, req.tabId, {
-          action: "fill-form",
-          fields: req.fields,
-        });
+        await this.runInputAction(
+          req.correlationId,
+          req.tabId,
+          {
+            action: "fill-form",
+            fields: req.fields,
+          },
+          req.engine
+        );
         break;
       case "type-text":
         await this.runInputAction(req.correlationId, req.tabId, {
@@ -391,11 +418,16 @@ export class MessageHandler {
         });
         break;
       case "press-key":
-        await this.runInputAction(req.correlationId, req.tabId, {
-          action: "press-key",
-          key: req.key,
-          modifiers: req.modifiers,
-        });
+        await this.runInputAction(
+          req.correlationId,
+          req.tabId,
+          {
+            action: "press-key",
+            key: req.key,
+            modifiers: req.modifiers,
+          },
+          req.engine
+        );
         break;
       case "drag-element":
         await this.runInputAction(req.correlationId, req.tabId, {
@@ -592,9 +624,12 @@ export class MessageHandler {
   }
 
   private async openUrl(correlationId: string, url: string): Promise<void> {
-    if (!url.startsWith("https://")) {
+    // Same policy as navigate-tab (isNavigableUrl): https to any host, http only
+    // for loopback. Previously https-only, which rejected http://localhost:PORT
+    // dev/test servers that navigate-tab already allowed.
+    if (!isNavigableUrl(url)) {
       console.error("Invalid URL:", url);
-      throw new Error("Invalid URL");
+      throw new Error("Invalid URL (must be https, or http for localhost)");
     }
 
     if (await isDomainInDenyList(url)) {
@@ -746,13 +781,32 @@ export class MessageHandler {
   private async runInputAction(
     correlationId: string,
     tabId: number,
-    args: InputActionArgs
+    args: InputActionArgs,
+    engine?: "synthetic" | "cdp"
   ): Promise<void> {
     const tab = await browser.tabs.get(tabId);
     if (tab.url && (await isDomainInDenyList(tab.url))) {
       throw new Error(`Domain in tab URL is in the deny list`);
     }
     await this.checkForUrlPermission(tab.url);
+
+    // engine:"cdp" (Chrome/Edge only): trusted input via chrome.debugger.
+    // Resolve the uid(s) to viewport-center coords and dispatch Input.* from the
+    // background. Branches BEFORE the synthetic/humanize mode dispatch so it is
+    // engine, not realism-mode, that selects the trusted path. The CDP path
+    // fires from the background (survives navigation) so it is NOT wrapped in
+    // raceInputAgainstNavigation (mirrors the point CDP branch). A debugger-
+    // attach failure is a reported ok:false, not a thrown tool-error.
+    if (engine === "cdp") {
+      const result = await this.dispatchCdpInputAction(tabId, args);
+      await this.client.sendResourceToServer({
+        resource: "action-result",
+        correlationId,
+        ok: result.ok,
+        ...(result.error !== undefined ? { error: result.error } : {}),
+      });
+      return;
+    }
 
     const mode = await getInputRealismMode();
     // Build the ONE dispatch promise for the active mode, then race it once
@@ -777,8 +831,12 @@ export class MessageHandler {
       };
     }>;
     if (mode === "off") {
-      // Covert content-script dispatch.
-      dispatchPromise = sendMessageToTab(tabId, {
+      // Covert content-script dispatch. RAW sender: a legitimate ok:false
+      // (stale-uid notFound, "no focused field", or an intercepted overlay with
+      // its structured `intercepted` descriptor) must return as an
+      // action-result{ok:false,...}, not a thrown tool-error that drops the
+      // structured fields. Firefox already does this; this brings Chrome to parity.
+      dispatchPromise = sendMessageToTabRaw(tabId, {
         type: "performInputAction",
         args,
       });
@@ -814,6 +872,126 @@ export class MessageHandler {
         ? { intercepted: result.intercepted }
         : {}),
     });
+  }
+
+  // Resolve a snapshot uid to its VIEWPORT-CSS-px center via the isolated-world
+  // readElementRect (which also scrolls it into view). readElementRect returns
+  // getBoundingClientRect-style coords {x:left, y:top, width, height} — exactly
+  // the space CDP Input.* expects (no DPR multiply). A missing uid (null) or an
+  // unreachable content script is a legitimate ok:false ("take a fresh
+  // snapshot"), never a thrown tool-error.
+  private async resolveUidCenter(
+    tabId: number,
+    uid: string
+  ): Promise<
+    | { ok: true; x: number; y: number }
+    | { ok: false; error: string }
+  > {
+    let rect:
+      | { x: number; y: number; width: number; height: number }
+      | null
+      | undefined;
+    try {
+      rect = await sendMessageToTab(tabId, { type: "readElementRect", uid });
+    } catch (e) {
+      rect = null;
+    }
+    if (!rect) {
+      return {
+        ok: false,
+        error: `Element uid '${uid}' not found — take a fresh snapshot (uids are reassigned each snapshot).`,
+      };
+    }
+    return {
+      ok: true,
+      x: rect.x + rect.width / 2,
+      y: rect.y + rect.height / 2,
+    };
+  }
+
+  // engine:"cdp" uid-tool executor (Chrome/Edge only). Resolves the uid(s) to
+  // viewport centers and dispatches TRUSTED Input.* via chrome.debugger — the
+  // uid-tool analogue of dispatchCdpPointAction. press-key carries no uid and
+  // dispatches to the focused element. fill-form resolves + fills each field in
+  // order, stopping at the first that cannot be resolved (parity with the
+  // synthetic fill-form). A debugger-attach failure is a reported ok:false.
+  private async dispatchCdpInputAction(
+    tabId: number,
+    args: InputActionArgs
+  ): Promise<{ ok: boolean; error?: string }> {
+    const attachError = (e: unknown): string =>
+      "CDP input dispatch failed — could not attach the debugger (is DevTools open on this tab, or another debugger already attached?): " +
+      String((e as { message?: unknown })?.message ?? e);
+
+    // press-key: no uid — dispatch a trusted key event to the focused element.
+    if (args.action === "press-key") {
+      try {
+        await cdpInputKey(tabId, args.key, args.modifiers);
+        return { ok: true };
+      } catch (e) {
+        return { ok: false, error: attachError(e) };
+      }
+    }
+
+    // fill-form: resolve + fill each field in order; stop on the first miss.
+    if (args.action === "fill-form") {
+      for (const field of args.fields) {
+        const center = await this.resolveUidCenter(tabId, field.uid);
+        if (!center.ok) {
+          return { ok: false, error: center.error };
+        }
+        try {
+          await cdpInputFill(tabId, center.x, center.y, field.value);
+        } catch (e) {
+          return { ok: false, error: attachError(e) };
+        }
+      }
+      return { ok: true };
+    }
+
+    // click / hover / fill: single uid → resolve its center, then dispatch.
+    if (
+      args.action === "click" ||
+      args.action === "hover" ||
+      args.action === "fill"
+    ) {
+      const center = await this.resolveUidCenter(tabId, args.uid);
+      if (!center.ok) {
+        return { ok: false, error: center.error };
+      }
+      try {
+        switch (args.action) {
+          case "click":
+            await cdpInputClick(
+              tabId,
+              center.x,
+              center.y,
+              "left",
+              !!args.doubleClick
+            );
+            break;
+          case "hover":
+            await cdpInputHover(tabId, center.x, center.y);
+            break;
+          case "fill":
+            await cdpInputFill(tabId, center.x, center.y, args.value);
+            break;
+        }
+      } catch (e) {
+        return { ok: false, error: attachError(e) };
+      }
+      return { ok: true };
+    }
+
+    // drag / type and anything else are not (yet) supported by the CDP engine —
+    // those tools stay on the synthetic path (drag-element / type-text never
+    // pass engine:"cdp"). Defensive: report rather than silently no-op.
+    return {
+      ok: false,
+      error: `The CDP (trusted-input) engine does not support "${
+        (args as { action: string }).action
+      }" — use the default synthetic engine.`,
+    };
   }
 
   // Coordinate (synthetic) executor. Forwards the {x,y} action to the ISOLATED
@@ -964,6 +1142,16 @@ export class MessageHandler {
           );
           break;
         case "type-at":
+          // C16: the CDP path must guard typability like the synthetic path
+          // does. The describe-at descriptor captured in step 1 carries the
+          // point-action-script `editable` flag; if the element under the point
+          // is explicitly non-editable, don't insertText into nothing.
+          if (desc && desc.element && desc.element.editable === false) {
+            return {
+              ok: false,
+              error: "Point is not an editable field (CDP type).",
+            };
+          }
           await cdpInputType(tabId, args.x, args.y, args.text, !!args.submit);
           break;
         case "hover-at":
@@ -1048,7 +1236,11 @@ export class MessageHandler {
 
   private async runHumanInputAction(tabId: number, args: InputActionArgs): Promise<any> {
     const cursor = this.cursorByTab.get(tabId) || { x: 100, y: 100 };
-    const result = await sendMessageToTab(tabId, {
+    // RAW sender: a covert-input ok:false (stale uid, intercepted overlay, no
+    // focused field) is a legitimate action-result, not a thrown tool-error —
+    // preserves the structured {ok:false, intercepted} the server forwards
+    // (mirrors Firefox, which never had the throwing wrapper on this path).
+    const result = await sendMessageToTabRaw(tabId, {
       type: "runHumanInput",
       args,
       cursor,
@@ -1385,9 +1577,11 @@ export class MessageHandler {
     };
   }
 
-  // CDP viewport capture via the refcounted debugger ("input" purpose, matching
-  // cdp-input.ts so it coexists with response-body capture). Returns raw base64
-  // (Page.captureScreenshot already returns bare base64, no data: prefix).
+  // CDP viewport capture via the refcounted debugger. Uses its OWN "screenshot"
+  // purpose (NOT "input") so a concurrent engine:"cdp" input action can't detach
+  // the debugger mid-capture — and it still coexists with response-body capture
+  // (the refcount only fully detaches when the last purpose releases). Returns
+  // raw base64 (Page.captureScreenshot already returns bare base64, no prefix).
   private async captureViewportCdp(
     tabId: number,
     format: ImageFormat
@@ -1398,7 +1592,7 @@ export class MessageHandler {
         "image readback failed and the CDP screenshot fallback is unavailable (chrome.debugger not present)."
       );
     }
-    await attachDebugger(tabId, "input");
+    await attachDebugger(tabId, "screenshot");
     try {
       const res = (await dbg.sendCommand({ tabId }, "Page.captureScreenshot", {
         format,
@@ -1409,7 +1603,7 @@ export class MessageHandler {
       }
       return res.data;
     } finally {
-      await detachDebugger(tabId, "input");
+      await detachDebugger(tabId, "screenshot");
     }
   }
 

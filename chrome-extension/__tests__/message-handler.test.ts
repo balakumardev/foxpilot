@@ -645,8 +645,11 @@ describe("MessageHandler (chrome) — foreground-tab preservation", () => {
       const mouse = (dbg.sendCommand as jest.Mock).mock.calls.filter(
         (c: any[]) => c[1] === "Input.dispatchMouseEvent"
       );
-      expect(mouse[0][2]).toMatchObject({ type: "mousePressed", x: 100, y: 200 });
-      expect(mouse[1][2]).toMatchObject({ type: "mouseReleased", x: 100, y: 200 });
+      // C17 prepends a mouseMoved, so match press/release by type (not index).
+      const pressed = mouse.find((c: any[]) => c[2].type === "mousePressed");
+      const released = mouse.find((c: any[]) => c[2].type === "mouseReleased");
+      expect(pressed[2]).toMatchObject({ type: "mousePressed", x: 100, y: 200 });
+      expect(released[2]).toMatchObject({ type: "mouseReleased", x: 100, y: 200 });
       // Descriptor read is a read-only describe-at in the isolated world.
       expect(browser.tabs.sendMessage).toHaveBeenCalledWith(8, {
         type: "performPointAction",
@@ -751,6 +754,17 @@ describe("MessageHandler (chrome) — foreground-tab preservation", () => {
     });
 
     it("type-at engine:cdp validates the point first, then focus-clicks + inserts text, returning the pre-captured descriptor", async () => {
+      // C16: the point must be editable for the CDP type to proceed — describe-at
+      // reports an editable field here.
+      (browser.tabs.sendMessage as jest.Mock).mockResolvedValue({
+        ok: true,
+        element: {
+          tag: "textarea",
+          classes: [],
+          rect: { x: 0, y: 0, w: 0, h: 0 },
+          editable: true,
+        },
+      });
       await messageHandler.handleDecodedMessage({
         cmd: "type-at",
         tabId: 8,
@@ -779,6 +793,31 @@ describe("MessageHandler (chrome) — foreground-tab preservation", () => {
         (c: any[]) => c[0].correlationId === "cdpt"
       );
       expect(call[0].ok).toBe(true);
+    });
+
+    it("type-at engine:cdp on a NON-editable point reports ok:false and never inserts text (C16)", async () => {
+      // The default beforeEach describe-at mock reports editable:false, so the
+      // CDP type must refuse rather than insertText into a non-field.
+      await messageHandler.handleDecodedMessage({
+        cmd: "type-at",
+        tabId: 8,
+        x: 40,
+        y: 50,
+        text: "nope",
+        engine: "cdp",
+        correlationId: "cdpne",
+      } as ServerMessageRequest);
+
+      expect(
+        (dbg.sendCommand as jest.Mock).mock.calls.some(
+          (c: any[]) => c[1] === "Input.insertText"
+        )
+      ).toBe(false);
+      const call = (transport.sendResourceToServer as jest.Mock).mock.calls.find(
+        (c: any[]) => c[0].correlationId === "cdpne"
+      );
+      expect(call[0].ok).toBe(false);
+      expect(call[0].error).toMatch(/not an editable field/i);
     });
 
     it("hover-at engine:cdp validates the point first, then dispatches a trusted mouseMoved, returning the pre-captured descriptor", async () => {
@@ -815,6 +854,225 @@ describe("MessageHandler (chrome) — foreground-tab preservation", () => {
         (c: any[]) => c[1] === "Input.dispatchMouseEvent"
       );
       expect(wheel[2]).toMatchObject({ type: "mouseWheel", x: 10, y: 20, deltaX: 0, deltaY: 250 });
+    });
+  });
+
+  describe("uid tools — CDP engine (Wave 2 C15)", () => {
+    // inputRealismMode:"off" so the SYNTHETIC (non-CDP) path uses the simple
+    // performInputAction raw sender — makes "routes to CDP not synthetic"
+    // assertions unambiguous.
+    const automationConfig = {
+      ...baseConfig,
+      automationMode: true,
+      inputRealismMode: "off",
+    };
+    let dbg: any;
+
+    beforeEach(() => {
+      (browser.storage.local.get as jest.Mock).mockResolvedValue({
+        config: automationConfig,
+      });
+      (browser.tabs.get as jest.Mock).mockResolvedValue({
+        id: 8,
+        url: "https://example.com",
+      });
+      (browser.permissions.contains as jest.Mock).mockResolvedValue(true);
+      dbg = (chrome as any).debugger;
+      dbg.attach.mockReset().mockResolvedValue(undefined);
+      dbg.detach.mockReset().mockResolvedValue(undefined);
+      dbg.sendCommand.mockReset().mockResolvedValue({});
+      // readElementRect returns getBoundingClientRect-style viewport coords;
+      // any synthetic dispatch (performInputAction) resolves ok:true.
+      (browser.tabs.sendMessage as jest.Mock).mockImplementation(
+        (_id: number, msg: any) => {
+          if (msg && msg.type === "readElementRect") {
+            // center = (10 + 100/2, 20 + 40/2) = (60, 40)
+            return Promise.resolve({ x: 10, y: 20, width: 100, height: 40, dpr: 2 });
+          }
+          return Promise.resolve({ ok: true });
+        }
+      );
+    });
+
+    afterEach(async () => {
+      const { forceDetachDebugger } = require("../network-capture");
+      await forceDetachDebugger(8);
+    });
+
+    it("click-element engine:cdp resolves the uid center and dispatches a TRUSTED click, NOT the synthetic path", async () => {
+      await messageHandler.handleDecodedMessage({
+        cmd: "click-element",
+        tabId: 8,
+        uid: "e5",
+        engine: "cdp",
+        correlationId: "uidc",
+      } as ServerMessageRequest);
+
+      // Resolved the uid via the isolated-world readElementRect...
+      expect(browser.tabs.sendMessage).toHaveBeenCalledWith(8, {
+        type: "readElementRect",
+        uid: "e5",
+      });
+      // ...dispatched a trusted click at the computed center (60, 40)...
+      expect(dbg.attach).toHaveBeenCalledWith({ tabId: 8 }, "1.3");
+      const pressed = (dbg.sendCommand as jest.Mock).mock.calls.find(
+        (c: any[]) => c[1] === "Input.dispatchMouseEvent" && c[2].type === "mousePressed"
+      );
+      expect(pressed[2]).toMatchObject({ type: "mousePressed", x: 60, y: 40, button: "left" });
+      // ...and NEVER touched the synthetic content-script input path.
+      const synthetic = (browser.tabs.sendMessage as jest.Mock).mock.calls.filter(
+        (c: any[]) =>
+          c[1] &&
+          (c[1].type === "performInputAction" || c[1].type === "runHumanInput")
+      );
+      expect(synthetic).toHaveLength(0);
+      expect(transport.sendResourceToServer).toHaveBeenCalledWith({
+        resource: "action-result",
+        correlationId: "uidc",
+        ok: true,
+      });
+    });
+
+    it("a resolve MISS (stale uid) reports ok:false and never attaches the debugger", async () => {
+      (browser.tabs.sendMessage as jest.Mock).mockImplementation(
+        (_id: number, msg: any) => {
+          if (msg && msg.type === "readElementRect") return Promise.resolve(null);
+          return Promise.resolve({ ok: true });
+        }
+      );
+      await messageHandler.handleDecodedMessage({
+        cmd: "click-element",
+        tabId: 8,
+        uid: "gone",
+        engine: "cdp",
+        correlationId: "uidmiss",
+      } as ServerMessageRequest);
+
+      expect(dbg.attach).not.toHaveBeenCalled();
+      const call = (transport.sendResourceToServer as jest.Mock).mock.calls.find(
+        (c: any[]) => c[0].correlationId === "uidmiss"
+      );
+      expect(call[0].ok).toBe(false);
+      expect(call[0].error).toMatch(/take a fresh snapshot/i);
+    });
+
+    it("a debugger-attach failure is reported as ok:false (not a thrown tool-error)", async () => {
+      dbg.attach.mockRejectedValue(new Error("Another debugger is already attached"));
+      await messageHandler.handleDecodedMessage({
+        cmd: "click-element",
+        tabId: 8,
+        uid: "e5",
+        engine: "cdp",
+        correlationId: "uidatt",
+      } as ServerMessageRequest);
+
+      const call = (transport.sendResourceToServer as jest.Mock).mock.calls.find(
+        (c: any[]) => c[0].correlationId === "uidatt"
+      );
+      expect(call[0].ok).toBe(false);
+      expect(call[0].error).toMatch(/CDP input dispatch failed/);
+    });
+
+    it("fill-element engine:cdp select-alls then inserts the value at the uid center", async () => {
+      await messageHandler.handleDecodedMessage({
+        cmd: "fill-element",
+        tabId: 8,
+        uid: "e7",
+        value: "hello world",
+        engine: "cdp",
+        correlationId: "uidf",
+      } as ServerMessageRequest);
+
+      const calls = (dbg.sendCommand as jest.Mock).mock.calls;
+      // select-all (KeyA) precedes the insertText.
+      const selectAll = calls.find(
+        (c: any[]) => c[1] === "Input.dispatchKeyEvent" && c[2].code === "KeyA" && c[2].type === "keyDown"
+      );
+      expect(selectAll[2]).toMatchObject({ code: "KeyA", windowsVirtualKeyCode: 65 });
+      expect(calls).toEqual(
+        expect.arrayContaining([[{ tabId: 8 }, "Input.insertText", { text: "hello world" }]])
+      );
+      const call = (transport.sendResourceToServer as jest.Mock).mock.calls.find(
+        (c: any[]) => c[0].correlationId === "uidf"
+      );
+      expect(call[0].ok).toBe(true);
+    });
+
+    it("press-key engine:cdp dispatches a TRUSTED key event to the focused element (no uid resolve)", async () => {
+      await messageHandler.handleDecodedMessage({
+        cmd: "press-key",
+        tabId: 8,
+        key: "Enter",
+        engine: "cdp",
+        correlationId: "uidk",
+      } as ServerMessageRequest);
+
+      // press-key has no uid, so readElementRect is never queried.
+      expect(browser.tabs.sendMessage).not.toHaveBeenCalledWith(8, {
+        type: "readElementRect",
+        uid: expect.anything(),
+      });
+      const keys = (dbg.sendCommand as jest.Mock).mock.calls.filter(
+        (c: any[]) => c[1] === "Input.dispatchKeyEvent"
+      );
+      expect(keys).toHaveLength(2); // keyDown + keyUp
+      expect(keys[0][2]).toMatchObject({ type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
+      const call = (transport.sendResourceToServer as jest.Mock).mock.calls.find(
+        (c: any[]) => c[0].correlationId === "uidk"
+      );
+      expect(call[0].ok).toBe(true);
+    });
+
+    it("fill-form engine:cdp resolves + fills each field in order", async () => {
+      await messageHandler.handleDecodedMessage({
+        cmd: "fill-form",
+        tabId: 8,
+        fields: [
+          { uid: "e1", value: "alice" },
+          { uid: "e2", value: "secret" },
+        ],
+        engine: "cdp",
+        correlationId: "uidff",
+      } as ServerMessageRequest);
+
+      expect(browser.tabs.sendMessage).toHaveBeenCalledWith(8, { type: "readElementRect", uid: "e1" });
+      expect(browser.tabs.sendMessage).toHaveBeenCalledWith(8, { type: "readElementRect", uid: "e2" });
+      const inserts = (dbg.sendCommand as jest.Mock).mock.calls.filter(
+        (c: any[]) => c[1] === "Input.insertText"
+      );
+      expect(inserts.map((c: any[]) => c[2].text)).toEqual(["alice", "secret"]);
+      const call = (transport.sendResourceToServer as jest.Mock).mock.calls.find(
+        (c: any[]) => c[0].correlationId === "uidff"
+      );
+      expect(call[0].ok).toBe(true);
+    });
+
+    it("hover-element engine:cdp dispatches a TRUSTED mouseMoved at the uid center", async () => {
+      await messageHandler.handleDecodedMessage({
+        cmd: "hover-element",
+        tabId: 8,
+        uid: "e9",
+        engine: "cdp",
+        correlationId: "uidh",
+      } as ServerMessageRequest);
+      const move = (dbg.sendCommand as jest.Mock).mock.calls.find(
+        (c: any[]) => c[1] === "Input.dispatchMouseEvent" && c[2].type === "mouseMoved"
+      );
+      expect(move[2]).toMatchObject({ type: "mouseMoved", x: 60, y: 40 });
+    });
+
+    it("synthetic (default engine) still routes to the content-script input path, never CDP", async () => {
+      await messageHandler.handleDecodedMessage({
+        cmd: "click-element",
+        tabId: 8,
+        uid: "e5",
+        correlationId: "uidsyn",
+      } as ServerMessageRequest);
+      expect(dbg.attach).not.toHaveBeenCalled();
+      expect(browser.tabs.sendMessage).toHaveBeenCalledWith(8, {
+        type: "performInputAction",
+        args: { action: "click", uid: "e5", doubleClick: undefined, failIfIntercepted: undefined },
+      });
     });
   });
 

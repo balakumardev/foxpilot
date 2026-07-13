@@ -45,9 +45,48 @@ export function buildSnapshot(
     typeof options.maxInteractive === "number" ? options.maxInteractive : 500;
 
   const UID_ATTR = "data-bcmcp-uid";
+  const SIG_ATTR = "data-bcmcp-sig";
   const NAME_MAX = 120;
 
   // --- inner helpers (must stay inside this function body) ---
+
+  // Short signature of an element's identity (tag|role|id|name). Stamped
+  // alongside the uid so a resolve() at action time can detect a framework node
+  // recycled under the same uid and force a fresh snapshot instead of acting on
+  // the wrong element. Same algorithm as the copy the input executors carry.
+  function bcmcpSig(el: any): string {
+    var role = el.getAttribute && (el.getAttribute("role") || "");
+    var name =
+      (el.getAttribute &&
+        (el.getAttribute("aria-label") ||
+          el.getAttribute("name") ||
+          el.getAttribute("data-testid") ||
+          "")) ||
+      "";
+    var t = (el.tagName || "") + "|" + role + "|" + (el.id || "") + "|" + name;
+    var h = 0;
+    for (var i = 0; i < t.length; i++) {
+      h = ((h << 5) - h + t.charCodeAt(i)) | 0;
+    }
+    return (h >>> 0).toString(36);
+  }
+
+  // Is a real layout engine active? In jsdom every getBoundingClientRect() is
+  // 0x0, so the pure-geometry visibility check below must be disabled there or it
+  // would hide every element. documentElement has a non-zero height only under a
+  // real layout engine.
+  const layoutActive = (function (): boolean {
+    try {
+      const de = doc.documentElement as Element | null;
+      if (de && typeof de.getBoundingClientRect === "function") {
+        const r = de.getBoundingClientRect();
+        return !!(r && r.height > 0);
+      }
+    } catch (e) {
+      /* no layout — treat as inactive */
+    }
+    return false;
+  })();
 
   function collapseWhitespace(s: string): string {
     return s.replace(/\s+/g, " ").trim();
@@ -83,6 +122,59 @@ export function buildSnapshot(
     }
     if (/visibility\s*:\s*hidden/.test(style)) {
       return true;
+    }
+    // Computed-style + geometry, guarded for jsdom (no layout engine). The jsdom
+    // defaults (display:block, visibility:visible, opacity:"") never match the
+    // checks below, and the pure-geometry check is additionally gated on
+    // `layoutActive` (false in jsdom, where every rect is 0x0). Mirrors the
+    // pointer pass's getComputedStyle guard, so the inline-only behaviour is
+    // preserved wherever getComputedStyle is absent.
+    const dv = doc.defaultView;
+    if (dv && typeof dv.getComputedStyle === "function") {
+      let cs: CSSStyleDeclaration | null = null;
+      try {
+        cs = dv.getComputedStyle(el);
+      } catch (e) {
+        cs = null;
+      }
+      if (cs) {
+        if (cs.display === "none") {
+          return true;
+        }
+        if (cs.visibility === "hidden" || cs.visibility === "collapse") {
+          return true;
+        }
+        // NOTE: opacity:0 is deliberately NOT treated as hidden — unlike
+        // display:none / visibility:hidden, opacity:0 elements remain in the a11y
+        // tree and stay focusable/clickable (visually-hidden-but-interactive
+        // overlays, custom file pickers, checkbox-hack labels). Hiding them would
+        // drop reachable controls.
+      }
+      if (layoutActive) {
+        try {
+          const r = el.getBoundingClientRect();
+          if (r && r.width === 0 && r.height === 0) {
+            return true;
+          }
+        } catch (e) {
+          /* never throw on geometry */
+        }
+      }
+      // A display:none ancestor hides the element even when its own computed
+      // display is not none.
+      let p: Element | null = el.parentElement;
+      while (p) {
+        let pcs: CSSStyleDeclaration | null = null;
+        try {
+          pcs = dv.getComputedStyle(p);
+        } catch (e) {
+          pcs = null;
+        }
+        if (pcs && pcs.display === "none") {
+          return true;
+        }
+        p = p.parentElement;
+      }
     }
     return false;
   }
@@ -537,10 +629,11 @@ export function buildSnapshot(
     return "";
   }
 
-  // --- 1. clear stale uids from prior runs ---
+  // --- 1. clear stale uids (and their signatures) from prior runs ---
   const stale = doc.querySelectorAll("[" + UID_ATTR + "]");
   for (let i = 0; i < stale.length; i++) {
     stale[i].removeAttribute(UID_ATTR);
+    stale[i].removeAttribute(SIG_ATTR);
   }
 
   // --- 2. select candidate elements ---
@@ -674,6 +767,7 @@ export function buildSnapshot(
     uidCounter += 1;
     const uid = "e" + uidCounter;
     el.setAttribute(UID_ATTR, uid);
+    el.setAttribute(SIG_ATTR, bcmcpSig(el));
 
     lines.push(
       makeRow(el, role, name, getCurrentValue(el, role), getSection(el), flags, uid)
@@ -764,6 +858,7 @@ export function buildSnapshot(
       uidCounter += 1;
       const uid = "e" + uidCounter;
       el.setAttribute(UID_ATTR, uid);
+      el.setAttribute(SIG_ATTR, bcmcpSig(el));
       added += 1;
 
       lines.push(

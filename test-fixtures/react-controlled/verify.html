@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>React fixture + real injected covert code</title>
+    <style>
+      * { box-sizing: border-box; }
+      body { margin: 0; font-family: system-ui, sans-serif; padding: 16px; max-width: 820px; }
+      h1 { font-size: 18px; }
+      section { border: 1px solid #ccc; border-radius: 8px; padding: 12px; margin: 12px 0; }
+      section h2 { font-size: 14px; margin: 0 0 8px; color: #333; }
+      label { display: block; font-size: 13px; margin: 6px 0 2px; }
+      input[type="text"], textarea, select { width: 100%; padding: 6px; font: inherit; }
+      .echo { margin-top: 6px; font-size: 13px; color: #0a6; min-height: 18px; }
+      .card { display: inline-block; padding: 14px 22px; background: #eef; border-radius: 8px; cursor: pointer; user-select: none; }
+      [contenteditable] { min-height: 40px; border: 1px solid #999; border-radius: 6px; padding: 8px; }
+      button { font: inherit; padding: 6px 12px; cursor: pointer; }
+      #state-mirror { background: #111; color: #6f6; padding: 8px; border-radius: 6px; font-size: 12px; white-space: pre-wrap; }
+      ul { margin: 6px 0; padding-left: 18px; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script src="vendor/react.development.js"></script>
+    <script src="vendor/react-dom.development.js"></script>
+    <script src="app.js"></script>
+    <!-- The REAL FoxPilot injected covert functions, exposed on window.__fp. -->
+    <script src="fp-bundle.js"></script>
+  </body>
+</html>

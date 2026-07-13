@@ -59,3 +59,9 @@ web-ext-artifacts/
 
 .DS_Store
 .superpowers/
+
+# Chrome DevTools MCP persistent profile (if switched from --isolated)
+.chrome-debug/
+
+# JetBrains IDE
+.idea/

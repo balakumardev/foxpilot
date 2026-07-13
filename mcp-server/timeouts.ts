@@ -27,6 +27,26 @@ const COMMAND_TIMEOUTS: Record<string, number> = {
   // select-option polls a custom dropdown's menu (≤ 15 × 300ms) before it can
   // click the option — give it more than the 5s default.
   "select-option": 15000,
+  // Input actions run a covert human-like layer in the page (curved cursor
+  // motion + per-character typing with jitter), so a single click/type/press
+  // legitimately takes several seconds — well past the 5s default, which caused
+  // spurious "Timed out waiting for response from the browser extension".
+  // These wire cmd strings are the ServerMessage `cmd` values the broker sees
+  // (see common/server-messages.ts), not the tool display names.
+  "click-element": 15000,
+  "fill-element": 15000,
+  "press-key": 15000,
+  "type-text": 15000,
+  "drag-element": 15000,
+  "hover-element": 15000,
+  // Coordinate variants of the same input actions (synthetic + CDP engines).
+  "click-at": 15000,
+  "type-at": 15000,
+  "hover-at": 15000,
+  "scroll-at": 15000,
+  // fill-form drives MANY fields sequentially, each with the per-char humanized
+  // typing above — its budget scales with field count, so give it extra headroom.
+  "fill-form": 30000,
 };
 
 /**

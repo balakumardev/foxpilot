@@ -819,6 +819,25 @@ describe("MessageHandler", () => {
       });
     });
 
+    it("engine:cdp on a uid tool replies ok:false naming Chrome/Edge (no debugger on Firefox) and never injects", async () => {
+      await messageHandler.handleDecodedMessage({
+        cmd: "click-element",
+        tabId: 123,
+        uid: "e1",
+        engine: "cdp",
+        correlationId: "ff-cdp",
+      } as ServerMessageRequest);
+
+      // Rejected before any page injection on Firefox.
+      expect(browser.tabs.executeScript).not.toHaveBeenCalled();
+      expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+        resource: "action-result",
+        correlationId: "ff-cdp",
+        ok: false,
+        error: expect.stringMatching(/Chrome\/Edge/),
+      });
+    });
+
     it("fill-element passes the value through to the injected action and replies ok:true", async () => {
       (browser.tabs.executeScript as jest.Mock).mockResolvedValue([
         { ok: true },

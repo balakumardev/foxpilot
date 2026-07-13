@@ -345,31 +345,51 @@ export class MessageHandler {
         );
         break;
       case "click-element":
-        await this.runInputAction(req.correlationId, req.tabId, {
-          action: "click",
-          uid: req.uid,
-          doubleClick: req.doubleClick,
-          failIfIntercepted: req.failIfIntercepted,
-        });
+        await this.runInputAction(
+          req.correlationId,
+          req.tabId,
+          {
+            action: "click",
+            uid: req.uid,
+            doubleClick: req.doubleClick,
+            failIfIntercepted: req.failIfIntercepted,
+          },
+          req.engine
+        );
         break;
       case "hover-element":
-        await this.runInputAction(req.correlationId, req.tabId, {
-          action: "hover",
-          uid: req.uid,
-        });
+        await this.runInputAction(
+          req.correlationId,
+          req.tabId,
+          {
+            action: "hover",
+            uid: req.uid,
+          },
+          req.engine
+        );
         break;
       case "fill-element":
-        await this.runInputAction(req.correlationId, req.tabId, {
-          action: "fill",
-          uid: req.uid,
-          value: req.value,
-        });
+        await this.runInputAction(
+          req.correlationId,
+          req.tabId,
+          {
+            action: "fill",
+            uid: req.uid,
+            value: req.value,
+          },
+          req.engine
+        );
         break;
       case "fill-form":
-        await this.runInputAction(req.correlationId, req.tabId, {
-          action: "fill-form",
-          fields: req.fields,
-        });
+        await this.runInputAction(
+          req.correlationId,
+          req.tabId,
+          {
+            action: "fill-form",
+            fields: req.fields,
+          },
+          req.engine
+        );
         break;
       case "type-text":
         await this.runInputAction(req.correlationId, req.tabId, {
@@ -379,11 +399,16 @@ export class MessageHandler {
         });
         break;
       case "press-key":
-        await this.runInputAction(req.correlationId, req.tabId, {
-          action: "press-key",
-          key: req.key,
-          modifiers: req.modifiers,
-        });
+        await this.runInputAction(
+          req.correlationId,
+          req.tabId,
+          {
+            action: "press-key",
+            key: req.key,
+            modifiers: req.modifiers,
+          },
+          req.engine
+        );
         break;
       case "drag-element":
         await this.runInputAction(req.correlationId, req.tabId, {
@@ -581,9 +606,12 @@ export class MessageHandler {
   }
 
   private async openUrl(correlationId: string, url: string): Promise<void> {
-    if (!url.startsWith("https://")) {
+    // Same policy as navigate-tab (isNavigableUrl): https to any host, http only
+    // for loopback. Previously https-only, which rejected http://localhost:PORT
+    // dev/test servers that navigate-tab already allowed.
+    if (!isNavigableUrl(url)) {
       console.error("Invalid URL:", url);
-      throw new Error("Invalid URL");
+      throw new Error("Invalid URL (must be https, or http for localhost)");
     }
 
     if (await isDomainInDenyList(url)) {
@@ -805,8 +833,22 @@ export class MessageHandler {
   private async runInputAction(
     correlationId: string,
     tabId: number,
-    args: InputActionArgs
+    args: InputActionArgs,
+    engine?: "synthetic" | "cdp"
   ): Promise<void> {
+    if (engine === "cdp") {
+      // Firefox has no chrome.debugger / CDP — the trusted-input engine is
+      // Chrome/Edge only. Reject BEFORE any page work (mirrors the point-action
+      // rejection above), reporting the actionable ok:false the server forwards.
+      await this.client.sendResourceToServer({
+        resource: "action-result",
+        correlationId,
+        ok: false,
+        error:
+          "The CDP (trusted-input) engine is Chrome/Edge only; Firefox has no debugger API. Use the default synthetic engine.",
+      });
+      return;
+    }
     const tab = await browser.tabs.get(tabId);
     if (tab.url && (await isDomainInDenyList(tab.url))) {
       throw new Error(`Domain in tab URL is in the deny list`);

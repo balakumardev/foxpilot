@@ -74,3 +74,38 @@ Monorepo, five projects:
 - esbuild bundling; TypeScript throughout; Jest (both extensions); Nx monorepo.
 - The extension requires user consent for page content by default.
 - **`test-fixtures/csp-react-spa/`** is the in-repo fixture for testing any feature that has to work on a strict-CSP custom-React SPA without depending on the live Factors app: `server.mjs` (Express static), `app.js`, `index.html`. Use it to verify snapshot `selector`/`textContains`/`rootSelector`/`offset`/`limit` paging, `click-at` synthetic vs CDP, `evaluate-script world:"isolated"` degradation messages, etc., without a real network hop.
+
+# Browser Testing with Chrome DevTools MCP
+
+Chrome DevTools MCP **auto-launches Chrome** via puppeteer. No manual browser start needed.
+Uses `--isolated` mode — each session gets its own temp Chrome profile for parallel safety.
+
+Note: this is a *different* browser than the one FoxPilot's own extension automates. Use Chrome DevTools MCP to visually test this repo's own UI surfaces (e.g. the extension options page, `test-fixtures/csp-react-spa/`) — it does not exercise the FoxPilot broker/extension path itself.
+
+## Quick Start
+
+1. Start whatever needs serving (e.g. `node test-fixtures/csp-react-spa/server.mjs`, or open an options page file directly)
+2. Start Claude Code in this directory — the MCP server starts automatically
+
+## Available MCP Tools
+
+| Tool | Description |
+|------|-------------|
+| `mcp__chrome-devtools__navigate_page` | Navigate to URL |
+| `mcp__chrome-devtools__take_snapshot` | Get a11y tree with uids (preferred over screenshot) |
+| `mcp__chrome-devtools__take_screenshot` | Visual screenshot |
+| `mcp__chrome-devtools__click` | Click element by uid |
+| `mcp__chrome-devtools__fill` | Type into input by uid |
+| `mcp__chrome-devtools__evaluate_script` | Run JavaScript in page |
+| `mcp__chrome-devtools__list_console_messages` | Get console output |
+| `mcp__chrome-devtools__list_network_requests` | Get network requests |
+
+**Prefer `take_snapshot` over `take_screenshot`** — snapshots return uids for direct interaction.
+
+## Testing Workflow
+
+1. Navigate to the page under test
+2. Take a **snapshot** to see the a11y tree with uids
+3. Interact using uids from the snapshot (click, fill)
+4. Take another snapshot to verify the result
+5. Check console/network logs if something goes wrong

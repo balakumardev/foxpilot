@@ -122,6 +122,12 @@ export interface ClickElementServerMessage extends ServerMessageBase {
   // through. Default false → detect + report via action-result.intercepted but
   // still perform the click. (Wave 3a.)
   failIfIntercepted?: boolean;
+  // Dispatch engine. "synthetic" (default) drives the uid covertly in the
+  // isolated content-script world (isTrusted:false). "cdp" (Chrome/Edge only)
+  // resolves the uid to its viewport center and dispatches a TRUSTED Input.*
+  // event via chrome.debugger (isTrusted:true; shows the debugger banner;
+  // errors on Firefox). Back-compat default is "synthetic".
+  engine?: "synthetic" | "cdp";
   activateTab?: boolean;
 }
 
@@ -129,6 +135,8 @@ export interface HoverElementServerMessage extends ServerMessageBase {
   cmd: "hover-element";
   tabId: number;
   uid: string;
+  // See ClickElementServerMessage.engine.
+  engine?: "synthetic" | "cdp";
   activateTab?: boolean;
 }
 
@@ -137,6 +145,8 @@ export interface FillElementServerMessage extends ServerMessageBase {
   tabId: number;
   uid: string;
   value: string;
+  // See ClickElementServerMessage.engine.
+  engine?: "synthetic" | "cdp";
   activateTab?: boolean;
 }
 
@@ -144,6 +154,8 @@ export interface FillFormServerMessage extends ServerMessageBase {
   cmd: "fill-form";
   tabId: number;
   fields: { uid: string; value: string }[];
+  // See ClickElementServerMessage.engine.
+  engine?: "synthetic" | "cdp";
   activateTab?: boolean;
 }
 
@@ -160,6 +172,9 @@ export interface PressKeyServerMessage extends ServerMessageBase {
   tabId: number;
   key: string;
   modifiers?: string[];
+  // See ClickElementServerMessage.engine. press-key has no uid — the CDP path
+  // dispatches a TRUSTED key event to the focused element.
+  engine?: "synthetic" | "cdp";
   activateTab?: boolean;
 }
 

@@ -1,4 +1,5 @@
 import { selectOption } from "../injected/select-option-script";
+import { buildSnapshot } from "../injected/snapshot-script";
 
 function mount(html: string): void {
   document.body.innerHTML = html;
@@ -101,4 +102,38 @@ test("custom combobox: deepest-wins — a parent listbox row containing the need
   const r = await selectOption(document, { uid: "e1", option: "India" });
   expect(r.ok).toBe(true);
   expect(leafClicks).toEqual(["li"]); // the <li role=option> leaf (no descendant option) is the match
+});
+
+describe("B10: selectOption rejects a recycled uid (identity guard)", () => {
+  afterEach(() => {
+    document.body.innerHTML = "";
+  });
+
+  it("resolves while identity matches, then notFound once the identity changes", async () => {
+    document.body.innerHTML = `
+      <select aria-label="Country">
+        <option value="us">United States</option>
+        <option value="ca">Canada</option>
+      </select>`;
+    const sel = document.querySelector("select")!;
+    buildSnapshot(document, { verbose: false, maxLength: 25000 });
+    const uid = sel.getAttribute("data-bcmcp-uid")!;
+
+    const ok = await selectOption(document, { uid, option: "Canada" });
+    expect(ok.ok).toBe(true);
+    expect((sel as HTMLSelectElement).value).toBe("ca");
+
+    // Recycle the node under the same uid but a new identity.
+    sel.setAttribute("aria-label", "Region");
+    const stale = await selectOption(document, { uid, option: "Canada" });
+    expect(stale.ok).toBe(false);
+    expect(stale.error).toMatch(/fresh snapshot/);
+  });
+
+  it("skips the identity check for a uid with no sig (older snapshot, back-compat)", async () => {
+    document.body.innerHTML = `<select data-bcmcp-uid="e1"><option value="us">United States</option></select>`;
+    const res = await selectOption(document, { uid: "e1", option: "United States" });
+    expect(res.ok).toBe(true);
+    expect(res.selected).toMatch(/United States/);
+  });
 });

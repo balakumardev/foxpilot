@@ -103,13 +103,52 @@ export function performPointAction(
       };
     }
 
-    function mouseEvt(type: string, button: number): Event {
-      return new MouseEvent(type, {
-        bubbles: true,
+    // Builds a MouseEvent (or PointerEvent for `pointer*` types when the engine
+    // has PointerEvent) carrying viewport coordinates, the pressed button + button
+    // bitmask and `composed:true`. screenX/screenY approximate clientX/clientY;
+    // pageX/pageY are derived natively from clientX/clientY + scroll. `enter`
+    // variants correctly do not bubble.
+    function mouseEvt(
+      type: string,
+      opts?: { button?: number; buttons?: number; x?: number; y?: number }
+    ): Event {
+      const o = opts || {};
+      const x = typeof o.x === "number" ? o.x : 0;
+      const y = typeof o.y === "number" ? o.y : 0;
+      const isEnter =
+        type === "mouseenter" ||
+        type === "mouseleave" ||
+        type === "pointerenter" ||
+        type === "pointerleave";
+      const init: MouseEventInit = {
+        bubbles: !isEnter,
         cancelable: true,
+        composed: true,
         view: win as Window,
-        button,
-      });
+        button: typeof o.button === "number" ? o.button : 0,
+        buttons: typeof o.buttons === "number" ? o.buttons : 0,
+        clientX: x,
+        clientY: y,
+        screenX: x,
+        screenY: y,
+      };
+      const PE =
+        win && (win as { PointerEvent?: typeof PointerEvent }).PointerEvent;
+      if (type.indexOf("pointer") === 0 && typeof PE === "function") {
+        const pinit = init as PointerEventInit;
+        pinit.pointerId = 1;
+        pinit.pointerType = "mouse";
+        pinit.isPrimary = true;
+        return new (PE as typeof PointerEvent)(type, pinit);
+      }
+      return new MouseEvent(type, init);
+    }
+
+    // The `buttons` bitmask for a held mouse button: 1=left, 2=right, 4=middle.
+    function buttonsMask(b: number): number {
+      if (b === 2) return 2;
+      if (b === 1) return 4;
+      return 1;
     }
 
     function buttonCode(b?: "left" | "middle" | "right"): number {
@@ -118,8 +157,142 @@ export function performPointAction(
       return 0;
     }
 
+    // Maps a KeyboardEvent.key to its physical `code` and legacy `keyCode`, so
+    // synthetic key events carry the identity that React/editor handlers branch
+    // on (e.g. keyCode===13 for Enter). Without this they see keyCode 0 and no-op.
+    function keyInfo(key: string): { code: string; keyCode: number } {
+      const named: { [k: string]: [string, number] } = {
+        Enter: ["Enter", 13],
+        Tab: ["Tab", 9],
+        Escape: ["Escape", 27],
+        Esc: ["Escape", 27],
+        Backspace: ["Backspace", 8],
+        Delete: ["Delete", 46],
+        ArrowUp: ["ArrowUp", 38],
+        ArrowDown: ["ArrowDown", 40],
+        ArrowLeft: ["ArrowLeft", 37],
+        ArrowRight: ["ArrowRight", 39],
+        Home: ["Home", 36],
+        End: ["End", 35],
+        PageUp: ["PageUp", 33],
+        PageDown: ["PageDown", 34],
+        " ": ["Space", 32],
+        Spacebar: ["Space", 32],
+      };
+      if (named[key]) {
+        return { code: named[key][0], keyCode: named[key][1] };
+      }
+      if (key && key.length === 1) {
+        const c = key;
+        if (c >= "a" && c <= "z") {
+          return { code: "Key" + c.toUpperCase(), keyCode: c.toUpperCase().charCodeAt(0) };
+        }
+        if (c >= "A" && c <= "Z") {
+          return { code: "Key" + c, keyCode: c.charCodeAt(0) };
+        }
+        if (c >= "0" && c <= "9") {
+          return { code: "Digit" + c, keyCode: c.charCodeAt(0) };
+        }
+        return { code: "", keyCode: c.charCodeAt(0) };
+      }
+      return { code: "", keyCode: 0 };
+    }
+
+    function isPrintableKey(key: string): boolean {
+      return !!key && key.length === 1;
+    }
+
     function keyEvt(type: string, key: string): KeyboardEvent {
-      return new KeyboardEvent(type, { key: key, bubbles: true });
+      const info = keyInfo(key);
+      const ev = new KeyboardEvent(type, {
+        key: key,
+        code: info.code,
+        bubbles: true,
+        cancelable: true,
+        composed: true,
+        view: win as Window,
+      });
+      try {
+        Object.defineProperty(ev, "keyCode", {
+          get: function () {
+            return info.keyCode;
+          },
+        });
+        Object.defineProperty(ev, "which", {
+          get: function () {
+            return info.keyCode;
+          },
+        });
+      } catch (e) {
+        /* some engines disallow redefining — best effort */
+      }
+      return ev;
+    }
+
+    // Inserts text into a contenteditable host the way a real edit does: a
+    // cancelable beforeinput, then (if not prevented) the insertion, then input —
+    // both as InputEvent carrying inputType:"insertText" + data. Falls back to a
+    // plain Event with the same props where InputEvent is unavailable.
+    function insertIntoContentEditable(el: Element, text: string): void {
+      const IE = (win as { InputEvent?: typeof InputEvent } | null) &&
+        (win as { InputEvent?: typeof InputEvent }).InputEvent;
+      let beforeEv: Event;
+      if (typeof IE === "function") {
+        beforeEv = new (IE as typeof InputEvent)("beforeinput", {
+          inputType: "insertText",
+          data: text,
+          bubbles: true,
+          cancelable: true,
+          composed: true,
+        });
+      } else {
+        beforeEv = new Event("beforeinput", { bubbles: true, cancelable: true });
+        try {
+          Object.defineProperty(beforeEv, "inputType", { value: "insertText" });
+          Object.defineProperty(beforeEv, "data", { value: text });
+        } catch (e) {
+          /* best effort */
+        }
+      }
+      // A canceled beforeinput means the editor (Lexical/ProseMirror) is driving
+      // its own model: perform NEITHER the insertion NOR the input — firing input
+      // anyway would be a spurious signal. dispatchEvent returns false = canceled.
+      const notPrevented = el.dispatchEvent(beforeEv);
+      if (notPrevented) {
+        let inserted = false;
+        const doExec = (doc as {
+          execCommand?: (c: string, s?: boolean, v?: string) => boolean;
+        }).execCommand;
+        if (typeof doExec === "function") {
+          try {
+            inserted = doExec.call(doc, "insertText", false, text);
+          } catch (e) {
+            inserted = false;
+          }
+        }
+        if (!inserted) {
+          (el as { textContent?: string }).textContent =
+            (el.textContent || "") + text;
+        }
+        let inputEv: Event;
+        if (typeof IE === "function") {
+          inputEv = new (IE as typeof InputEvent)("input", {
+            inputType: "insertText",
+            data: text,
+            bubbles: true,
+            composed: true,
+          });
+        } else {
+          inputEv = new Event("input", { bubbles: true });
+          try {
+            Object.defineProperty(inputEv, "inputType", { value: "insertText" });
+            Object.defineProperty(inputEv, "data", { value: text });
+          } catch (e) {
+            /* best effort */
+          }
+        }
+        el.dispatchEvent(inputEv);
+      }
     }
 
     function nativeSetValue(el: Element, value: string): void {
@@ -154,20 +327,28 @@ export function performPointAction(
         return offPoint(args.x, args.y);
       }
       const b = buttonCode(args.button);
-      // Realistic press sequence (none activate the element) + focus, mirroring
-      // action-script.ts's dispatchClickSequence.
-      el.dispatchEvent(mouseEvt("pointerdown", b));
-      el.dispatchEvent(mouseEvt("mousedown", b));
-      el.dispatchEvent(mouseEvt("mouseup", b));
+      const x = args.x;
+      const y = args.y;
+      const bm = buttonsMask(b);
+      // Realistic covert press sequence (none activate the element) + focus,
+      // mirroring action-script.ts's dispatchClickSequence: symmetric
+      // pointer/mouse pairs, coordinates and button state.
+      el.dispatchEvent(mouseEvt("pointerover", { x, y, button: b }));
+      el.dispatchEvent(mouseEvt("pointerenter", { x, y, button: b }));
+      el.dispatchEvent(mouseEvt("pointermove", { x, y, button: b }));
+      el.dispatchEvent(mouseEvt("pointerdown", { x, y, button: b, buttons: bm }));
+      el.dispatchEvent(mouseEvt("mousedown", { x, y, button: b, buttons: bm }));
       try {
         (el as { focus?: () => void }).focus?.();
       } catch (e) {
         /* not focusable */
       }
+      el.dispatchEvent(mouseEvt("pointerup", { x, y, button: b, buttons: 0 }));
+      el.dispatchEvent(mouseEvt("mouseup", { x, y, button: b, buttons: 0 }));
       if (b === 2) {
-        el.dispatchEvent(mouseEvt("contextmenu", b));
+        el.dispatchEvent(mouseEvt("contextmenu", { x, y, button: b }));
       } else if (b === 1) {
-        el.dispatchEvent(mouseEvt("auxclick", b));
+        el.dispatchEvent(mouseEvt("auxclick", { x, y, button: b }));
       } else {
         // Exactly ONE left activation: el.click() fires `click` + default action.
         try {
@@ -177,7 +358,7 @@ export function performPointAction(
         }
       }
       if (args.doubleClick) {
-        el.dispatchEvent(mouseEvt("dblclick", b));
+        el.dispatchEvent(mouseEvt("dblclick", { x, y, button: b }));
       }
       return { ok: true, element: describeElement(el) };
     }
@@ -187,15 +368,18 @@ export function performPointAction(
       if (!el) {
         return offPoint(args.x, args.y);
       }
+      const x = args.x;
+      const y = args.y;
       // Click-to-focus (press sequence + focus + activate) so the type targets it.
-      el.dispatchEvent(mouseEvt("pointerdown", 0));
-      el.dispatchEvent(mouseEvt("mousedown", 0));
-      el.dispatchEvent(mouseEvt("mouseup", 0));
+      el.dispatchEvent(mouseEvt("pointerdown", { x, y, buttons: 1 }));
+      el.dispatchEvent(mouseEvt("mousedown", { x, y, buttons: 1 }));
       try {
         (el as { focus?: () => void }).focus?.();
       } catch (e) {
         /* ignore */
       }
+      el.dispatchEvent(mouseEvt("pointerup", { x, y, buttons: 0 }));
+      el.dispatchEvent(mouseEvt("mouseup", { x, y, buttons: 0 }));
       try {
         (el as { click?: () => void }).click?.();
       } catch (e) {
@@ -209,23 +393,9 @@ export function performPointAction(
         nativeSetValue(el, current + text);
         el.dispatchEvent(new Event("input", { bubbles: true }));
       } else if (contentEditableHost(el)) {
-        // contenteditable (the SPA chat-input case): insert text + fire input.
-        const doExec = (doc as {
-          execCommand?: (c: string, s?: boolean, v?: string) => boolean;
-        }).execCommand;
-        let inserted = false;
-        if (typeof doExec === "function") {
-          try {
-            inserted = doExec.call(doc, "insertText", false, text);
-          } catch (e) {
-            inserted = false;
-          }
-        }
-        if (!inserted) {
-          (el as { textContent?: string }).textContent =
-            (el.textContent || "") + text;
-        }
-        el.dispatchEvent(new Event("input", { bubbles: true }));
+        // contenteditable (the SPA chat-input case): insert via a real
+        // beforeinput/input pair carrying inputType:"insertText" + data.
+        insertIntoContentEditable(el, text);
       } else {
         return {
           ok: false,
@@ -237,6 +407,9 @@ export function performPointAction(
       for (let i = 0; i < text.length; i++) {
         const ch = text.charAt(i);
         el.dispatchEvent(keyEvt("keydown", ch));
+        if (isPrintableKey(ch)) {
+          el.dispatchEvent(keyEvt("keypress", ch));
+        }
         el.dispatchEvent(keyEvt("keyup", ch));
       }
       if (args.submit) {
@@ -264,15 +437,14 @@ export function performPointAction(
       if (!el) {
         return offPoint(args.x, args.y);
       }
-      el.dispatchEvent(mouseEvt("mouseover", 0));
-      el.dispatchEvent(
-        new MouseEvent("mouseenter", {
-          bubbles: false,
-          cancelable: true,
-          view: win as Window,
-        })
-      );
-      el.dispatchEvent(mouseEvt("mousemove", 0));
+      const x = args.x;
+      const y = args.y;
+      el.dispatchEvent(mouseEvt("pointerover", { x, y }));
+      el.dispatchEvent(mouseEvt("pointerenter", { x, y }));
+      el.dispatchEvent(mouseEvt("pointermove", { x, y }));
+      el.dispatchEvent(mouseEvt("mouseover", { x, y }));
+      el.dispatchEvent(mouseEvt("mouseenter", { x, y }));
+      el.dispatchEvent(mouseEvt("mousemove", { x, y }));
       return { ok: true, element: describeElement(el) };
     }
 
@@ -373,8 +545,36 @@ export function scrollElementIntoView(
   uid: string
 ): { ok: boolean; error?: string } {
   try {
+    function bcmcpSig(el: any): string {
+      var role = el.getAttribute && (el.getAttribute("role") || "");
+      var name =
+        (el.getAttribute &&
+          (el.getAttribute("aria-label") ||
+            el.getAttribute("name") ||
+            el.getAttribute("data-testid") ||
+            "")) ||
+        "";
+      var t = (el.tagName || "") + "|" + role + "|" + (el.id || "") + "|" + name;
+      var h = 0;
+      for (var i = 0; i < t.length; i++) {
+        h = ((h << 5) - h + t.charCodeAt(i)) | 0;
+      }
+      return (h >>> 0).toString(36);
+    }
     const el = doc.querySelector('[data-bcmcp-uid="' + uid + '"]');
     if (!el) {
+      return {
+        ok: false,
+        error:
+          "Element uid '" +
+          uid +
+          "' not found — take a fresh snapshot (uids are reassigned each snapshot).",
+      };
+    }
+    // Identity guard (see action-script.ts resolve): a recycled node under the
+    // same uid is treated as stale so the caller re-snapshots.
+    const sig = el.getAttribute("data-bcmcp-sig");
+    if (sig && bcmcpSig(el) !== sig) {
       return {
         ok: false,
         error:

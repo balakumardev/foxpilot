@@ -56,10 +56,39 @@ export async function selectOption(
     });
   }
 
+  function bcmcpSig(el: any): string {
+    var role = el.getAttribute && (el.getAttribute("role") || "");
+    var name =
+      (el.getAttribute &&
+        (el.getAttribute("aria-label") ||
+          el.getAttribute("name") ||
+          el.getAttribute("data-testid") ||
+          "")) ||
+      "";
+    var t = (el.tagName || "") + "|" + role + "|" + (el.id || "") + "|" + name;
+    var h = 0;
+    for (var i = 0; i < t.length; i++) {
+      h = ((h << 5) - h + t.charCodeAt(i)) | 0;
+    }
+    return (h >>> 0).toString(36);
+  }
+
   try {
     const win = doc.defaultView as (Window & typeof globalThis) | null;
     const el = doc.querySelector("[" + UID_ATTR + '="' + args.uid + '"]');
     if (!el) {
+      return {
+        ok: false,
+        error:
+          "Element uid '" +
+          args.uid +
+          "' not found — take a fresh snapshot (uids are reassigned each snapshot).",
+      };
+    }
+    // Identity guard (see action-script.ts resolve): a recycled node under the
+    // same uid is treated as stale so the caller re-snapshots.
+    const sig = el.getAttribute("data-bcmcp-sig");
+    if (sig && bcmcpSig(el) !== sig) {
       return {
         ok: false,
         error:

@@ -528,7 +528,8 @@ export class BrowserAPI {
     uid: string,
     doubleClick?: boolean,
     failIfIntercepted?: boolean,
-    activateTab?: boolean
+    activateTab?: boolean,
+    engine?: "synthetic" | "cdp"
   ): Promise<{
     navigated?: boolean;
     intercepted?: {
@@ -545,6 +546,7 @@ export class BrowserAPI {
       uid,
       doubleClick,
       failIfIntercepted,
+      engine,
       activateTab,
     });
     if (!message.ok) {
@@ -664,12 +666,14 @@ export class BrowserAPI {
   async hoverElement(
     tabId: number,
     uid: string,
-    activateTab?: boolean
+    activateTab?: boolean,
+    engine?: "synthetic" | "cdp"
   ): Promise<void> {
     const message = await this.sendTool<ActionResultExtensionMessage>({
       cmd: "hover-element",
       tabId,
       uid,
+      engine,
       activateTab,
     });
     if (!message.ok) {
@@ -681,13 +685,15 @@ export class BrowserAPI {
     tabId: number,
     uid: string,
     value: string,
-    activateTab?: boolean
+    activateTab?: boolean,
+    engine?: "synthetic" | "cdp"
   ): Promise<void> {
     const message = await this.sendTool<ActionResultExtensionMessage>({
       cmd: "fill-element",
       tabId,
       uid,
       value,
+      engine,
       activateTab,
     });
     if (!message.ok) {
@@ -726,12 +732,14 @@ export class BrowserAPI {
   async fillForm(
     tabId: number,
     fields: { uid: string; value: string }[],
-    activateTab?: boolean
+    activateTab?: boolean,
+    engine?: "synthetic" | "cdp"
   ): Promise<void> {
     const message = await this.sendTool<ActionResultExtensionMessage>({
       cmd: "fill-form",
       tabId,
       fields,
+      engine,
       activateTab,
     });
     if (!message.ok) {
@@ -761,13 +769,15 @@ export class BrowserAPI {
     tabId: number,
     key: string,
     modifiers?: string[],
-    activateTab?: boolean
+    activateTab?: boolean,
+    engine?: "synthetic" | "cdp"
   ): Promise<void> {
     const message = await this.sendTool<ActionResultExtensionMessage>({
       cmd: "press-key",
       tabId,
       key,
       modifiers,
+      engine,
       activateTab,
     });
     if (!message.ok) {

@@ -43,12 +43,16 @@ const recordTabId = new Map<string, number>();
 //
 // Purpose-refcounted chrome.debugger attach. A tab's debugger can be held by
 // more than one PURPOSE at once: "network" (response-body deep-capture, which
-// runs Network.enable) and "input" (the engine:"cdp" trusted coordinate tools,
-// which dispatch Input.* and never enable the Network domain). We attach once,
-// run Network.enable only for the network purpose, and only really detach when
-// the LAST purpose releases — so a CDP click on a tab that is already capturing
-// response bodies does not tear the capture down, and vice-versa.
-type DebuggerPurpose = "network" | "input" | "eval";
+// runs Network.enable) and "input" (the engine:"cdp" trusted coordinate/uid
+// tools, which dispatch Input.* and never enable the Network domain). We attach
+// once, run Network.enable only for the network purpose, and only really detach
+// when the LAST purpose releases — so a CDP click on a tab that is already
+// capturing response bodies does not tear the capture down, and vice-versa.
+// "screenshot" is the CDP Page.captureScreenshot fallback's own purpose: kept
+// DISTINCT from "input" so a concurrent CDP input action can't detach the
+// debugger out from under an in-flight screenshot (and vice-versa). "eval" is
+// the engine:"cdp" Runtime.evaluate path.
+type DebuggerPurpose = "network" | "input" | "eval" | "screenshot";
 // Per-tab purpose tracker: a Set (membership), NOT a counter. A Set is correct
 // here — not an undercount waiting to happen — because the broker serializes
 // tool calls per tab (see getMessageTabId / "Serialize per tab" in

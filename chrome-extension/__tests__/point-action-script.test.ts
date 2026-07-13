@@ -3,6 +3,7 @@ import {
   scrollWindowTo,
   scrollElementIntoView,
 } from "../injected/point-action-script";
+import { buildSnapshot } from "../injected/snapshot-script";
 
 // jsdom has no layout: document.elementFromPoint returns null and rects are
 // zero. Every test stubs elementFromPoint and never asserts rect values.
@@ -282,6 +283,135 @@ describe("performPointAction (chrome)", () => {
       const res = performPointAction(document, { action: "describe-at", x: 1, y: 2 });
       expect(res.ok).toBe(false);
       expect(res.error).toMatch(/No element at point/);
+    });
+  });
+});
+
+/**
+ * Covert synthetic parity for the coordinate tools (A1 key identity + keypress,
+ * A3 click-at sequence completeness / coords / buttons, A5 contenteditable via
+ * InputEvent, A7 hover-at pointer events, B10 identity guard on scroll-into-view).
+ * Every dispatched event stays synthetic (isTrusted:false).
+ */
+describe("synthetic covert parity (point tools)", () => {
+  afterEach(() => {
+    jest.restoreAllMocks();
+    document.body.innerHTML = "";
+    (document as any).elementFromPoint = undefined;
+  });
+  function stubPoint(el: Element | null) {
+    (document as any).elementFromPoint = jest.fn(() => el);
+  }
+
+  describe("A3: click-at sequence completeness + coordinates + buttons", () => {
+    it("dispatches pointerup and carries click coordinates + the buttons bitmask", () => {
+      document.body.innerHTML = `<button>Go</button>`;
+      const el = document.querySelector("button")!;
+      stubPoint(el);
+      const seq: string[] = [];
+      ["pointerover", "pointerdown", "mousedown", "pointerup", "mouseup", "click"].forEach(
+        (t) => el.addEventListener(t, () => seq.push(t))
+      );
+      let down: MouseEvent | null = null;
+      let up: MouseEvent | null = null;
+      el.addEventListener("mousedown", (e) => (down = e as MouseEvent));
+      el.addEventListener("mouseup", (e) => (up = e as MouseEvent));
+
+      performPointAction(document, { action: "click-at", x: 77, y: 88 });
+
+      expect(seq).toContain("pointerup");
+      expect(seq.indexOf("mouseup")).toBeLessThan(seq.indexOf("click"));
+      expect(down!.clientX).toBe(77);
+      expect(down!.clientY).toBe(88);
+      expect(down!.composed).toBe(true);
+      expect(down!.buttons).toBe(1);
+      expect(up!.buttons).toBe(0);
+    });
+  });
+
+  describe("A1: type-at key events carry identity + keypress", () => {
+    it("emits keydown→keypress→keyup with keyCode/code for a printable char", () => {
+      document.body.innerHTML = `<input type="text" />`;
+      const el = document.querySelector("input")!;
+      stubPoint(el);
+      const seq: string[] = [];
+      let kd: KeyboardEvent | null = null;
+      el.addEventListener("keydown", (e) => {
+        seq.push("keydown");
+        kd = e as KeyboardEvent;
+      });
+      el.addEventListener("keypress", () => seq.push("keypress"));
+      el.addEventListener("keyup", () => seq.push("keyup"));
+
+      performPointAction(document, { action: "type-at", x: 1, y: 1, text: "z" });
+
+      expect(seq).toEqual(["keydown", "keypress", "keyup"]);
+      expect(kd!.keyCode).toBe(90); // 'z' -> 'Z'
+      expect(kd!.code).toBe("KeyZ");
+    });
+  });
+
+  describe("A5: type-at into contenteditable uses beforeinput/input (insertText)", () => {
+    it("fires beforeinput+input carrying inputType insertText and data", () => {
+      document.body.innerHTML = `<div contenteditable="true"></div>`;
+      const el = document.querySelector("[contenteditable]") as HTMLElement;
+      stubPoint(el);
+      const bi: Array<{ inputType?: string; data?: string }> = [];
+      const inp: Array<{ inputType?: string; data?: string }> = [];
+      el.addEventListener("beforeinput", (e) =>
+        bi.push(e as unknown as { inputType?: string; data?: string })
+      );
+      el.addEventListener("input", (e) =>
+        inp.push(e as unknown as { inputType?: string; data?: string })
+      );
+
+      const res = performPointAction(document, { action: "type-at", x: 1, y: 1, text: "yo" });
+
+      expect(res.ok).toBe(true);
+      expect(el.textContent).toBe("yo");
+      expect(bi.length).toBe(1);
+      expect(bi[0].inputType).toBe("insertText");
+      expect(bi[0].data).toBe("yo");
+      expect(inp[0].inputType).toBe("insertText");
+    });
+  });
+
+  describe("A7: hover-at emits pointer events alongside mouse events", () => {
+    it("dispatches pointerover/pointerenter/pointermove + mouseover/mouseenter/mousemove", () => {
+      document.body.innerHTML = `<div id="menu">Menu</div>`;
+      const el = document.getElementById("menu")!;
+      stubPoint(el);
+      const seen: string[] = [];
+      const types = [
+        "pointerover",
+        "pointerenter",
+        "pointermove",
+        "mouseover",
+        "mouseenter",
+        "mousemove",
+      ];
+      types.forEach((t) => el.addEventListener(t, () => seen.push(t)));
+
+      const res = performPointAction(document, { action: "hover-at", x: 3, y: 4 });
+
+      expect(res.ok).toBe(true);
+      types.forEach((t) => expect(seen).toContain(t));
+    });
+  });
+
+  describe("B10: scrollElementIntoView rejects a recycled uid", () => {
+    it("resolves while identity matches, then notFound after the identity changes", () => {
+      document.body.innerHTML = `<button aria-label="Save">S</button>`;
+      const el = document.querySelector("button")!;
+      (el as unknown as { scrollIntoView: () => void }).scrollIntoView = jest.fn();
+      buildSnapshot(document, { verbose: false, maxLength: 25000 });
+      const uid = el.getAttribute("data-bcmcp-uid")!;
+      expect(scrollElementIntoView(document, uid).ok).toBe(true);
+
+      el.setAttribute("aria-label", "Delete");
+      const stale = scrollElementIntoView(document, uid);
+      expect(stale.ok).toBe(false);
+      expect(stale.error).toMatch(/fresh snapshot/);
     });
   });
 });
