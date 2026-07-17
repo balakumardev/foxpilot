@@ -245,6 +245,34 @@ export class MessageHandler {
   // active before (unless it was already the target). captureVisibleTab and
   // background-frozen tabs require the target tab to be foregrounded; this makes
   // that behavior opt-in and non-destructive to the user's current tab.
+  // browser.tabs.update({active:true}) transiently throws "Tabs cannot be edited
+  // right now (user may be dragging a tab)" when the tab strip is mid-mutation —
+  // a spurious drag-detection false positive that an immediate retry clears. This
+  // activation sits OUTSIDE captureWindowWithRetry (which wraps only
+  // captureVisibleTab), so absorb that one transient here with the same backoff.
+  // Any OTHER error (tab closed / invalid id) rethrows immediately so it still
+  // fails fast.
+  private async activateTabWithRetry(tabId: number): Promise<void> {
+    const backoffs = [100, 300, 600];
+    let lastErr: unknown;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (attempt > 0) {
+        await sleep(backoffs[attempt - 1]);
+      }
+      try {
+        await browser.tabs.update(tabId, { active: true });
+        return;
+      } catch (e) {
+        lastErr = e;
+        const msg = String((e as { message?: unknown })?.message ?? e);
+        if (!/dragging a tab|Tabs cannot be edited/i.test(msg)) {
+          throw e;
+        }
+      }
+    }
+    throw lastErr;
+  }
+
   private async withTabActivated<T>(
     tabId: number,
     fn: () => Promise<T>
@@ -254,12 +282,18 @@ export class MessageHandler {
       active: true,
       windowId: tab.windowId,
     });
-    await browser.tabs.update(tabId, { active: true });
+    await this.activateTabWithRetry(tabId);
     try {
       return await fn();
     } finally {
       if (prevActive?.id != null && prevActive.id !== tabId) {
-        await browser.tabs.update(prevActive.id, { active: true });
+        // Best-effort restore: a transient failure to switch back must not
+        // discard an already-successful capture/action.
+        try {
+          await this.activateTabWithRetry(prevActive.id);
+        } catch (e) {
+          /* restore is best-effort */
+        }
       }
     }
   }

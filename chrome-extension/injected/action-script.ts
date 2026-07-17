@@ -28,6 +28,7 @@ export function performInputAction(
     | { action: "type"; text: string; submit?: boolean }
     | { action: "press-key"; key: string; modifiers?: string[] }
     | { action: "drag"; fromUid: string; toUid: string }
+    | { action: "classify-intercept"; uid: string }
 ): {
   ok: boolean;
   error?: string;
@@ -572,6 +573,61 @@ export function performInputAction(
         };
       }
       dispatchClickSequence(el, args.doubleClick);
+      return intercepted ? { ok: true, intercepted: intercepted } : { ok: true };
+    }
+
+    if (args.action === "classify-intercept") {
+      // Read-only interception probe for the CDP engine, which dispatches trusted
+      // events from the BACKGROUND and so cannot run this isolated-world hit-test
+      // itself. Resolves the uid, scrolls it into view (so the measured center
+      // matches the coordinate the CDP click will use), and returns the SAME
+      // `intercepted` descriptor the synthetic click arm above computes — WITHOUT
+      // dispatching anything. Best-effort: any miss/failure is ok:true with no
+      // interception, so it never blocks the click that follows.
+      const el = resolve(args.uid);
+      if (!el) {
+        return { ok: true };
+      }
+      // Match readElementRect's scroll (block+inline center) — the CDP click's
+      // coordinate comes from there, so hit-testing at the SAME resulting center
+      // keeps the verdict aligned with where the trusted click actually lands
+      // (a bare block:"center" leaves inline at "nearest", diverging on X for a
+      // horizontally-scrollable target).
+      try {
+        (el as { scrollIntoView?: (opts?: unknown) => void }).scrollIntoView?.({
+          block: "center",
+          inline: "center",
+        });
+      } catch (e) {
+        /* jsdom / no layout — never throw on scroll */
+      }
+      let intercepted:
+        | {
+            tag: string;
+            id?: string;
+            classes?: string;
+            role?: string;
+            name?: string;
+          }
+        | undefined;
+      const efp = (doc as {
+        elementFromPoint?: (x: number, y: number) => Element | null;
+      }).elementFromPoint;
+      if (typeof efp === "function") {
+        try {
+          const r = el.getBoundingClientRect();
+          if (r.width > 0 && r.height > 0) {
+            const cx = r.left + r.width / 2;
+            const cy = r.top + r.height / 2;
+            const topmost = efp.call(doc, cx, cy);
+            if (topmost && classifyHit(el, topmost) === "unrelated") {
+              intercepted = describeIntercept(topmost);
+            }
+          }
+        } catch (e) {
+          /* no layout / detached — skip the hit-test, never throw */
+        }
+      }
       return intercepted ? { ok: true, intercepted: intercepted } : { ok: true };
     }
 

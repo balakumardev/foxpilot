@@ -1963,6 +1963,52 @@ describe("MessageHandler", () => {
       });
     });
 
+    it("retries the transient 'dragging a tab' activation failure and still captures (Fix C)", async () => {
+      (browser.storage.local.get as jest.Mock).mockResolvedValue({
+        config: automationConfig,
+      });
+      (browser.tabs.get as jest.Mock).mockResolvedValue({
+        id: 123,
+        url: "https://example.com",
+        windowId: 7,
+      });
+      // Already active → no restore, so update() calls are purely activation.
+      (browser.tabs.query as jest.Mock).mockResolvedValue([{ id: 123 }]);
+      (browser.permissions.contains as jest.Mock).mockResolvedValue(true);
+      (browser.tabs.captureVisibleTab as jest.Mock).mockResolvedValue(
+        "data:image/png;base64,GOOD"
+      );
+      let n = 0;
+      (browser.tabs.update as jest.Mock).mockImplementation(() => {
+        n++;
+        if (n === 1) {
+          return Promise.reject(
+            new Error(
+              "Tabs cannot be edited right now (user may be dragging a tab)."
+            )
+          );
+        }
+        return Promise.resolve(undefined);
+      });
+
+      await messageHandler.handleDecodedMessage({
+        cmd: "take-screenshot",
+        tabId: 123,
+        correlationId: "drag-ff",
+      } as ServerMessageRequest);
+
+      expect(browser.tabs.update).toHaveBeenCalledTimes(2);
+      expect(browser.tabs.update).toHaveBeenNthCalledWith(2, 123, {
+        active: true,
+      });
+      expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+        resource: "screenshot",
+        correlationId: "drag-ff",
+        mimeType: "image/png",
+        base64: "GOOD",
+      });
+    });
+
     it("captures the viewport as jpeg when format is jpeg", async () => {
       (browser.storage.local.get as jest.Mock).mockResolvedValue({
         config: automationConfig,

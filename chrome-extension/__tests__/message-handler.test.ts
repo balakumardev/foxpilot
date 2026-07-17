@@ -919,11 +919,16 @@ describe("MessageHandler (chrome) — foreground-tab preservation", () => {
         (c: any[]) => c[1] === "Input.dispatchMouseEvent" && c[2].type === "mousePressed"
       );
       expect(pressed[2]).toMatchObject({ type: "mousePressed", x: 60, y: 40, button: "left" });
-      // ...and NEVER touched the synthetic content-script input path.
+      // ...and NEVER dispatched a SYNTHETIC input action. The read-only
+      // classify-intercept probe rides the performInputAction channel but does
+      // not dispatch anything, so it is excluded from this "no synthetic
+      // dispatch" guard; a real synthetic click/fill would still be caught.
       const synthetic = (browser.tabs.sendMessage as jest.Mock).mock.calls.filter(
         (c: any[]) =>
           c[1] &&
-          (c[1].type === "performInputAction" || c[1].type === "runHumanInput")
+          ((c[1].type === "performInputAction" &&
+            !(c[1].args && c[1].args.action === "classify-intercept")) ||
+            c[1].type === "runHumanInput")
       );
       expect(synthetic).toHaveLength(0);
       expect(transport.sendResourceToServer).toHaveBeenCalledWith({
@@ -931,6 +936,109 @@ describe("MessageHandler (chrome) — foreground-tab preservation", () => {
         correlationId: "uidc",
         ok: true,
       });
+    });
+
+    it("click-element engine:cdp surfaces `intercepted` from the isolated classify probe (parity with synthetic)", async () => {
+      // A foreign overlay covers the target: the isolated classify probe reports
+      // it, and the CDP path forwards it on the action-result so the server
+      // renders the "⚠ intercepted" warning — the fix for the silent CDP no-op.
+      (browser.tabs.sendMessage as jest.Mock).mockImplementation(
+        (_id: number, msg: any) => {
+          if (msg && msg.type === "readElementRect") {
+            return Promise.resolve({ x: 10, y: 20, width: 100, height: 40, dpr: 2 });
+          }
+          if (
+            msg &&
+            msg.type === "performInputAction" &&
+            msg.args &&
+            msg.args.action === "classify-intercept"
+          ) {
+            return Promise.resolve({
+              ok: true,
+              intercepted: { tag: "dialog", classes: "Overlay" },
+            });
+          }
+          return Promise.resolve({ ok: true });
+        }
+      );
+
+      await messageHandler.handleDecodedMessage({
+        cmd: "click-element",
+        tabId: 8,
+        uid: "e5",
+        engine: "cdp",
+        correlationId: "uidint",
+      } as ServerMessageRequest);
+
+      // The probe ran against the SAME uid...
+      expect(browser.tabs.sendMessage).toHaveBeenCalledWith(8, {
+        type: "performInputAction",
+        args: { action: "classify-intercept", uid: "e5" },
+      });
+      // ...the trusted click still fired...
+      const pressed = (dbg.sendCommand as jest.Mock).mock.calls.find(
+        (c: any[]) =>
+          c[1] === "Input.dispatchMouseEvent" && c[2].type === "mousePressed"
+      );
+      expect(pressed).toBeDefined();
+      // ...and the interception was surfaced on the action-result.
+      const call = (transport.sendResourceToServer as jest.Mock).mock.calls.find(
+        (c: any[]) => c[0].correlationId === "uidint"
+      );
+      expect(call[0].ok).toBe(true);
+      expect(call[0].intercepted).toMatchObject({
+        tag: "dialog",
+        classes: "Overlay",
+      });
+    });
+
+    it("click-element engine:cdp + failIfIntercepted hard-stops (no trusted click) when covered", async () => {
+      (browser.tabs.sendMessage as jest.Mock).mockImplementation(
+        (_id: number, msg: any) => {
+          if (msg && msg.type === "readElementRect") {
+            return Promise.resolve({ x: 10, y: 20, width: 100, height: 40, dpr: 2 });
+          }
+          if (
+            msg &&
+            msg.type === "performInputAction" &&
+            msg.args &&
+            msg.args.action === "classify-intercept"
+          ) {
+            return Promise.resolve({
+              ok: true,
+              intercepted: { tag: "dialog", id: "ovl", classes: "Overlay" },
+            });
+          }
+          return Promise.resolve({ ok: true });
+        }
+      );
+
+      await messageHandler.handleDecodedMessage({
+        cmd: "click-element",
+        tabId: 8,
+        uid: "e5",
+        engine: "cdp",
+        failIfIntercepted: true,
+        correlationId: "uidfail",
+      } as ServerMessageRequest);
+
+      // Hard stop: no debugger attach, no trusted dispatch...
+      expect(dbg.attach).not.toHaveBeenCalled();
+      const dispatched = (dbg.sendCommand as jest.Mock).mock.calls.filter(
+        (c: any[]) => c[1] === "Input.dispatchMouseEvent"
+      );
+      expect(dispatched).toHaveLength(0);
+      // ...and it short-circuits BEFORE resolving the center (no readElementRect).
+      const rectCalls = (browser.tabs.sendMessage as jest.Mock).mock.calls.filter(
+        (c: any[]) => c[1] && c[1].type === "readElementRect"
+      );
+      expect(rectCalls).toHaveLength(0);
+      const call = (transport.sendResourceToServer as jest.Mock).mock.calls.find(
+        (c: any[]) => c[0].correlationId === "uidfail"
+      );
+      expect(call[0].ok).toBe(false);
+      expect(call[0].error).toContain("click intercepted by #ovl");
+      expect(call[0].intercepted).toMatchObject({ id: "ovl" });
     });
 
     it("a resolve MISS (stale uid) reports ok:false and never attaches the debugger", async () => {
@@ -1343,6 +1451,79 @@ describe("MessageHandler (chrome) — foreground-tab preservation", () => {
         mimeType: "image/png",
         base64: "GOOD",
       });
+    });
+  });
+
+  describe("tab-activation drag retry (Fix C)", () => {
+    const automationConfig = { ...baseConfig, automationMode: true };
+
+    beforeEach(() => {
+      (browser.storage.local.get as jest.Mock).mockResolvedValue({
+        config: automationConfig,
+      });
+      (browser.tabs.get as jest.Mock).mockResolvedValue({
+        id: 3,
+        url: "https://example.com",
+        windowId: 1,
+      });
+      // Target is already the active tab → no restore, so update() calls are
+      // purely the activation attempts we want to count.
+      (browser.tabs.query as jest.Mock).mockResolvedValue([{ id: 3 }]);
+      (browser.permissions.contains as jest.Mock).mockResolvedValue(true);
+      (browser.tabs.captureVisibleTab as jest.Mock).mockResolvedValue(
+        "data:image/png;base64,GOOD"
+      );
+    });
+
+    it("retries the transient 'dragging a tab' activation failure and still captures", async () => {
+      let n = 0;
+      (browser.tabs.update as jest.Mock).mockImplementation(() => {
+        n++;
+        if (n === 1) {
+          return Promise.reject(
+            new Error(
+              "Tabs cannot be edited right now (user may be dragging a tab)."
+            )
+          );
+        }
+        return Promise.resolve(undefined);
+      });
+
+      await messageHandler.handleDecodedMessage({
+        cmd: "take-screenshot",
+        tabId: 3,
+        correlationId: "drag1",
+      } as ServerMessageRequest);
+
+      // First activation threw the transient; the retry succeeded.
+      expect(browser.tabs.update).toHaveBeenCalledTimes(2);
+      expect(browser.tabs.update).toHaveBeenNthCalledWith(2, 3, {
+        active: true,
+      });
+      expect(transport.sendResourceToServer).toHaveBeenCalledWith({
+        resource: "screenshot",
+        correlationId: "drag1",
+        mimeType: "image/png",
+        base64: "GOOD",
+      });
+    });
+
+    it("does NOT retry a non-transient activation error — it fails fast", async () => {
+      (browser.tabs.update as jest.Mock).mockRejectedValue(
+        new Error("No tab with id: 3.")
+      );
+
+      await expect(
+        messageHandler.handleDecodedMessage({
+          cmd: "take-screenshot",
+          tabId: 3,
+          correlationId: "drag2",
+        } as ServerMessageRequest)
+      ).rejects.toThrow(/No tab with id/);
+
+      // Fatal error → single attempt, no retry, and the capture never ran.
+      expect(browser.tabs.update).toHaveBeenCalledTimes(1);
+      expect(browser.tabs.captureVisibleTab).not.toHaveBeenCalled();
     });
   });
 

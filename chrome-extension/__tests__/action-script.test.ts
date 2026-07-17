@@ -130,6 +130,77 @@ describe("click interception (integration through performInputAction)", () => {
   });
 });
 
+describe("classify-intercept (read-only probe for the CDP engine, Fix A)", () => {
+  // The CDP click fires trusted events from the background at a coordinate, so it
+  // cannot run the isolated-world hit-test itself. This action returns the SAME
+  // `intercepted` descriptor the click arm computes, WITHOUT dispatching — the
+  // CDP dispatcher calls it before its (blind) trusted click to reach parity.
+  const UID_ATTR = "data-bcmcp-uid";
+  function withHitTest(topmost: Element | null) {
+    (document as unknown as {
+      elementFromPoint: (x: number, y: number) => Element | null;
+    }).elementFromPoint = () => topmost;
+    jest.spyOn(Element.prototype, "getBoundingClientRect").mockReturnValue({
+      left: 0, top: 0, width: 20, height: 20,
+      right: 20, bottom: 20, x: 0, y: 0, toJSON: () => ({}),
+    } as DOMRect);
+  }
+  afterEach(() => {
+    jest.restoreAllMocks();
+    delete (document as unknown as { elementFromPoint?: unknown }).elementFromPoint;
+    document.body.innerHTML = "";
+  });
+
+  it("returns the intercepted descriptor and does NOT click when a foreign overlay covers the target", () => {
+    document.body.innerHTML =
+      `<button>Go</button><div id="onetrust-banner-sdk" class="ot-sdk-row">cookies</div>`;
+    const btn = document.querySelector("button")!;
+    const overlay = document.querySelector("#onetrust-banner-sdk")!;
+    btn.setAttribute(UID_ATTR, "e1");
+    const onClick = jest.fn();
+    btn.addEventListener("click", onClick);
+    withHitTest(overlay);
+
+    const res = performInputAction(document, {
+      action: "classify-intercept",
+      uid: "e1",
+    });
+
+    expect(res.ok).toBe(true);
+    expect(res.intercepted).toMatchObject({ tag: "div", id: "onetrust-banner-sdk" });
+    // Read-only: the trusted click is the CDP dispatcher's job AFTER this probe.
+    expect(onClick).not.toHaveBeenCalled();
+  });
+
+  it("returns no interception (and no click) when the target itself is topmost", () => {
+    document.body.innerHTML = `<button>Go</button>`;
+    const btn = document.querySelector("button")!;
+    btn.setAttribute(UID_ATTR, "e1");
+    const onClick = jest.fn();
+    btn.addEventListener("click", onClick);
+    withHitTest(btn);
+
+    const res = performInputAction(document, {
+      action: "classify-intercept",
+      uid: "e1",
+    });
+
+    expect(res.ok).toBe(true);
+    expect(res.intercepted).toBeUndefined();
+    expect(onClick).not.toHaveBeenCalled();
+  });
+
+  it("is best-effort for a stale uid — ok:true with no interception, never blocking the click", () => {
+    document.body.innerHTML = `<button>Go</button>`;
+    const res = performInputAction(document, {
+      action: "classify-intercept",
+      uid: "gone",
+    });
+    expect(res.ok).toBe(true);
+    expect(res.intercepted).toBeUndefined();
+  });
+});
+
 /**
  * Covert synthetic parity fixes (A1 key identity, A2 checkbox-via-click covered
  * in the fill suite above, A3 click-sequence completeness, A5 contenteditable,

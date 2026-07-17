@@ -268,6 +268,34 @@ export class MessageHandler {
   // active before (unless it was already the target). captureVisibleTab and
   // background-frozen tabs require the target tab to be foregrounded; this makes
   // that behavior opt-in and non-destructive to the user's current tab.
+  // browser.tabs.update({active:true}) transiently throws "Tabs cannot be edited
+  // right now (user may be dragging a tab)" when the tab strip is mid-mutation —
+  // a spurious drag-detection false positive that an immediate retry clears. This
+  // activation sits OUTSIDE captureWindowWithRetry (which wraps only
+  // captureVisibleTab), so absorb that one transient here with the same backoff.
+  // Any OTHER error (tab closed / invalid id) rethrows immediately so it still
+  // fails fast.
+  private async activateTabWithRetry(tabId: number): Promise<void> {
+    const backoffs = [100, 300, 600];
+    let lastErr: unknown;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (attempt > 0) {
+        await sleep(backoffs[attempt - 1]);
+      }
+      try {
+        await browser.tabs.update(tabId, { active: true });
+        return;
+      } catch (e) {
+        lastErr = e;
+        const msg = String((e as { message?: unknown })?.message ?? e);
+        if (!/dragging a tab|Tabs cannot be edited/i.test(msg)) {
+          throw e;
+        }
+      }
+    }
+    throw lastErr;
+  }
+
   private async withTabActivated<T>(
     tabId: number,
     fn: () => Promise<T>
@@ -277,12 +305,18 @@ export class MessageHandler {
       active: true,
       windowId: tab.windowId,
     });
-    await browser.tabs.update(tabId, { active: true });
+    await this.activateTabWithRetry(tabId);
     try {
       return await fn();
     } finally {
       if (prevActive?.id != null && prevActive.id !== tabId) {
-        await browser.tabs.update(prevActive.id, { active: true });
+        // Best-effort restore: a transient failure to switch back must not
+        // discard an already-successful capture/action.
+        try {
+          await this.activateTabWithRetry(prevActive.id);
+        } catch (e) {
+          /* restore is best-effort */
+        }
       }
     }
   }
@@ -804,6 +838,9 @@ export class MessageHandler {
         correlationId,
         ok: result.ok,
         ...(result.error !== undefined ? { error: result.error } : {}),
+        ...(result.intercepted !== undefined
+          ? { intercepted: result.intercepted }
+          : {}),
       });
       return;
     }
@@ -918,7 +955,17 @@ export class MessageHandler {
   private async dispatchCdpInputAction(
     tabId: number,
     args: InputActionArgs
-  ): Promise<{ ok: boolean; error?: string }> {
+  ): Promise<{
+    ok: boolean;
+    error?: string;
+    intercepted?: {
+      tag: string;
+      id?: string;
+      classes?: string;
+      role?: string;
+      name?: string;
+    };
+  }> {
     const attachError = (e: unknown): string =>
       "CDP input dispatch failed — could not attach the debugger (is DevTools open on this tab, or another debugger already attached?): " +
       String((e as { message?: unknown })?.message ?? e);
@@ -955,6 +1002,52 @@ export class MessageHandler {
       args.action === "hover" ||
       args.action === "fill"
     ) {
+      // Interception parity with the synthetic engine (issue #1): the CDP click
+      // fires trusted events at a COORDINATE, so the renderer delivers them to
+      // whatever hit-tests topmost there. A covering overlay/modal silently
+      // swallows the click and the synthetic path's interception guard never
+      // runs on this engine. Ask the isolated world to classify what covers the
+      // target BEFORE dispatching, and surface it as `intercepted` (the server
+      // already renders the "⚠ intercepted" warning). Best-effort: a classify
+      // failure never blocks the click.
+      let intercepted:
+        | {
+            tag: string;
+            id?: string;
+            classes?: string;
+            role?: string;
+            name?: string;
+          }
+        | undefined;
+      if (args.action === "click") {
+        try {
+          const cls = await sendMessageToTabRaw(tabId, {
+            type: "performInputAction",
+            args: { action: "classify-intercept", uid: args.uid },
+          });
+          if (cls && cls.intercepted) {
+            intercepted = cls.intercepted;
+          }
+        } catch (e) {
+          /* best-effort — never block the click on a classify failure */
+        }
+        // Parity with the synthetic click arm: failIfIntercepted turns a covering
+        // overlay into a hard stop — suppress the trusted click entirely (no
+        // debugger attach, no dispatch) and report why, rather than clicking
+        // through. The selector mirrors the server's intercepted renderer.
+        if (intercepted && args.failIfIntercepted) {
+          const sel = intercepted.id
+            ? "#" + intercepted.id
+            : intercepted.classes
+              ? intercepted.tag + "." + intercepted.classes.split(" ")[0]
+              : intercepted.tag;
+          return {
+            ok: false,
+            intercepted,
+            error: "click intercepted by " + sel,
+          };
+        }
+      }
       const center = await this.resolveUidCenter(tabId, args.uid);
       if (!center.ok) {
         return { ok: false, error: center.error };
@@ -980,7 +1073,7 @@ export class MessageHandler {
       } catch (e) {
         return { ok: false, error: attachError(e) };
       }
-      return { ok: true };
+      return intercepted ? { ok: true, intercepted } : { ok: true };
     }
 
     // drag / type and anything else are not (yet) supported by the CDP engine —

@@ -195,7 +195,7 @@ export function evalInIsolatedWorld(
       return {
         ok: false,
         error:
-          'isolated-world evaluation is not available on this Chrome build (the extension\'s isolated-world CSP blocks eval). Use world:"main", or read DOM state via take-snapshot / take-screenshot.',
+          'isolated-world evaluation is not available on this Chrome build (the extension\'s isolated-world CSP blocks eval). Use engine:"cdp" (Chrome/Edge — runs via the debugger, bypasses CSP) or world:"main"; or read DOM state with the CSP-immune take-snapshot / take-screenshot / coordinate tools / get-cookies.',
       };
     }
     return { ok: false, error: msg };
