@@ -24,7 +24,12 @@ import type {
   ExtensionMessage,
   ServerMessageRequest,
 } from "@foxpilot/common";
-import { BrokerCore } from "./broker-core";
+import {
+  BrokerCore,
+  EXTENSION_GONE_IN_FLIGHT_MESSAGE,
+  EXTENSION_GONE_QUEUED_MESSAGE,
+  SendToExtensionResult,
+} from "./broker-core";
 import {
   BrokerClientFrame,
   BrokerControlResult,
@@ -542,14 +547,39 @@ export class BrokerServer {
     broadcast = true
   ): ExtensionConn {
     const prev = this.extensions.get(conn.browserId);
-    if (prev && prev.ws && prev.ws !== conn.ws) {
+    const staleWs = prev && prev.ws && prev.ws !== conn.ws ? prev.ws : null;
+    // Order is load-bearing in both directions.
+    //
+    // set() first because terminate() below normally fires its `close` on the
+    // next tick, but if it ever fired synchronously, removeExtension's
+    // `conn.ws !== ws` guard is the only thing stopping it from deleting the
+    // entry the new socket just installed — and that guard needs the set() to
+    // have already run.
+    //
+    // What going first costs: anything below that resolves a target now
+    // resolves to the NEW socket. That is safe only because the failure path
+    // below merely fails requests — it abandons their tabs instead of
+    // re-dispatching the queued work — so no tool frame can be written to this
+    // socket ahead of the `welcome` ack the admission flow sends next. An edit
+    // that reintroduces a dispatch here breaks the first-frame contract in this
+    // method's doc comment (there is a test pinning it).
+    this.extensions.set(conn.browserId, conn);
+    if (staleWs) {
       try {
-        prev.ws.terminate();
+        staleWs.terminate();
       } catch {
         /* ignore */
       }
+      // Nothing can answer the replaced socket's requests. Fail them here
+      // rather than leaving them to the generic per-command timer, whose
+      // message cannot say the connection was swapped out from under them
+      // (MV3 service-worker restart, or a reconnect under the same browserId).
+      this.core.failInFlightForBrowser(
+        conn.browserId,
+        "The browser extension's connection was replaced (the service worker restarted or the browser reconnected) while this request was in flight. The command may have already run in the browser. Verify the page state before retrying.",
+        "The browser extension's connection was replaced before the request could be sent. Nothing ran in the page, so this is SAFE to retry."
+      );
     }
-    this.extensions.set(conn.browserId, conn);
     this.clearIdleTimer();
     if (broadcast) {
       this.broadcastActiveStatus();
@@ -566,7 +596,19 @@ export class BrokerServer {
     if (this.activeBrowserId === browserId) {
       this.activeBrowserId = null;
     }
-    this.core.onExtensionDisconnect();
+    // Scoped to this browser, in place of the unscoped onExtensionDisconnect(),
+    // which fails EVERY pending regardless of browser — with two connected it
+    // killed the other's in-flight work. Three further differences ride along,
+    // all intended: only this browser's tab queues are failed rather than every
+    // queue; that queued work is NOT re-dispatched (this browser is already out
+    // of the registry, so a survivor would run it against its own unrelated tab
+    // of the same id); and leases are left alone, since a lease is a client's
+    // claim and the map has no browser dimension to scope by. See failInFlight.
+    this.core.failInFlightForBrowser(
+      browserId,
+      EXTENSION_GONE_IN_FLIGHT_MESSAGE,
+      EXTENSION_GONE_QUEUED_MESSAGE
+    );
     this.broadcastActiveStatus();
   }
 
@@ -731,7 +773,17 @@ export class BrokerServer {
     return !!this.longPollSink && this.extensions.size > 0;
   }
 
-  private sendToExtension(req: ServerMessageRequest): void {
+  /**
+   * Hand a request to the active browser, reporting whether anything actually
+   * went out and, when the transport can name one, which browser it went to.
+   *
+   * The caller needs both, because a successful long-poll send also names no
+   * browser. `delivered:false` means nothing was written anywhere: either
+   * resolveTarget() returned null (the case its own doc calls "caller fails
+   * loud") or the connection it returned has no socket / one that is no longer
+   * OPEN, and no long-poll sink accepted the request either.
+   */
+  private sendToExtension(req: ServerMessageRequest): SendToExtensionResult {
     const target = this.resolveTarget();
     if (target && target.ws && target.ws.readyState === WebSocket.OPEN) {
       if (target.authMode === "signed") {
@@ -741,11 +793,14 @@ export class BrokerServer {
       } else {
         target.ws.send(JSON.stringify({ payload: req }));
       }
-      return;
+      return { delivered: true, browserId: target.browserId };
     }
     if (this.longPollSink && this.longPollSink(req)) {
-      return;
+      // Long-poll does not identify which browser drains the queue, so this
+      // pending stays browser-agnostic.
+      return { delivered: true };
     }
+    return { delivered: false };
   }
 
   /**
@@ -1031,7 +1086,15 @@ export class BrokerServer {
         }
       }
     }
-    this.core.onExtensionDisconnect();
+    // Scoped to the pendings no browser owns — exactly the ones this transport
+    // delivered, since long-poll cannot name the browser that drained them. The
+    // unscoped onExtensionDisconnect() used here previously meant a stale
+    // long-poll transport failed every WebSocket browser's in-flight work too,
+    // which is verbatim the bug the scoping in removeExtension fixed.
+    this.core.failInFlightForLongPoll(
+      EXTENSION_GONE_IN_FLIGHT_MESSAGE,
+      EXTENSION_GONE_QUEUED_MESSAGE
+    );
     this.broadcastActiveStatus();
     this.maybeScheduleIdle();
   }

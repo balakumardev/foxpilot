@@ -916,7 +916,7 @@ mcpServer.tool(
 
 mcpServer.tool(
   "take-screenshot",
-  "Take a screenshot of a browser tab and return it as an image. By default captures the visible viewport. Set fullPage to true to capture the entire scrollable page (stitched together). Pass a 'uid' from a recent take-snapshot to capture just that element (cropped). Choose 'png' (default, lossless) or 'jpeg' (smaller) for the format. Provide an absolute filePath to also save the image to disk on the machine running the MCP server.",
+  "Take a screenshot of a browser tab and return it as an image. By default captures the visible viewport. Set fullPage to true to capture the entire scrollable page (stitched together). Pass a 'uid' from a recent take-snapshot to capture just that element (cropped). Choose 'png' (default, lossless) or 'jpeg' (smaller) for the format. Provide an absolute filePath to also save the image to disk on the machine running the MCP server. COVERTNESS: on Chrome/Edge, if captureVisibleTab returns an empty readback on all 3 attempts (a persistent failure some GPU/compositor configs hit), the DEFAULT viewport capture falls back to a CDP screenshot — that attaches the debugger, so it briefly shows the 'started debugging this browser' banner and is DETECTABLE by the page. The reply says so when it happens (a 'Warning:' line ahead of the image), and the debugger is detached immediately after. Only the default viewport path does this: fullPage and element ('uid') captures never attach the debugger, they fail instead. Firefox has no such fallback.",
   {
     tabId: z.number(),
     fullPage: z.boolean().optional(),

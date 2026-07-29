@@ -16,6 +16,26 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 
+/**
+ * The FoxPilot state directory. Everything this project persists outside the
+ * repo lives here — the control secret below, and the broker's log file — so
+ * the path and its 0700 bits are defined once instead of re-derived per caller.
+ */
+export function foxpilotDir(): string {
+  return path.join(os.homedir(), ".foxpilot");
+}
+
+/**
+ * Creates the state directory if absent and returns it. Deliberately throws on
+ * failure (read-only or sandboxed HOME) so each caller can pick its own
+ * degraded mode rather than inheriting one: getControlSecret falls back to an
+ * in-memory secret, the broker log falls back to a discarded fd.
+ */
+export function ensureFoxpilotDir(dir: string = foxpilotDir()): string {
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  return dir;
+}
+
 export function getControlSecret(opts: { dir?: string } = {}): string {
   const envSecret = process.env.EXTENSION_SECRET;
   // Ignore an unexpanded manifest placeholder (e.g. a host that didn't
@@ -24,7 +44,7 @@ export function getControlSecret(opts: { dir?: string } = {}): string {
   if (envSecret && envSecret.length > 0 && !envSecret.includes("${")) {
     return envSecret;
   }
-  const dir = opts.dir ?? path.join(os.homedir(), ".foxpilot");
+  const dir = opts.dir ?? foxpilotDir();
   const file = path.join(dir, "control-secret");
 
   const readExisting = (): string | null => {
@@ -52,7 +72,7 @@ export function getControlSecret(opts: { dir?: string } = {}): string {
 
   const secret = crypto.randomUUID();
   try {
-    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    ensureFoxpilotDir(dir);
     try {
       // Atomic create: the "wx" flag fails if another process won the race.
       fs.writeFileSync(file, secret, { mode: 0o600, flag: "wx" });

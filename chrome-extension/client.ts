@@ -395,7 +395,17 @@ export class WebsocketClient implements ExtensionTransport {
 
   public async sendResourceToServer(resource: ExtensionMessage): Promise<void> {
     if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
-      console.error("Socket is not open");
+      // The reply was PRODUCED and is now thrown away — the action itself very
+      // likely ran in the page. Dropping it without naming the correlationId is
+      // what makes the broker's eventual timeout indistinguishable from "nothing
+      // happened", so this line is the only trace the drop ever leaves.
+      // Deliberately NOT queued for replay: the broker fails the pending when
+      // the socket is replaced, so a replayed success frame would land after the
+      // agent already acted on the timeout and would assert stale truth.
+      console.error(
+        "Socket is not open — DROPPING reply frame (the action may already have run in the page)",
+        { correlationId: resource.correlationId, resource: resource.resource }
+      );
       return;
     }
     this.socket.send(JSON.stringify(await this.frame(resource)));
@@ -406,7 +416,13 @@ export class WebsocketClient implements ExtensionTransport {
     errorMessage: string
   ): Promise<void> {
     if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
-      console.error("Socket is not open", this.socket);
+      // Same drop on the error path: the real reason never reaches the broker,
+      // which then reports its own generic timeout in place of this message.
+      console.error("Socket is not open — DROPPING error frame", {
+        correlationId,
+        errorMessage,
+        readyState: this.socket ? this.socket.readyState : null,
+      });
       return;
     }
     const extensionError: ExtensionError = {

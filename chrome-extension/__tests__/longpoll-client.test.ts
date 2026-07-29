@@ -65,10 +65,15 @@ describe("LongPollClient secret handling", () => {
   it("starts polling when a secret IS configured", async () => {
     const client = new LongPollClient(8089, "shared");
     client.connect();
-    // The loop POSTs a signed hello then GETs /poll; give it a few turns so the
-    // async HMAC + fetch chain runs at least once.
-    for (let i = 0; i < 5; i++) {
-      await new Promise((resolve) => setTimeout(resolve, 0));
+    // The loop POSTs a signed hello then GETs /poll. Wait on the CONDITION,
+    // not on a fixed number of event-loop turns: the chain includes a real
+    // crypto.subtle HMAC, so a turn count races it and flaked roughly 1 run in
+    // 5 under a loaded suite. A deadline still fails honestly if polling never
+    // starts — it only stops the assertion from firing before the work could
+    // possibly have run.
+    const deadline = Date.now() + 5000;
+    while (fetchMock.mock.calls.length === 0 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
     }
     expect(fetchMock).toHaveBeenCalled();
     client.disconnect();

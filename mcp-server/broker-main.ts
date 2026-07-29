@@ -6,11 +6,52 @@
  * shuts itself down once idle.
  */
 
+import * as fs from "fs";
 import { BrokerServer } from "./broker";
 import { BrokerLongPoll } from "./broker-longpoll";
 import { getControlSecret } from "./control-secret";
 
 const WS_DEFAULT_PORT = 8089;
+/** Mirrors browser-api.ts's BROKER_LOG_MAX_BYTES; see startLogTrimmer. */
+const LOG_MAX_BYTES = 5 * 1024 * 1024;
+const LOG_CHECK_INTERVAL_MS = 60000;
+
+/**
+ * Bounds the log file this process is writing into.
+ *
+ * browser-api.ts caps the file when it opens it, but that only rotates at
+ * SPAWN. This broker deliberately outlives individual client sessions, so a
+ * chatty failure mode — the late/unknown-reply diagnostics firing on every MV3
+ * service-worker flap, say — could grow the file without limit inside a single
+ * lifetime. This is the other half of that bound.
+ *
+ * Trims through fd 1 rather than a path: fd 1 IS the log, because browser-api
+ * redirected both our streams into it. That needs no filename shared across the
+ * two files and makes it impossible to truncate the wrong file. The fd was
+ * opened O_APPEND, so writes resume at offset 0 after the truncate instead of
+ * leaving a sparse hole.
+ *
+ * isFile() is the gate that makes this safe everywhere else: with no log fd
+ * stdout is /dev/null, and for a developer running the broker by hand it is a
+ * TTY or a pipe — none of those are trimmable, and all of them are skipped.
+ */
+function startLogTrimmer(): void {
+  const timer = setInterval(() => {
+    try {
+      const stat = fs.fstatSync(1);
+      if (stat.isFile() && stat.size >= LOG_MAX_BYTES) {
+        fs.ftruncateSync(1, 0);
+        console.error(
+          `Broker: log passed ${LOG_MAX_BYTES} bytes; truncated in place.`
+        );
+      }
+    } catch {
+      /* Log upkeep must never be the thing that takes the broker down. */
+    }
+  }, LOG_CHECK_INTERVAL_MS);
+  // Never let log maintenance alone hold the process open.
+  timer.unref?.();
+}
 
 /** Treats unset/""/"0"/"false" as false so `CONTAINERIZED=0` doesn't enable remote mode. */
 function envFlag(value: string | undefined): boolean {
@@ -38,6 +79,7 @@ function readBrokerConfig() {
 }
 
 async function main() {
+  startLogTrimmer();
   const { secret, port, requireSignature, strictExtensionIds } =
     readBrokerConfig();
 

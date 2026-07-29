@@ -413,6 +413,315 @@ describe("BrokerServer list/select control", () => {
   }, 10000);
 });
 
+describe("BrokerServer per-browser in-flight failure", () => {
+  let server: BrokerServer;
+  let port: number;
+
+  beforeEach(async () => {
+    server = new BrokerServer({ port: 0, host: "127.0.0.1", secret: SECRET });
+    await server.listen();
+    port = server.getPort();
+  });
+
+  afterEach(() => {
+    server.close();
+  });
+
+  /** Accumulate every frame the client receives (not just the next one). */
+  function collectClient(ws: WebSocket): any[] {
+    const seen: any[] = [];
+    ws.on("message", (data) => seen.push(JSON.parse(data.toString()).payload));
+    return seen;
+  }
+
+  /** Resolves once the extension socket has been handed a tool request. */
+  function awaitDispatch(ws: WebSocket, cmd: string): Promise<void> {
+    return new Promise((resolve) => {
+      ws.on("message", (data) => {
+        const env = JSON.parse(data.toString());
+        if (env.payload?.cmd === cmd) resolve();
+      });
+    });
+  }
+
+  async function selectBrowser(
+    client: WebSocket,
+    browserId: string
+  ): Promise<void> {
+    client.send(
+      envelope({
+        kind: "control",
+        requestId: `sel-${browserId}`,
+        control: { control: "select-browser", browserId },
+      })
+    );
+    await new Promise((r) => setTimeout(r, 50));
+  }
+
+  /**
+   * Park one never-answered request on each browser. Neither extension socket
+   * replies, so both stay in-flight for the duration of the test.
+   */
+  async function parkOnBoth(
+    client: WebSocket,
+    chrome: WebSocket,
+    firefox: WebSocket
+  ): Promise<void> {
+    const chromeGot = awaitDispatch(chrome, "get-tab-list");
+    await selectBrowser(client, "chrome-1");
+    client.send(
+      envelope({ kind: "tool", requestId: "r1", message: { cmd: "get-tab-list" } })
+    );
+    await chromeGot;
+
+    const firefoxGot = awaitDispatch(firefox, "get-tab-list");
+    await selectBrowser(client, "firefox-1");
+    client.send(
+      envelope({ kind: "tool", requestId: "r2", message: { cmd: "get-tab-list" } })
+    );
+    await firefoxGot;
+  }
+
+  it("disconnecting one browser fails only its in-flight request", async () => {
+    const chrome = await connectExtension(port, "chrome-1", "chrome", "Chrome");
+    const firefox = await connectExtension(port, "firefox-1", "firefox", "Firefox");
+    const client = new WebSocket(`ws://127.0.0.1:${port}/mcp`);
+    await waitOpen(client);
+    const seen = collectClient(client);
+
+    await parkOnBoth(client, chrome, firefox);
+
+    chrome.close();
+    await new Promise((r) => setTimeout(r, 150));
+
+    const errors = seen.filter((f) => f.kind === "tool-error");
+    expect(errors).toHaveLength(1);
+    expect(errors[0].requestId).toBe("r1");
+    expect(errors[0].errorMessage).toMatch(/disconnected before responding/);
+
+    firefox.close();
+    client.close();
+  }, 10000);
+
+  it("reconnecting under the same browserId fails that browser's in-flight request with the replaced wording", async () => {
+    const chrome = await connectExtension(port, "chrome-1", "chrome", "Chrome");
+    const firefox = await connectExtension(port, "firefox-1", "firefox", "Firefox");
+    const client = new WebSocket(`ws://127.0.0.1:${port}/mcp`);
+    await waitOpen(client);
+    const seen = collectClient(client);
+
+    await parkOnBoth(client, chrome, firefox);
+
+    // The MV3 case: a fresh socket re-registers under the SAME persisted
+    // browserId, so registerExtension swaps the socket rather than the old
+    // one's close handler tearing the entry down.
+    const chromeAgain = await connectExtension(port, "chrome-1", "chrome", "Chrome");
+    await new Promise((r) => setTimeout(r, 150));
+
+    const errors = seen.filter((f) => f.kind === "tool-error");
+    expect(errors).toHaveLength(1);
+    expect(errors[0].requestId).toBe("r1");
+    expect(errors[0].errorMessage).toMatch(/connection was replaced/);
+    expect(errors[0].errorMessage).toMatch(/may have already run/);
+
+    // Firefox's in-flight request is untouched by the Chrome swap.
+    expect(seen.some((f) => f.requestId === "r2")).toBe(false);
+
+    chromeAgain.close();
+    firefox.close();
+    client.close();
+  }, 10000);
+});
+
+describe("BrokerServer queued work when a browser goes away", () => {
+  let server: BrokerServer;
+  let port: number;
+
+  beforeEach(async () => {
+    server = new BrokerServer({ port: 0, host: "127.0.0.1", secret: SECRET });
+    await server.listen();
+    port = server.getPort();
+  });
+
+  afterEach(() => {
+    server.close();
+  });
+
+  function collectClient(ws: WebSocket): any[] {
+    const seen: any[] = [];
+    ws.on("message", (data) => seen.push(JSON.parse(data.toString()).payload));
+    return seen;
+  }
+
+  /** Every frame an extension socket receives, envelope and all. */
+  function collectExtension(ws: WebSocket): any[] {
+    const seen: any[] = [];
+    ws.on("message", (data) => seen.push(JSON.parse(data.toString())));
+    return seen;
+  }
+
+  function awaitDispatch(ws: WebSocket, cmd: string): Promise<void> {
+    return new Promise((resolve) => {
+      ws.on("message", (data) => {
+        const env = JSON.parse(data.toString());
+        if (env.payload?.cmd === cmd) resolve();
+      });
+    });
+  }
+
+  async function selectBrowser(
+    client: WebSocket,
+    browserId: string
+  ): Promise<void> {
+    client.send(
+      envelope({
+        kind: "control",
+        requestId: `sel-${browserId}`,
+        control: { control: "select-browser", browserId },
+      })
+    );
+    await new Promise((r) => setTimeout(r, 50));
+  }
+
+  const tool = (requestId: string, message: unknown) =>
+    envelope({ kind: "tool", requestId, message });
+
+  it("never re-dispatches a queued tab request to the surviving browser", async () => {
+    // The proven sequence: a click on Chrome's tab 5 is in flight, a fill for
+    // the same tab is queued behind it (tabInFlight is a GLOBAL Set<number>),
+    // and Chrome's socket closes. Draining that queue would re-resolve the
+    // target — with Chrome deregistered, Firefox is the lone browser and so the
+    // implicit active driver — and the fill would mutate FIREFOX's tab 5, a
+    // different page, reported to the client as success.
+    const chrome = await connectExtension(port, "chrome-1", "chrome", "Chrome");
+    const firefox = await connectExtension(
+      port,
+      "firefox-1",
+      "firefox",
+      "Firefox"
+    );
+    const client = new WebSocket(`ws://127.0.0.1:${port}/mcp`);
+    await waitOpen(client);
+    const seen = collectClient(client);
+    const firefoxFrames = collectExtension(firefox);
+
+    await selectBrowser(client, "chrome-1");
+
+    // r1 goes to Chrome and is deliberately never answered.
+    const chromeGot = awaitDispatch(chrome, "click-element");
+    client.send(tool("r1", { cmd: "click-element", tabId: 5, uid: "e1" }));
+    await chromeGot;
+
+    // r2 targets the same tab, so it queues instead of dispatching.
+    client.send(
+      tool("r2", {
+        cmd: "fill-element",
+        tabId: 5,
+        uid: "e2",
+        value: "SECRET",
+      })
+    );
+    await new Promise((r) => setTimeout(r, 100));
+    expect(firefoxFrames.some((f) => f.payload?.cmd === "fill-element")).toBe(
+      false
+    );
+
+    chrome.close();
+    await new Promise((r) => setTimeout(r, 250));
+
+    // Firefox saw neither request — only its own active-status frames.
+    expect(firefoxFrames.some((f) => f.payload?.cmd === "fill-element")).toBe(
+      false
+    );
+    expect(firefoxFrames.some((f) => f.payload?.cmd === "click-element")).toBe(
+      false
+    );
+
+    // Both requests are reported to the client, each with the honest wording
+    // for its own state.
+    const errors = seen.filter((f) => f.kind === "tool-error");
+    expect(errors.map((e) => e.requestId).sort()).toEqual(["r1", "r2"]);
+    const inFlight = errors.find((e) => e.requestId === "r1");
+    expect(inFlight.errorMessage).toMatch(/disconnected before responding/);
+    expect(inFlight.errorMessage).toMatch(/MISSING REPLY/);
+    const queued = errors.find((e) => e.requestId === "r2");
+    expect(queued.errorMessage).toMatch(/before the request could be sent/);
+    expect(queued.errorMessage).toMatch(/SAFE to retry/);
+
+    firefox.close();
+    client.close();
+  }, 10000);
+
+  it("frees the abandoned tab so the surviving browser can still be driven", async () => {
+    // The other half of abandoning a tab: releasing tabInFlight. Without it,
+    // tab 5 stays marked in-flight forever and every later request for it
+    // queues and never dispatches.
+    const chrome = await connectExtension(port, "chrome-1", "chrome", "Chrome");
+    const firefox = await connectExtension(
+      port,
+      "firefox-1",
+      "firefox",
+      "Firefox"
+    );
+    const client = new WebSocket(`ws://127.0.0.1:${port}/mcp`);
+    await waitOpen(client);
+
+    await selectBrowser(client, "chrome-1");
+    const chromeGot = awaitDispatch(chrome, "click-element");
+    client.send(tool("r1", { cmd: "click-element", tabId: 5, uid: "e1" }));
+    await chromeGot;
+    client.send(tool("r2", { cmd: "click-element", tabId: 5, uid: "e2" }));
+    await new Promise((r) => setTimeout(r, 100));
+
+    chrome.close();
+    await new Promise((r) => setTimeout(r, 250));
+
+    // Firefox is now the lone browser. A NEW request for tab 5 — one the
+    // caller chose to send after being told the old ones failed — must go out.
+    const firefoxGot = awaitDispatch(firefox, "click-element");
+    client.send(tool("r3", { cmd: "click-element", tabId: 5, uid: "e3" }));
+    await firefoxGot;
+
+    firefox.close();
+    client.close();
+  }, 10000);
+
+  it("sends welcome as the FIRST frame on a reconnecting socket", async () => {
+    // registerExtension installs the new connection before failing the old
+    // one's in-flight work, so anything that resolved a target during that
+    // failure would resolve to this socket. Nothing may reach it before the
+    // welcome ack — the zero-config pairing contract, and what the status pill
+    // flips on.
+    const chrome = await connectExtension(port, "chrome-1", "chrome", "Chrome");
+    const client = new WebSocket(`ws://127.0.0.1:${port}/mcp`);
+    await waitOpen(client);
+
+    const chromeGot = awaitDispatch(chrome, "click-element");
+    client.send(tool("r1", { cmd: "click-element", tabId: 5, uid: "e1" }));
+    await chromeGot;
+    client.send(
+      tool("r2", { cmd: "fill-element", tabId: 5, uid: "e2", value: "SECRET" })
+    );
+    await new Promise((r) => setTimeout(r, 100));
+
+    // Reconnect under the SAME browserId, recording from before the hello.
+    const again = new WebSocket(`ws://127.0.0.1:${port}/extension`);
+    await waitOpen(again);
+    const frames = collectExtension(again);
+    again.send(hello("chrome-1", "chrome", "Chrome"));
+    await new Promise((r) => setTimeout(r, 250));
+
+    expect(frames.length).toBeGreaterThan(0);
+    expect(frames[0].type).toBe("welcome");
+    // And the queued fill was failed, not handed to the fresh socket.
+    expect(frames.some((f) => f.payload?.cmd === "fill-element")).toBe(false);
+
+    again.close();
+    chrome.close();
+    client.close();
+  }, 10000);
+});
+
 describe("BrokerServer active-status push", () => {
   let server: BrokerServer;
   let port: number;

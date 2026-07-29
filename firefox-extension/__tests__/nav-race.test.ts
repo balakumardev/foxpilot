@@ -47,3 +47,17 @@ test("ignores navigation on a different tab", async () => {
   const r = await p;
   expect(r).toMatchObject({ ok: true, foo: 1 });
 });
+
+test("deadline plug settles and releases the listener when both arms hang", async () => {
+  const t = mockTabs();
+  const neverAcks = new Promise<any>(() => {}); // frozen/bfcached world
+  // No nav fired either, so without the plug this would hang forever and leak
+  // the listener into every later click on this background page.
+  const r = await raceInputAgainstNavigation(5, neverAcks, Date.now() + 5);
+  expect(r).toMatchObject({ ok: false });
+  expect((r as { error: string }).error).toContain("UNKNOWN");
+  // Must never masquerade as a successful navigation — that false positive is
+  // the exact failure this arm exists to close.
+  expect(r).not.toHaveProperty("navigated");
+  expect(t.count()).toBe(0); // listener released
+});
