@@ -125,23 +125,100 @@ const READ_ONLY_COMMANDS = new Set<string>([
 ]);
 
 /**
+ * Mutating `cmd`s that drive a SPECIFIC tab's renderer — synthetic/CDP input,
+ * DOM-driving helpers, and scrolls. Every one of these stalls when the target
+ * tab is frozen by Chrome Memory Saver / Edge Sleeping Tabs, so their timeout
+ * carries an extra hint naming that cause and its remedy.
+ *
+ * Typed as `ServerMessage["cmd"][]` so a typo or a renamed command fails `tsc`
+ * rather than silently dropping a command out of the hint. Deliberately NOT
+ * exhaustive over the union: membership is "would a frozen tab explain this
+ * timeout?", and for `browser-fetch` / `stream-*` / `get-*` it would not.
+ *
+ * Must stay disjoint from {@link READ_ONLY_COMMANDS} — those keep the original
+ * byte-identical string and never receive this hint (broker-core.test.ts pins
+ * both the disjointness and the read-only wording).
+ *
+ * `evaluate-script` and `upload-file` are deliberately absent: a frozen tab
+ * does stall them, but their dominant real-world timeout cause is a strict page
+ * CSP, and this hint's "stalls input" framing would misdirect there.
+ */
+const TAB_DRIVING_COMMANDS: ReadonlySet<string> = new Set<
+  ServerMessage["cmd"]
+>([
+  // uid-based input actions (all accept `activateTab`).
+  "click-element",
+  "fill-element",
+  "fill-form",
+  "press-key",
+  "type-text",
+  "drag-element",
+  "hover-element",
+  // Coordinate input actions. NOTE: these four do NOT accept `activateTab`
+  // today, which is why the hint leads with `select-tab` — the one remedy that
+  // works for every command in this set.
+  "click-at",
+  "type-at",
+  "hover-at",
+  "scroll-at",
+  // Other DOM drivers: menu polling, overlay dismissal, scrolling.
+  "select-option",
+  "dismiss-overlays",
+  "scroll-to",
+  "scroll-into-view",
+]);
+
+/**
  * A timeout is a MISSING REPLY, never a confirmed failure — the extension may
  * have applied the command and lost the ack. For anything that changes state
  * that distinction decides whether the agent retries: the old blanket wording
  * read as "nothing happened", so agents re-clicked and double-submitted.
  * Read-only commands keep the original string so they are not made scarier.
+ *
+ * For {@link TAB_DRIVING_COMMANDS} the wording additionally names the frozen
+ * background tab. That cause is invisible from the agent's side: a frozen tab
+ * still answers `take-snapshot` with a full element tree (one synchronous DOM
+ * read), while an input action — which the background paces as several
+ * sequential round-trips into the page — stalls for the whole budget. Without
+ * this, a healthy-looking snapshot reads as proof the tab is fine.
+ *
+ * `activateTabRequested` flips the hint: when the call already foregrounded the
+ * tab, repeating that advice would send the agent to redo what it just did, so
+ * the message rules the freeze out instead and points at the page.
  */
-export function timeoutMessageFor(cmd: string, ms: number): string {
+export function timeoutMessageFor(
+  cmd: string,
+  ms: number,
+  opts?: { activateTabRequested?: boolean }
+): string {
   if (READ_ONLY_COMMANDS.has(cmd)) {
     return "Timed out waiting for response from the browser extension";
   }
-  return (
+  const base =
     `The browser extension did not respond within ${ms}ms for '${cmd}'. ` +
     `This is a MISSING REPLY, not a confirmed failure — '${cmd}' may have ` +
     `already been applied. Do NOT blindly retry it: a repeated ` +
     `click/fill/submit/request can double-apply. Verify the current state first ` +
     `(a fresh take-snapshot, or re-read whatever this command changes), then ` +
-    `decide.`
+    `decide.`;
+  if (!TAB_DRIVING_COMMANDS.has(cmd)) {
+    return base;
+  }
+  if (opts?.activateTabRequested) {
+    return (
+      base +
+      ` This call already ran with activateTab:true, so a frozen background ` +
+      `tab is NOT the cause — look at the page itself (a modal or overlay ` +
+      `swallowing the event, or a navigation in progress).`
+    );
+  }
+  return (
+    base +
+    ` LIKELY CAUSE: if this tab is not the user's foreground tab it may be ` +
+    `frozen (Chrome Memory Saver / Edge Sleeping Tabs). A frozen tab still ` +
+    `returns a full snapshot, so a healthy tree does NOT rule this out — only ` +
+    `input stalls. Foreground the tab with select-tab, or pass ` +
+    `activateTab:true on the tools that accept it, before you retry.`
   );
 }
 
@@ -266,10 +343,16 @@ export class BrokerCore {
     const correlationId = this.genCorrelationId();
     const req = { ...message, correlationId } as ServerMessageRequest;
     const timeoutMs = this.getTimeoutMs(message.cmd);
+    // `activateTab` is read off the request so the timeout can tell an agent
+    // that already foregrounded the tab not to try that again. The field is
+    // optional on a subset of messages, hence the structural read rather than a
+    // per-cmd cast.
+    const activateTabRequested =
+      (message as { activateTab?: boolean }).activateTab === true;
     const timer = setTimeout(() => {
       this.failPending(
         correlationId,
-        timeoutMessageFor(message.cmd, timeoutMs)
+        timeoutMessageFor(message.cmd, timeoutMs, { activateTabRequested })
       );
     }, timeoutMs);
     // Don't let a pending request's timer keep the process alive on its own;

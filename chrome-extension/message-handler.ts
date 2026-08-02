@@ -809,6 +809,7 @@ export class MessageHandler {
       ...(result.total !== undefined ? { total: result.total } : {}),
       ...(result.hasMore !== undefined ? { hasMore: result.hasMore } : {}),
       ...(result.error !== undefined ? { error: result.error } : {}),
+      ...(result.docState !== undefined ? { docState: result.docState } : {}),
     });
   }
 

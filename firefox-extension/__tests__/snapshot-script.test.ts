@@ -957,3 +957,65 @@ describe("B11: visibility filter uses computed style (runtime-guarded)", () => {
     expect(tree).toContain('link "Beta"');
   });
 });
+
+/**
+ * docState lets the server tell a mid-navigation or blank document apart from a
+ * page that genuinely has no controls — all three otherwise render as a bare
+ * `[snapshot: 0 elements]`. Mirrored by the block in
+ * chrome-extension/__tests__/snapshot-script.test.ts.
+ */
+describe("buildSnapshot docState", () => {
+  it("reports readyState, url and body child count", () => {
+    document.body.innerHTML = `<button>Alpha</button><div></div>`;
+    const { docState } = buildSnapshot(document, {
+      verbose: false,
+      maxLength: 25000,
+      includePointer: false,
+    });
+    expect(docState).toBeDefined();
+    // jsdom reports "complete" for a fully parsed document.
+    expect(typeof docState!.readyState).toBe("string");
+    expect(docState!.readyState.length).toBeGreaterThan(0);
+    expect(docState!.url).toBe(document.URL);
+    expect(docState!.bodyChildren).toBe(2);
+  });
+
+  it("reports bodyChildren 0 for an empty body, alongside total 0", () => {
+    document.body.innerHTML = ``;
+    const { total, docState } = buildSnapshot(document, {
+      verbose: false,
+      maxLength: 25000,
+      includePointer: false,
+    });
+    expect(total).toBe(0);
+    expect(docState!.bodyChildren).toBe(0);
+  });
+
+  it("distinguishes a content-bearing page with no interactive elements", () => {
+    document.body.innerHTML = `<p>Just prose.</p><p>More prose.</p>`;
+    const { total, docState } = buildSnapshot(document, {
+      verbose: false,
+      maxLength: 25000,
+      includePointer: false,
+    });
+    // The pair (total 0, bodyChildren > 0) is exactly what the server needs to
+    // say "loaded, nothing interactive" instead of "empty page".
+    expect(total).toBe(0);
+    expect(docState!.bodyChildren).toBe(2);
+  });
+
+  it("is present on the truncated path too", () => {
+    document.body.innerHTML = Array.from(
+      { length: 50 },
+      (_, i) => `<button>Button number ${i}</button>`
+    ).join("");
+    const { isTruncated, docState } = buildSnapshot(document, {
+      verbose: false,
+      maxLength: 40,
+      includePointer: false,
+    });
+    expect(isTruncated).toBe(true);
+    expect(docState).toBeDefined();
+    expect(docState!.bodyChildren).toBe(50);
+  });
+});

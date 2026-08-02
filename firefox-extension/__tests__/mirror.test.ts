@@ -26,7 +26,7 @@
  * Port the change to the other extension so both browsers get the same fix.
  */
 
-import { readFileSync } from "fs";
+import { readdirSync, readFileSync } from "fs";
 import { join } from "path";
 
 const FIREFOX_NAV_RACE = join(__dirname, "..", "nav-race.ts");
@@ -92,5 +92,64 @@ describe("nav-race.ts is mirrored across the two extensions", () => {
       expect(code).not.toContain("window.setTimeout");
       expect(code).not.toContain("window.clearTimeout");
     }
+  });
+});
+
+/**
+ * The same guard for `injected/*`, which CLAUDE.md declares must be
+ * byte-identical between the two extensions past the leading doc comment.
+ *
+ * That rule was previously enforced by nothing: `self-containment.test.ts` — the
+ * "canonical guard" — only imports the FIREFOX copies and checks each is
+ * stringify-safe. It never compares the two extensions, so editing one
+ * `injected/*` file and forgetting its twin broke no test and shipped a fix to
+ * one browser only. These functions are injected into the page and are the most
+ * behaviour-critical code in the repo, which makes silent drift here the
+ * expensive kind: both suites stay green and the symptom is "works in Firefox,
+ * not Chrome" against a live page.
+ *
+ * `page-world.ts` is deliberately excluded. Its two copies differ by ~125 lines and
+ * the divergence is real, not cosmetic — Chrome's isolated-world eval honestly
+ * degrades where Firefox compiles the source string (see CLAUDE.md on
+ * `evaluate-script world:"isolated"`). Bringing it under this guard would mean
+ * either reconciling genuinely different behaviour or weakening the assertion.
+ * Its own header still claims byte-identity with Firefox; that claim is stale
+ * and is a pre-existing inconsistency, not something this guard should paper
+ * over.
+ */
+describe("injected/* is mirrored across the two extensions", () => {
+  // Every injected module that is meant to be a true mirror. Adding a new
+  // injected file means adding it here.
+  const MIRRORED = [
+    "action-script.ts",
+    "dismiss-overlays-script.ts",
+    "humanize-steps.ts",
+    "point-action-script.ts",
+    "screenshot-script.ts",
+    "select-option-script.ts",
+    "snapshot-script.ts",
+    "upload-script.ts",
+  ];
+
+  it.each(MIRRORED)(
+    "%s bodies are byte-identical once the doc comment is normalized",
+    (name) => {
+      const ff = readFileSync(join(__dirname, "..", "injected", name), "utf8");
+      const cr = readFileSync(
+        join(__dirname, "..", "..", "chrome-extension", "injected", name),
+        "utf8"
+      );
+      expect(normalize(cr)).toBe(normalize(ff));
+    }
+  );
+
+  it("covers every injected file except the documented exclusion", () => {
+    // Catches a NEW injected module that nobody added to MIRRORED — otherwise
+    // the guard silently stops covering the newest, least-reviewed code.
+    const EXCLUDED = ["page-world.ts"];
+    const present = readdirSync(join(__dirname, "..", "injected"))
+      .filter((f) => f.endsWith(".ts"))
+      .sort();
+    expect(present).toEqual([...MIRRORED, ...EXCLUDED].sort());
   });
 });

@@ -205,6 +205,117 @@ describe("BrokerCore timeout wording", () => {
 });
 
 /**
+ * A tab frozen by Chrome Memory Saver / Edge Sleeping Tabs is the one cause an
+ * agent cannot see: the frozen tab still answers take-snapshot with a full tree,
+ * so only input stalls. These pin the hint that names it, and — just as
+ * important — pin that it does NOT fire where it would be wrong.
+ */
+describe("BrokerCore timeout wording: frozen background tab hint", () => {
+  const TAB_DRIVING = [
+    "click-element",
+    "fill-element",
+    "fill-form",
+    "press-key",
+    "type-text",
+    "drag-element",
+    "hover-element",
+    "click-at",
+    "type-at",
+    "hover-at",
+    "scroll-at",
+    "select-option",
+    "dismiss-overlays",
+    "scroll-to",
+    "scroll-into-view",
+  ];
+
+  it("names the freeze, the select-tab remedy, and activateTab:true", () => {
+    const msg = timeoutMessageFor("click-element", 15000);
+    expect(msg).toContain("Memory Saver");
+    expect(msg).toContain("select-tab");
+    expect(msg).toContain("activateTab:true");
+    // The specific misread this exists to prevent: a healthy snapshot being
+    // taken as proof the tab is fine.
+    expect(msg).toMatch(/does NOT rule this out/);
+  });
+
+  it("keeps the base verify-first guidance alongside the hint", () => {
+    const msg = timeoutMessageFor("click-element", 15000);
+    expect(msg).toContain("MISSING REPLY");
+    expect(msg).toMatch(/Do NOT blindly retry/);
+    // The hint must not read as blanket permission to re-fire the click.
+    expect(msg.indexOf("Do NOT blindly retry")).toBeLessThan(
+      msg.indexOf("select-tab")
+    );
+  });
+
+  it("fires for every tab-driving command", () => {
+    for (const cmd of TAB_DRIVING) {
+      expect([cmd, timeoutMessageFor(cmd, 1000).includes("Memory Saver")]).toEqual(
+        [cmd, true]
+      );
+    }
+  });
+
+  it("does NOT fire for mutating commands a frozen tab cannot explain", () => {
+    for (const cmd of ["browser-fetch", "stream-start", "navigate-tab", "emulate"]) {
+      const msg = timeoutMessageFor(cmd, 1000);
+      expect([cmd, msg.includes("Memory Saver")]).toEqual([cmd, false]);
+      // Still cautious — the hint is additive, it does not replace the wording.
+      expect([cmd, msg.includes("MISSING REPLY")]).toEqual([cmd, true]);
+    }
+  });
+
+  it("does NOT fire for read-only commands (disjoint from the allow-list)", () => {
+    for (const cmd of ["take-snapshot", "get-tab-content", "get-tab-list"]) {
+      expect([cmd, timeoutMessageFor(cmd, 1000)]).toEqual([
+        cmd,
+        "Timed out waiting for response from the browser extension",
+      ]);
+    }
+  });
+
+  it("rules the freeze OUT when the call already passed activateTab:true", () => {
+    const msg = timeoutMessageFor("click-element", 15000, {
+      activateTabRequested: true,
+    });
+    expect(msg).toContain("already ran with activateTab:true");
+    expect(msg).toContain("NOT the cause");
+    // Must not send the agent to redo the thing it just did.
+    expect(msg).not.toContain("select-tab");
+    expect(msg).not.toContain("Memory Saver");
+    // Base wording survives.
+    expect(msg).toContain("MISSING REPLY");
+  });
+
+  it("reads activateTab off the real request on a dispatch timeout", () => {
+    jest.useFakeTimers();
+    const { core, clientFrames } = makeCore({ getTimeoutMs: () => 1000 });
+    core.submitTool("A", "r1", {
+      cmd: "click-element",
+      tabId: 3,
+      uid: "e1",
+      activateTab: true,
+    });
+    jest.advanceTimersByTime(1000);
+    const frame = clientFrames[0].frame as { errorMessage: string };
+    expect(frame.errorMessage).toContain("already ran with activateTab:true");
+    expect(frame.errorMessage).not.toContain("Memory Saver");
+    jest.useRealTimers();
+  });
+
+  it("hints the freeze when the request omitted activateTab", () => {
+    jest.useFakeTimers();
+    const { core, clientFrames } = makeCore({ getTimeoutMs: () => 1000 });
+    core.submitTool("A", "r1", { cmd: "click-element", tabId: 3, uid: "e1" });
+    jest.advanceTimersByTime(1000);
+    const frame = clientFrames[0].frame as { errorMessage: string };
+    expect(frame.errorMessage).toContain("Memory Saver");
+    jest.useRealTimers();
+  });
+});
+
+/**
  * Every wire `cmd` in the ServerMessage union, with the timeout wording it must
  * get. Keyed by the union itself: adding a command to
  * common/server-messages.ts fails to COMPILE until it is classified here, which

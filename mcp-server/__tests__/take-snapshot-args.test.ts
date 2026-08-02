@@ -74,6 +74,24 @@ describe("BrowserAPI.takeSnapshot query args over the broker", () => {
           error: "rootSelector matched no element: #missing",
         };
       }
+      if ((req as any).textContains === "__docstate__") {
+        // A mid-navigation snapshot: 0 elements, no error, plus the document
+        // state that lets the server say NAVIGATING instead of "empty page".
+        return {
+          resource: "snapshot",
+          correlationId: req.correlationId,
+          tabId: (req as any).tabId,
+          snapshot: "",
+          isTruncated: false,
+          total: 0,
+          hasMore: false,
+          docState: {
+            readyState: "loading",
+            url: "https://example.com/callback?code=abc",
+            bodyChildren: 0,
+          },
+        };
+      }
       if (typeof (req as any).limit === "number") {
         return {
           resource: "snapshot",
@@ -136,5 +154,26 @@ describe("BrowserAPI.takeSnapshot query args over the broker", () => {
   it("forwards the activateTab flag in the snapshot frame", async () => {
     await api.takeSnapshot(9, { activateTab: true });
     expect((lastReq as any).activateTab).toBe(true);
+  });
+
+  it("surfaces docState across the broker hop on an empty tree", async () => {
+    // The seam that makes a 0-element result explainable: docState is appended
+    // by the extension and must survive signing + the broker relay untouched,
+    // WITHOUT being mistaken for an error (a mid-nav snapshot is a success).
+    const result = await api.takeSnapshot(9, { textContains: "__docstate__" });
+    expect(result.total).toBe(0);
+    expect(result.error).toBeUndefined();
+    expect(result.docState).toEqual({
+      readyState: "loading",
+      url: "https://example.com/callback?code=abc",
+      bodyChildren: 0,
+    });
+  });
+
+  it("omits docState when the extension predates the field", async () => {
+    // Back-compat: the other mock branches send no docState, and the field must
+    // stay absent rather than arriving as a partial/empty object.
+    const result = await api.takeSnapshot(9, { selector: "[contenteditable]" });
+    expect(result.docState).toBeUndefined();
   });
 });

@@ -37,6 +37,12 @@ export function buildSnapshot(
   total?: number;
   hasMore?: boolean;
   error?: string;
+  // Document state at snapshot time. A bare 0-element result is otherwise
+  // ambiguous: a page mid-navigation, a blank/torn-down document and a page
+  // that genuinely has no interactive controls all produce the same empty
+  // tree. Reported on the success paths only — the error paths above already
+  // say why they returned nothing.
+  docState?: { readyState: string; url: string; bodyChildren: number };
 } {
   const verbose = !!options.verbose;
   const maxLength = options.maxLength;
@@ -892,6 +898,35 @@ export function buildSnapshot(
   }
   const moreAfterPage = offset + pagedLines.length < total;
 
+  // --- 6d. document state, so an empty tree can be explained ---
+  // Read here rather than at entry: these are cheap property reads and taking
+  // them next to the result keeps them describing the document the tree was
+  // actually built from. Every field is defensive — a torn-down document can
+  // have a null body, and `doc.URL` is absent on some synthetic documents.
+  let readyState = "";
+  try {
+    readyState = String(doc.readyState || "");
+  } catch (e) {
+    /* unreadable — report as unknown */
+  }
+  let docUrl = "";
+  try {
+    docUrl = String(doc.URL || (doc.location ? doc.location.href : "") || "");
+  } catch (e) {
+    /* cross-origin or torn down */
+  }
+  let bodyChildren = 0;
+  try {
+    bodyChildren = doc.body ? doc.body.children.length : 0;
+  } catch (e) {
+    /* no body yet */
+  }
+  const docState = {
+    readyState: readyState,
+    url: docUrl,
+    bodyChildren: bodyChildren,
+  };
+
   // --- 7. join and truncate ---
   const full = pagedLines.join("\n");
   if (full.length > maxLength) {
@@ -900,7 +935,19 @@ export function buildSnapshot(
     const lastNewline = sliced.lastIndexOf("\n");
     const tree = lastNewline >= 0 ? sliced.slice(0, lastNewline) : "";
     // The char cut dropped lines too, so more content exists either way.
-    return { tree: tree, isTruncated: true, total: total, hasMore: true };
+    return {
+      tree: tree,
+      isTruncated: true,
+      total: total,
+      hasMore: true,
+      docState: docState,
+    };
   }
-  return { tree: full, isTruncated: false, total: total, hasMore: moreAfterPage };
+  return {
+    tree: full,
+    isTruncated: false,
+    total: total,
+    hasMore: moreAfterPage,
+    docState: docState,
+  };
 }

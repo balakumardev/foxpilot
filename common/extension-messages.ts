@@ -71,6 +71,11 @@ export interface SnapshotExtensionMessage extends ExtensionMessageBase {
   total?: number;
   hasMore?: boolean;
   error?: string;
+  // Document state at snapshot time (append-only, optional for back-compat with
+  // an extension that predates it). Lets the server tell a genuinely empty page
+  // apart from one that was mid-navigation or had no document yet — a bare
+  // `[snapshot: 0 elements]` is identical in all three cases.
+  docState?: { readyState: string; url: string; bodyChildren: number };
 }
 
 export interface NavigatedExtensionMessage extends ExtensionMessageBase {

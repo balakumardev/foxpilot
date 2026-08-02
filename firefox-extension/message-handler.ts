@@ -846,7 +846,7 @@ export class MessageHandler {
       )})`,
     });
 
-    const { tree, isTruncated, total, hasMore, error } = results[0];
+    const { tree, isTruncated, total, hasMore, error, docState } = results[0];
     await this.client.sendResourceToServer({
       resource: "snapshot",
       correlationId,
@@ -856,6 +856,7 @@ export class MessageHandler {
       ...(total !== undefined ? { total } : {}),
       ...(hasMore !== undefined ? { hasMore } : {}),
       ...(error !== undefined ? { error } : {}),
+      ...(docState !== undefined ? { docState } : {}),
     });
   }
 
