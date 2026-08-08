@@ -458,6 +458,183 @@ describe("MessageHandler (chrome) — foreground-tab preservation", () => {
         error: "Another debugger is already attached",
       });
     });
+
+    // BUG B — the attach succeeds but reporting it fails. The catch reports
+    // ok:false/enabled:false while the tab stays attached (banner up, debugger
+    // held), so the reported state contradicts the real state and nothing will
+    // ever release it. A blanket `finally { detach }` would be wrong here — a
+    // SUCCESSFUL enable:true is a deliberate long-lived attach — so only the
+    // failure path may roll back.
+    it("rolls the attach back when the enable reply cannot be sent", async () => {
+      transport.sendResourceToServer
+        .mockRejectedValueOnce(new Error("transport down"))
+        .mockResolvedValue(undefined);
+
+      await messageHandler.handleDecodedMessage({
+        cmd: "capture-response-bodies",
+        tabId: 42,
+        enabled: true,
+        correlationId: "cb-report-fail",
+      } as ServerMessageRequest);
+
+      // It told the caller the capture is OFF ...
+      expect(transport.sendResourceToServer).toHaveBeenLastCalledWith(
+        expect.objectContaining({ ok: false, enabled: false })
+      );
+      // ... so the tab must actually be detached.
+      expect(dbg().detach).toHaveBeenCalledWith({ tabId: 42 });
+      const { isDebuggerAttached } = require("../network-capture");
+      expect(isDebuggerAttached(42)).toBe(false);
+    });
+
+    // F5 — the rollback must only undo a hold THIS call established. When the
+    // tab already held the "network" purpose the second attachDebugger is a
+    // no-op, and because purposes are a Set (not a counter) a rollback would
+    // destroy the pre-existing capture that the earlier caller still owns.
+    it("does not tear down a pre-existing capture when a redundant enable fails to report", async () => {
+      // First call establishes the long-lived hold.
+      await messageHandler.handleDecodedMessage({
+        cmd: "capture-response-bodies",
+        tabId: 42,
+        enabled: true,
+        correlationId: "cb-first",
+      } as ServerMessageRequest);
+      dbg().detach.mockClear();
+
+      // Second, redundant enable — its reply fails to send.
+      transport.sendResourceToServer
+        .mockRejectedValueOnce(new Error("transport down"))
+        .mockResolvedValue(undefined);
+
+      await messageHandler.handleDecodedMessage({
+        cmd: "capture-response-bodies",
+        tabId: 42,
+        enabled: true,
+        correlationId: "cb-redundant",
+      } as ServerMessageRequest);
+
+      expect(dbg().detach).not.toHaveBeenCalled();
+      const { isDebuggerAttached } = require("../network-capture");
+      expect(isDebuggerAttached(42)).toBe(true);
+    });
+
+    // BUG B guard — a SUCCESSFUL enable must keep its long-lived attach.
+    it("keeps the attach when the enable reply is sent successfully", async () => {
+      await messageHandler.handleDecodedMessage({
+        cmd: "capture-response-bodies",
+        tabId: 42,
+        enabled: true,
+        correlationId: "cb-keep",
+      } as ServerMessageRequest);
+
+      expect(dbg().detach).not.toHaveBeenCalled();
+      const { isDebuggerAttached } = require("../network-capture");
+      expect(isDebuggerAttached(42)).toBe(true);
+    });
+  });
+
+  describe("get-network-requests includeBody scoping (per-tab, not global)", () => {
+    const automationConfig = { ...baseConfig, automationMode: true };
+    const nc = (): any => require("../network-capture");
+
+    // Seed a POST with a form body through the pure updaters — the same path the
+    // covert webRequest listeners drive.
+    function seedPost(tabId: number, requestId: string) {
+      nc().onBeforeRequestRecord({
+        requestId,
+        url: "https://example.com/api",
+        method: "POST",
+        type: "xmlhttprequest",
+        tabId,
+        timeStamp: 1000,
+        requestBody: { formData: { field: ["value"] } },
+      });
+      nc().onCompletedRecord({
+        requestId,
+        url: "https://example.com/api",
+        method: "POST",
+        type: "xmlhttprequest",
+        tabId,
+        statusCode: 200,
+        timeStamp: 1100,
+      });
+    }
+
+    beforeEach(() => {
+      (browser.storage.local.get as jest.Mock).mockResolvedValue({
+        config: automationConfig,
+      });
+      (browser.tabs.get as jest.Mock).mockResolvedValue({
+        id: 60,
+        url: "https://example.com",
+        windowId: 1,
+      });
+      nc().clearAllNetworkState();
+    });
+
+    afterEach(() => {
+      nc().clearAllNetworkState();
+    });
+
+    // BUG E — the tool is tab-scoped but the flag it flips is a module global, so
+    // one includeBody:true call silently starts capturing request bodies for
+    // EVERY tab in the browser.
+    it("does not turn on request-body capture for other tabs", async () => {
+      await messageHandler.handleDecodedMessage({
+        cmd: "get-network-requests",
+        tabId: 60,
+        includeBody: true,
+        correlationId: "nb1",
+      } as ServerMessageRequest);
+
+      seedPost(61, "other-tab");
+
+      expect(nc().getNetworkRequests(61)[0].requestBody).toBeUndefined();
+    });
+
+    it("does turn on request-body capture for the tab that asked", async () => {
+      await messageHandler.handleDecodedMessage({
+        cmd: "get-network-requests",
+        tabId: 60,
+        includeBody: true,
+        correlationId: "nb2",
+      } as ServerMessageRequest);
+
+      seedPost(60, "asked-tab");
+
+      expect(nc().getNetworkRequests(60)[0].requestBody).toBe(
+        JSON.stringify({ field: ["value"] })
+      );
+    });
+
+    it("includeBody:false turns capture off again for that tab only", async () => {
+      await messageHandler.handleDecodedMessage({
+        cmd: "get-network-requests",
+        tabId: 60,
+        includeBody: true,
+        correlationId: "nb3",
+      } as ServerMessageRequest);
+      await messageHandler.handleDecodedMessage({
+        cmd: "get-network-requests",
+        tabId: 62,
+        includeBody: true,
+        correlationId: "nb4",
+      } as ServerMessageRequest);
+      await messageHandler.handleDecodedMessage({
+        cmd: "get-network-requests",
+        tabId: 60,
+        includeBody: false,
+        correlationId: "nb5",
+      } as ServerMessageRequest);
+
+      seedPost(60, "off-tab");
+      seedPost(62, "still-on-tab");
+
+      expect(nc().getNetworkRequests(60)[0].requestBody).toBeUndefined();
+      expect(nc().getNetworkRequests(62)[0].requestBody).toBe(
+        JSON.stringify({ field: ["value"] })
+      );
+    });
   });
 
   describe("wait-for-text command", () => {

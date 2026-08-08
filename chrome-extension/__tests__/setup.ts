@@ -87,6 +87,15 @@ const mockBrowser: any = {
       set: jest.fn(),
       remove: jest.fn(),
     },
+    // MV3 `chrome.storage.session`: survives service-worker restarts, dies with
+    // the browser. network-capture.ts mirrors its debugger attachments here so a
+    // fresh service-worker generation can reconcile ones a prior generation left
+    // behind (the in-memory maps do not survive SW eviction).
+    session: {
+      get: jest.fn().mockResolvedValue({}),
+      set: jest.fn().mockResolvedValue(undefined),
+      remove: jest.fn().mockResolvedValue(undefined),
+    },
     onChanged: {
       addListener: jest.fn(),
       removeListener: jest.fn(),

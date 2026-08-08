@@ -33,7 +33,11 @@ import {
   setBodyCaptureEnabled,
   attachDebugger,
   detachDebugger,
+  forceDetachDebugger,
   isDebuggerAttached,
+  reconcileDebuggerAttachments,
+  DEBUGGER_SESSION_KEY,
+  ATTACH_JOIN_TIMEOUT_MS,
   NETWORK_BUFFER_CAP,
 } from "../network-capture";
 
@@ -71,7 +75,7 @@ function bytesOf(text: string): ArrayBuffer {
 describe("network-capture lifecycle (pure updaters)", () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    setBodyCaptureEnabled(false);
+    // Per-tab body capture is cleared by clearNetworkRequests below.
     // Clear buffers for the tabs used here so suites don't leak into each other.
     [1, 2, 3, 10, 11, 12].forEach(clearNetworkRequests);
   });
@@ -237,11 +241,9 @@ describe("request-body capture (covert, via onBeforeRequest requestBody)", () =>
   beforeEach(() => {
     jest.clearAllMocks();
     clearAllNetworkState();
-    setBodyCaptureEnabled(false);
   });
 
   afterEach(() => {
-    setBodyCaptureEnabled(false);
     clearAllNetworkState();
   });
 
@@ -259,7 +261,7 @@ describe("request-body capture (covert, via onBeforeRequest requestBody)", () =>
   });
 
   it("serializes formData to JSON when body capture is enabled", () => {
-    setBodyCaptureEnabled(true);
+    setBodyCaptureEnabled(51, true);
     const formData = { username: ["alice"], token: ["secret-value"] };
     onBeforeRequestRecord(
       details({
@@ -274,7 +276,7 @@ describe("request-body capture (covert, via onBeforeRequest requestBody)", () =>
   });
 
   it("decodes raw byte parts as UTF-8 when body capture is enabled", () => {
-    setBodyCaptureEnabled(true);
+    setBodyCaptureEnabled(52, true);
     const payload = '{"q":"hello world","n":42}';
     onBeforeRequestRecord(
       details({
@@ -289,7 +291,7 @@ describe("request-body capture (covert, via onBeforeRequest requestBody)", () =>
   });
 
   it("concatenates multiple raw byte parts in order", () => {
-    setBodyCaptureEnabled(true);
+    setBodyCaptureEnabled(53, true);
     onBeforeRequestRecord(
       details({
         requestId: "raw2",
@@ -305,7 +307,7 @@ describe("request-body capture (covert, via onBeforeRequest requestBody)", () =>
   });
 
   it("prefers formData over raw when both are present", () => {
-    setBodyCaptureEnabled(true);
+    setBodyCaptureEnabled(54, true);
     const formData = { a: ["1"] };
     onBeforeRequestRecord(
       details({
@@ -320,7 +322,7 @@ describe("request-body capture (covert, via onBeforeRequest requestBody)", () =>
   });
 
   it("skips raw parts without bytes (file uploads) and stores nothing when only files", () => {
-    setBodyCaptureEnabled(true);
+    setBodyCaptureEnabled(55, true);
     onBeforeRequestRecord(
       details({
         requestId: "file",
@@ -334,7 +336,7 @@ describe("request-body capture (covert, via onBeforeRequest requestBody)", () =>
   });
 
   it("caps the stored request body at ~64KB", () => {
-    setBodyCaptureEnabled(true);
+    setBodyCaptureEnabled(56, true);
     const CAP = 64 * 1024;
     // Two 50KB ASCII parts => 100KB total, over the cap.
     const part = "a".repeat(50 * 1024);
@@ -352,16 +354,103 @@ describe("request-body capture (covert, via onBeforeRequest requestBody)", () =>
   });
 
   it("captures nothing (no throw) for an absent/empty requestBody", () => {
-    setBodyCaptureEnabled(true);
+    setBodyCaptureEnabled(57, true);
     onBeforeRequestRecord(details({ requestId: "empty", tabId: 57, method: "POST" }));
     onCompletedRecord(details({ requestId: "empty", tabId: 57, statusCode: 200 }));
     expect(getNetworkRequests(57)[0].requestBody).toBeUndefined();
   });
 });
 
+describe("request-body capture is per-tab (includeBody must not leak across tabs)", () => {
+  const T = [58, 59, 60];
+
+  function postOn(tabId: number, requestId: string) {
+    onBeforeRequestRecord(
+      details({
+        requestId,
+        tabId,
+        method: "POST",
+        requestBody: { formData: { field: ["value"] } },
+      })
+    );
+    onCompletedRecord(details({ requestId, tabId, statusCode: 200 }));
+  }
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    clearAllNetworkState();
+  });
+
+  afterEach(() => {
+    clearAllNetworkState();
+  });
+
+  // The tool is tab-scoped, so the flag must be too — a single module-wide flag
+  // meant one includeBody:true call started retaining request bodies (form
+  // fields, JSON payloads, tokens) for EVERY tab in the browser.
+  it("enabling capture for one tab does not enable it for another", () => {
+    setBodyCaptureEnabled(58, true);
+
+    postOn(58, "mine");
+    postOn(59, "theirs");
+
+    expect(getNetworkRequests(58)[0].requestBody).toBe(
+      JSON.stringify({ field: ["value"] })
+    );
+    expect(getNetworkRequests(59)[0].requestBody).toBeUndefined();
+  });
+
+  it("disabling capture for one tab leaves other tabs enabled", () => {
+    setBodyCaptureEnabled(58, true);
+    setBodyCaptureEnabled(59, true);
+    setBodyCaptureEnabled(58, false);
+
+    postOn(58, "off");
+    postOn(59, "on");
+
+    expect(getNetworkRequests(58)[0].requestBody).toBeUndefined();
+    expect(getNetworkRequests(59)[0].requestBody).toBe(
+      JSON.stringify({ field: ["value"] })
+    );
+  });
+
+  it("clears the flag when the tab is removed, so a recycled tabId starts clean", () => {
+    setBodyCaptureEnabled(60, true);
+    clearNetworkRequests(60); // the tabs.onRemoved path
+
+    postOn(60, "recycled");
+
+    expect(getNetworkRequests(60)[0].requestBody).toBeUndefined();
+  });
+
+  it("clearAllNetworkState resets every tab's flag", () => {
+    T.forEach((t) => setBodyCaptureEnabled(t, true));
+    clearAllNetworkState();
+
+    T.forEach((t) => postOn(t, `after-${t}`));
+
+    T.forEach((t) =>
+      expect(getNetworkRequests(t)[0].requestBody).toBeUndefined()
+    );
+  });
+
+  it("never body-captures a request with no tab (tabId < 0)", () => {
+    setBodyCaptureEnabled(-1, true);
+    onBeforeRequestRecord(
+      details({
+        requestId: "notab",
+        tabId: -1,
+        method: "POST",
+        requestBody: { formData: { field: ["value"] } },
+      })
+    );
+    expect(getNetworkRequests(-1)).toEqual([]);
+  });
+});
+
 describe("getNetworkRequests filtering and limit", () => {
   beforeEach(() => {
-    setBodyCaptureEnabled(false);
+    setBodyCaptureEnabled(20, false);
     clearNetworkRequests(20);
     function add(
       requestId: string,
@@ -545,9 +634,9 @@ describe("registerNetworkListeners idempotency and error handling", () => {
     await unregisterNetworkListeners();
   });
 
-  it("setBodyCaptureEnabled toggles a module flag without throwing", () => {
-    expect(() => setBodyCaptureEnabled(true)).not.toThrow();
-    expect(() => setBodyCaptureEnabled(false)).not.toThrow();
+  it("setBodyCaptureEnabled toggles a tab's flag without throwing", () => {
+    expect(() => setBodyCaptureEnabled(1, true)).not.toThrow();
+    expect(() => setBodyCaptureEnabled(1, false)).not.toThrow();
   });
 });
 
@@ -935,5 +1024,487 @@ describe("debugger attach purpose-refcounting (Phase 3)", () => {
     await forceDetachDebugger(910);
     expect(dbg.detach).toHaveBeenCalledWith({ tabId: 910 });
     expect(isDebuggerAttached(910)).toBe(false);
+  });
+});
+
+// Did anything ever call dbg.detach for this tab?
+function detachedTab(dbg: any, tabId: number): boolean {
+  return (dbg.detach as jest.Mock).mock.calls.some(
+    (c: any[]) => c[0]?.tabId === tabId
+  );
+}
+
+describe("debugger attach failure + concurrency (lifecycle leak regressions)", () => {
+  let dbg: any;
+  const T = [920, 921, 922, 923, 924];
+
+  beforeEach(() => {
+    dbg = (chrome as any).debugger;
+    jest.clearAllMocks();
+    clearAllNetworkState();
+    dbg.attach.mockReset().mockResolvedValue(undefined);
+    dbg.detach.mockReset().mockResolvedValue(undefined);
+    dbg.sendCommand.mockReset().mockResolvedValue({});
+  });
+
+  afterEach(async () => {
+    dbg.attach.mockReset().mockResolvedValue(undefined);
+    dbg.detach.mockReset().mockResolvedValue(undefined);
+    dbg.sendCommand.mockReset().mockResolvedValue({});
+    for (const t of T) await forceDetachDebugger(t);
+    clearAllNetworkState();
+  });
+
+  // BUG A — dbg.attach succeeds, Network.enable rejects. The debugger really IS
+  // attached at that point, so the bookkeeping must never end up claiming
+  // otherwise: the attach has to be rolled back so the thrown error matches
+  // reality (and the banner goes away).
+  it("rolls the attach back when Network.enable rejects", async () => {
+    dbg.sendCommand.mockRejectedValue(new Error("Network.enable failed"));
+
+    await expect(attachDebugger(920, "network")).rejects.toThrow(
+      "Network.enable failed"
+    );
+
+    expect(dbg.attach).toHaveBeenCalledWith({ tabId: 920 }, "1.3");
+    expect(detachedTab(dbg, 920)).toBe(true);
+  });
+
+  // BUG A — the leak itself, stated as the invariant that matters: after a failed
+  // Network.enable the tab must not be strandable. Storing an EMPTY purpose Set
+  // makes detachDebugger (needs the purpose) AND forceDetachDebugger (needs
+  // size > 0) both short-circuit, so nothing can ever detach it again.
+  it("never strands a tab attached-but-undetachable after a failed Network.enable", async () => {
+    dbg.sendCommand.mockRejectedValue(new Error("Network.enable failed"));
+    await expect(attachDebugger(921, "network")).rejects.toThrow();
+
+    const rolledBack = detachedTab(dbg, 921);
+    dbg.detach.mockClear();
+    await forceDetachDebugger(921);
+    const reachableByForce = detachedTab(dbg, 921);
+
+    expect(rolledBack || reachableByForce).toBe(true);
+  });
+
+  // BUG A (race) — while the first attach is in flight the tracked state must
+  // already claim the tab, otherwise a second purpose sees "size === 0" and
+  // issues a SECOND dbg.attach on an already-attached tab.
+  it("issues exactly ONE dbg.attach when two purposes race on the same tab", async () => {
+    let release: () => void = () => {};
+    dbg.attach.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          release = () => resolve();
+        })
+    );
+
+    const first = attachDebugger(922, "network");
+    const second = attachDebugger(922, "input");
+    release();
+    await Promise.all([first, second]);
+
+    expect(dbg.attach).toHaveBeenCalledTimes(1);
+  });
+
+  // BUG A guard — the rollback must not over-detach: an existing holder keeps the
+  // debugger when a LATER network purpose fails to enable.
+  it("keeps an existing holder attached when a later network purpose fails to enable", async () => {
+    await attachDebugger(923, "input");
+    dbg.sendCommand.mockRejectedValue(new Error("Network.enable failed"));
+
+    await expect(attachDebugger(923, "network")).rejects.toThrow();
+
+    expect(detachedTab(dbg, 923)).toBe(false);
+    expect(isDebuggerAttached(923)).toBe(false); // network purpose never took hold
+  });
+
+  // BUG A guard — a failed dbg.attach attached nothing, so nothing must be
+  // detached and no tracked state may survive.
+  it("leaves no tracked state when dbg.attach itself rejects", async () => {
+    dbg.attach.mockRejectedValue(new Error("Another debugger is already attached"));
+
+    await expect(attachDebugger(924, "network")).rejects.toThrow();
+
+    expect(detachedTab(dbg, 924)).toBe(false);
+    expect(isDebuggerAttached(924)).toBe(false);
+  });
+});
+
+describe("teardown that races an in-flight attach", () => {
+  let dbg: any;
+  const T = [950, 951, 952, 953, 954, 955];
+
+  // Hold dbg.attach open so the tab sits in the "attach dispatched, not yet
+  // resolved" window — where it is in neither attachedTabs nor attachedPurposes.
+  function stallAttach(): () => void {
+    let release: () => void = () => {};
+    dbg.attach.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          release = () => resolve();
+        })
+    );
+    return () => release();
+  }
+
+  beforeEach(() => {
+    dbg = (chrome as any).debugger;
+    jest.clearAllMocks();
+    clearAllNetworkState();
+    dbg.attach.mockReset().mockResolvedValue(undefined);
+    dbg.detach.mockReset().mockResolvedValue(undefined);
+    dbg.sendCommand.mockReset().mockResolvedValue({});
+    (browser as any).storage.session.get.mockReset().mockResolvedValue({});
+    (browser as any).storage.session.set.mockReset().mockResolvedValue(undefined);
+  });
+
+  afterEach(async () => {
+    // Restore real timers unconditionally: a test that times out inside the
+    // fake-timer block never reaches its own `finally`, and leaked fake timers
+    // would silently hang every later setTimeout-based flush in this file.
+    jest.useRealTimers();
+    dbg.attach.mockReset().mockResolvedValue(undefined);
+    dbg.detach.mockReset().mockResolvedValue(undefined);
+    for (const t of T) await forceDetachDebugger(t);
+    clearAllNetworkState();
+  });
+
+  // F1 — forceDetachDebugger cannot see an attach that has not resolved yet, so
+  // the tab is left attached (banner up) after teardown and nothing releases it
+  // until the next service-worker boot.
+  it("detaches a tab whose attach was still in flight when forceDetachDebugger ran", async () => {
+    const release = stallAttach();
+
+    const attaching = attachDebugger(950, "network");
+    await forceDetachDebugger(950); // teardown lands mid-attach
+
+    release();
+    await attaching.catch(() => {});
+    await flushPromises();
+
+    expect(detachedTab(dbg, 950)).toBe(true);
+    expect(isDebuggerAttached(950)).toBe(false);
+  });
+
+  // F1 — the attach's own caller must be told it no longer holds the tab, rather
+  // than being handed a "successful" attach on a tab that was just detached.
+  it("fails the in-flight attach that a teardown cancelled", async () => {
+    const release = stallAttach();
+
+    const attaching = attachDebugger(951, "network");
+    await forceDetachDebugger(951);
+
+    release();
+    await expect(attaching).rejects.toThrow(/torn down/i);
+    expect(isDebuggerAttached(951)).toBe(false);
+  });
+
+  // F1 — the Automation-Mode-off sweep builds its tab list from
+  // attachedPurposes + attachedTabs, so an in-flight attach is invisible to it.
+  it("releases an in-flight attach when Automation Mode is turned off", async () => {
+    const release = stallAttach();
+    initNetworkCapture();
+    const onChanged = lastListener(
+      browser.storage.onChanged.addListener as jest.Mock
+    );
+
+    const attaching = attachDebugger(952, "network");
+    onChanged(
+      {
+        config: {
+          oldValue: { automationMode: true },
+          newValue: { automationMode: false },
+        },
+      },
+      "local"
+    );
+    await flushPromises();
+
+    release();
+    await attaching.catch(() => {});
+    await flushPromises();
+
+    expect(detachedTab(dbg, 952)).toBe(true);
+  });
+
+  // N1 — the already-attached FAST PATH skips the whole attach block, so it used
+  // to ignore the teardown marker entirely. Window: the attach has already done
+  // `attachedTabs.add` and is suspended in `persistAttachedTabs`, a teardown has
+  // marked the tab and started detaching, and `attachedTabs.delete` has not
+  // landed yet. A second attachDebugger then registers a purpose and returns
+  // SUCCESS on a tab that is about to be detached — leaving a stale
+  // attachedPurposes entry whose "network" member makes hasNetworkPurpose
+  // suppress the covert webRequest path forever while nothing is capturing.
+  it("refuses the fast path while a teardown is already marked for the tab", async () => {
+    // Collect EVERY pending persist resolver — the teardown's own detach also
+    // persists, and overwriting a single resolver would orphan the attach's.
+    const persistResolvers: Array<() => void> = [];
+    (browser as any).storage.session.set.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          persistResolvers.push(() => resolve());
+        })
+    );
+
+    const first = attachDebugger(954, "network");
+    await flushPromises(); // dbg.attach resolved; now suspended in the persist
+
+    const teardown = forceDetachDebugger(954); // marks + starts detaching
+    // Fast path: attachedTabs still has 954 because the detach has not landed.
+    await expect(attachDebugger(954, "network")).rejects.toThrow(/torn down/i);
+
+    persistResolvers.forEach((release) => release());
+    (browser as any).storage.session.set.mockResolvedValue(undefined);
+    await teardown;
+    await first.catch(() => {});
+    await flushPromises();
+
+    // The payload: no stale purpose left claiming a capture that isn't running.
+    expect(isDebuggerAttached(954)).toBe(false);
+  });
+
+  // N1 (same room, other door) — a detach can also be in flight WITHOUT any
+  // in-flight attach, so there is no marker to consult. `attachedTabs` still
+  // holds the tab until `dbg.detach` resolves, so the fast path would register a
+  // purpose that outlives the detach.
+  it("refuses the fast path while a detach is already in flight for the tab", async () => {
+    await attachDebugger(955, "network");
+    let releaseDetach: () => void = () => {};
+    dbg.detach.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          releaseDetach = () => resolve();
+        })
+    );
+
+    const teardown = forceDetachDebugger(955); // suspended inside dbg.detach
+    await expect(attachDebugger(955, "input")).rejects.toThrow(/torn down/i);
+
+    releaseDetach();
+    await teardown;
+
+    expect(isDebuggerAttached(955)).toBe(false);
+    // And nothing was left holding the tab after the teardown finished.
+    await forceDetachDebugger(955);
+    expect(isDebuggerAttached(955)).toBe(false);
+  });
+
+  // F4 — joining an in-flight attach must not let a dbg.attach that never
+  // settles wedge every later caller on that tab for the life of the worker.
+  it("gives up on a join of an attach that never settles, without issuing a second attach", async () => {
+    jest.useFakeTimers();
+    try {
+      stallAttach(); // never released
+
+      const first = attachDebugger(953, "network");
+      const second = attachDebugger(953, "input");
+      const firstSettled = first.then(
+        () => "ok",
+        () => "failed"
+      );
+      const secondSettled = second.then(
+        () => "ok",
+        () => "failed"
+      );
+
+      await jest.advanceTimersByTimeAsync(ATTACH_JOIN_TIMEOUT_MS + 100);
+
+      await expect(firstSettled).resolves.toBe("failed");
+      await expect(secondSettled).resolves.toBe("failed");
+      // Crucially: NO duplicate dbg.attach. Retrying the attach would create the
+      // untracked second attachment this whole module exists to prevent.
+      expect(dbg.attach).toHaveBeenCalledTimes(1);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+});
+
+describe("detach failure bookkeeping (a rejected detach must not lose the tab)", () => {
+  let dbg: any;
+  const T = [930, 931, 932];
+
+  beforeEach(() => {
+    dbg = (chrome as any).debugger;
+    jest.clearAllMocks();
+    clearAllNetworkState();
+    dbg.attach.mockReset().mockResolvedValue(undefined);
+    dbg.detach.mockReset().mockResolvedValue(undefined);
+    dbg.sendCommand.mockReset().mockResolvedValue({});
+  });
+
+  afterEach(async () => {
+    dbg.detach.mockReset().mockResolvedValue(undefined);
+    for (const t of T) await forceDetachDebugger(t);
+    clearAllNetworkState();
+  });
+
+  // BUG D — the map entry is deleted BEFORE the detach is awaited, so a rejected
+  // detach leaves the tab really attached and completely untracked.
+  it("keeps a tab tracked when detach fails for a reason other than the target being gone", async () => {
+    await attachDebugger(930, "network");
+    dbg.detach.mockRejectedValueOnce(new Error("Detach failed: internal error"));
+
+    await detachDebugger(930, "network");
+
+    // Still attached in reality -> a retry must still be able to reach it.
+    dbg.detach.mockReset().mockResolvedValue(undefined);
+    await forceDetachDebugger(930);
+    expect(dbg.detach).toHaveBeenCalledWith({ tabId: 930 });
+  });
+
+  // NON-REGRESSION GUARD (not a red — the unfixed code also dropped the entry,
+  // it just dropped it unconditionally). This pins the OTHER half of the
+  // classification introduced for Bug D: a target-gone rejection must keep
+  // behaving as before and NOT start retrying forever. The half that genuinely
+  // fails on unfixed code is the "keeps a tab tracked when detach fails for a
+  // reason other than the target being gone" test above; together they pin the
+  // distinction.
+  it("guard: still forgets a tab when detach fails because the target is already gone", async () => {
+    await attachDebugger(931, "network");
+    dbg.detach.mockRejectedValueOnce(
+      new Error("No target with given id found: 931")
+    );
+
+    await detachDebugger(931, "network");
+
+    dbg.detach.mockReset().mockResolvedValue(undefined);
+    await forceDetachDebugger(931);
+    expect(dbg.detach).not.toHaveBeenCalled();
+  });
+
+  // BUG D — same hole on the force path (entry deleted before the await).
+  it("keeps a tab tracked when forceDetachDebugger's detach genuinely fails", async () => {
+    await attachDebugger(932, "network");
+    dbg.detach.mockRejectedValueOnce(new Error("Detach failed: internal error"));
+
+    await forceDetachDebugger(932);
+
+    dbg.detach.mockReset().mockResolvedValue(undefined);
+    await forceDetachDebugger(932);
+    expect(dbg.detach).toHaveBeenCalledWith({ tabId: 932 });
+  });
+});
+
+describe("boot reconciliation of debugger attachments (MV3 service-worker eviction)", () => {
+  let dbg: any;
+  let session: any;
+  const T = [940, 941, 942, 943, 944, 945];
+
+  beforeEach(() => {
+    dbg = (chrome as any).debugger;
+    session = (browser as any).storage.session;
+    jest.clearAllMocks();
+    clearAllNetworkState();
+    dbg.attach.mockReset().mockResolvedValue(undefined);
+    dbg.detach.mockReset().mockResolvedValue(undefined);
+    dbg.sendCommand.mockReset().mockResolvedValue({});
+    session.get.mockReset().mockResolvedValue({});
+    session.set.mockReset().mockResolvedValue(undefined);
+  });
+
+  afterEach(async () => {
+    dbg.detach.mockReset().mockResolvedValue(undefined);
+    for (const t of T) await forceDetachDebugger(t);
+    clearAllNetworkState();
+  });
+
+  // BUG C — `attachedPurposes` is in-memory only. If the tabIds are not mirrored
+  // somewhere that outlives the service worker, an eviction loses them while the
+  // attachments survive, and nothing can ever detach them.
+  it("records attached tabs in chrome.storage.session so a later generation can find them", async () => {
+    await attachDebugger(940, "network");
+
+    expect(session.set).toHaveBeenCalledWith({
+      [DEBUGGER_SESSION_KEY]: expect.arrayContaining([940]),
+    });
+  });
+
+  it("drops a tab from chrome.storage.session once it is detached", async () => {
+    await attachDebugger(945, "network");
+    session.set.mockClear();
+    await detachDebugger(945, "network");
+
+    expect(session.set).toHaveBeenCalledWith({
+      [DEBUGGER_SESSION_KEY]: expect.not.arrayContaining([945]),
+    });
+  });
+
+  it("detaches attachments recorded by a prior service-worker generation", async () => {
+    session.get.mockResolvedValue({ [DEBUGGER_SESSION_KEY]: [941, 942] });
+
+    await reconcileDebuggerAttachments();
+
+    expect(dbg.detach).toHaveBeenCalledWith({ tabId: 941 });
+    expect(dbg.detach).toHaveBeenCalledWith({ tabId: 942 });
+  });
+
+  // DESIGN-INTENT TRIPWIRE — NOT coverage. `getTargets` is not called anywhere in
+  // the implementation today, so this assertion cannot fail against the current
+  // code; it exists to fail LATER if someone "improves" the sweep by enumerating
+  // targets. That would be wrong: getTargets() reports `attached: true` without
+  // saying WHO attached, so acting on it would tear down the user's own DevTools
+  // sessions. The real coverage for the sweep is the orphan/current-generation
+  // tests around it.
+  it("tripwire: the sweep must never start enumerating chrome.debugger.getTargets", async () => {
+    const getTargets = jest
+      .fn()
+      .mockResolvedValue([{ tabId: 99, attached: true }]);
+    dbg.getTargets = getTargets;
+    session.get.mockResolvedValue({ [DEBUGGER_SESSION_KEY]: [941] });
+
+    await reconcileDebuggerAttachments();
+
+    expect(getTargets).not.toHaveBeenCalled();
+    delete dbg.getTargets;
+  });
+
+  // F3 — the orphan list is computed once, then walked sequentially with awaits
+  // in between. An attach that completes mid-sweep gets torn down when the loop
+  // reaches it, and Chrome does NOT fire onDetach for our own detach(), so the
+  // bookkeeping never self-heals: attachedTabs/attachedPurposes keep claiming
+  // the tab, hasNetworkPurpose suppresses the covert webRequest path, and the
+  // tab silently captures nothing while the tool reported ok:true.
+  it("does not tear down a tab attached by the current generation mid-sweep", async () => {
+    session.get.mockResolvedValue({ [DEBUGGER_SESSION_KEY]: [946, 947] });
+    dbg.detach.mockImplementation(async (target: { tabId: number }) => {
+      // Attach 947 while the sweep is between iterations.
+      if (target.tabId === 946) {
+        await attachDebugger(947, "network");
+      }
+    });
+
+    await reconcileDebuggerAttachments();
+
+    const detached947 = (dbg.detach as jest.Mock).mock.calls.filter(
+      (c: any[]) => c[0]?.tabId === 947
+    );
+    expect(detached947).toHaveLength(0);
+    expect(isDebuggerAttached(947)).toBe(true);
+  });
+
+  it("leaves an attachment held by the CURRENT generation alone", async () => {
+    await attachDebugger(943, "network");
+    session.get.mockResolvedValue({ [DEBUGGER_SESSION_KEY]: [943] });
+    dbg.detach.mockClear();
+
+    await reconcileDebuggerAttachments();
+
+    expect(dbg.detach).not.toHaveBeenCalled();
+    expect(isDebuggerAttached(943)).toBe(true);
+  });
+
+  it("survives a storage.session read failure without throwing", async () => {
+    session.get.mockRejectedValue(new Error("session storage unavailable"));
+    await expect(reconcileDebuggerAttachments()).resolves.toBeUndefined();
+  });
+
+  it("initNetworkCapture runs the reconcile sweep at startup", async () => {
+    session.get.mockResolvedValue({ [DEBUGGER_SESSION_KEY]: [944] });
+
+    initNetworkCapture();
+    await flushPromises();
+
+    expect(dbg.detach).toHaveBeenCalledWith({ tabId: 944 });
   });
 });

@@ -2076,10 +2076,10 @@ export class MessageHandler {
     opts: { filter?: string; limit?: number; includeBody?: boolean }
   ): Promise<void> {
     // `includeBody` toggles best-effort REQUEST-body capture (covert, via the
-    // onBeforeRequest `requestBody` extraInfoSpec). Bodies are captured at
-    // request time, so this only affects FUTURE requests.
+    // onBeforeRequest `requestBody` extraInfoSpec) FOR THIS TAB ONLY. Bodies are
+    // captured at request time, so this only affects FUTURE requests.
     if (opts.includeBody !== undefined) {
-      setBodyCaptureEnabled(opts.includeBody);
+      setBodyCaptureEnabled(tabId, opts.includeBody);
     }
     const requests = getNetworkRequests(tabId, {
       filter: opts.filter,
@@ -2115,9 +2115,23 @@ export class MessageHandler {
     }
     await this.checkForUrlPermission(tab.url);
 
+    // True only while an attach THIS call established has not yet been
+    // successfully reported. A blanket `finally { detach }` would be wrong here
+    // — a reported enable:true is a deliberate LONG-LIVED attach — so the
+    // rollback is scoped to the failure path: if we cannot tell the caller the
+    // capture is on, we must not leave the tab attached (banner up, debugger
+    // held) while replying enabled:false, or the reported state contradicts the
+    // real state and nothing will ever release it.
+    let rollbackAttach = false;
     try {
       if (req.enabled) {
+        // Purposes are a Set, not a counter: if the tab ALREADY held "network"
+        // this attach is a no-op and a rollback would destroy the pre-existing
+        // capture its original owner is still relying on. Only a hold this call
+        // actually established may be rolled back.
+        const alreadyHeld = isDebuggerAttached(req.tabId);
         await attachDebugger(req.tabId, "network");
+        rollbackAttach = !alreadyHeld;
       } else {
         await detachDebugger(req.tabId, "network");
       }
@@ -2128,7 +2142,12 @@ export class MessageHandler {
         enabled: req.enabled,
         supported: true,
       });
+      // Reported successfully — the attach is now the caller's to hold.
+      rollbackAttach = false;
     } catch (error) {
+      if (rollbackAttach) {
+        await detachDebugger(req.tabId, "network").catch(() => {});
+      }
       await this.client.sendResourceToServer({
         resource: "response-body-capture",
         correlationId,

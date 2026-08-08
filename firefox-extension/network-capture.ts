@@ -51,16 +51,32 @@ const buffers = new Map<number, NetworkRecord[]>();
 // Requests seen on onBeforeRequest but not yet finalized. Keyed by requestId.
 const inFlight = new Map<string, NetworkRecord>();
 
-// Whether best-effort response-body capture is enabled. Toggled by the tool
-// (via the `includeBody` param). Because bodies are captured at request time,
-// flipping this only affects requests made afterwards.
-let bodyCaptureEnabled = false;
+// Tabs with best-effort body capture enabled. Toggled by the tool (via the
+// `includeBody` param), which is TAB-SCOPED — so this must be per-tab too: a
+// single module-wide flag meant one includeBody:true call silently started
+// capturing bodies (and, on Firefox, attaching a filterResponseData stream
+// filter to every response) for EVERY tab in the browser until something flipped
+// it back. Because bodies are captured at request time, flipping this only
+// affects requests made afterwards.
+const bodyCaptureTabs = new Set<number>();
 
 /**
- * Enable/disable best-effort response-body capture for FUTURE requests.
+ * Enable/disable best-effort body capture for FUTURE requests on one tab.
  */
-export function setBodyCaptureEnabled(enabled: boolean): void {
-  bodyCaptureEnabled = enabled;
+export function setBodyCaptureEnabled(tabId: number, enabled: boolean): void {
+  if (enabled) {
+    bodyCaptureTabs.add(tabId);
+  } else {
+    bodyCaptureTabs.delete(tabId);
+  }
+}
+
+/**
+ * Whether body capture is currently enabled for a tab. Non-tab requests (tabId
+ * absent / negative) are never body-captured.
+ */
+export function isBodyCaptureEnabled(tabId: number | undefined): boolean {
+  return typeof tabId === "number" && bodyCaptureTabs.has(tabId);
 }
 
 // ---- pure updater functions (unit-tested with synthetic details) ----
@@ -107,11 +123,11 @@ export function onBeforeRequestRecord(details: WebRequestDetails): void {
     timeStamp: typeof details.timeStamp === "number" ? details.timeStamp : Date.now(),
   };
   // Covert (webRequest-based, no debugger) request-body capture. Gated behind
-  // the same opt-in flag as response bodies, so the default path stays light and
-  // only requests made after enabling are captured. Best-effort:
-  // decodeRequestBody never throws and yields undefined when there is nothing
-  // usable to store (e.g. a pure file upload).
-  if (bodyCaptureEnabled) {
+  // the same opt-in flag as response bodies — scoped to the tab that asked — so
+  // the default path stays light and only requests made after enabling are
+  // captured. Best-effort: decodeRequestBody never throws and yields undefined
+  // when there is nothing usable to store (e.g. a pure file upload).
+  if (isBodyCaptureEnabled(details.tabId)) {
     const rb = decodeRequestBody(details.requestBody);
     if (rb) {
       record.requestBody = rb;
@@ -377,6 +393,9 @@ export function getNetworkRequests(
  */
 export function clearNetworkRequests(tabId: number): void {
   buffers.delete(tabId);
+  // The tab's opt-in body-capture flag goes with it (this runs on tab removal),
+  // so a recycled tabId can't inherit a previous tab's capture setting.
+  bodyCaptureTabs.delete(tabId);
   for (const [requestId, owner] of recordTabId) {
     if (owner === tabId) {
       recordTabId.delete(requestId);
@@ -396,6 +415,7 @@ export function clearAllNetworkState(): void {
   buffers.clear();
   inFlight.clear();
   recordTabId.clear();
+  bodyCaptureTabs.clear();
 }
 
 // ---- webRequest listener registration ----
@@ -426,9 +446,11 @@ export async function registerNetworkListeners(): Promise<void> {
     const onBeforeRequest = (details: any): any => {
       onBeforeRequestRecord(details);
       // Opt-in, best-effort body capture (Firefox-specific). Only attach the
-      // stream filter when body capture is enabled, so the default path stays
-      // light. The filter MUST always re-emit the bytes so the page still works.
-      if (bodyCaptureEnabled) {
+      // stream filter for tabs that asked for body capture, so the default path
+      // stays light and one tab's includeBody cannot put a stream filter on
+      // every other tab's responses. The filter MUST always re-emit the bytes so
+      // the page still works.
+      if (isBodyCaptureEnabled(details.tabId)) {
         attachBodyFilter(details);
       }
       return undefined;

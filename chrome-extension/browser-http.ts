@@ -31,13 +31,57 @@ const DEFAULT_TOTAL_TIMEOUT_MS = 300000;
 const POLL_WAIT_MS = 8000;
 const POLL_SLEEP_MS = 100;
 
-// Base id for the modifyHeaders "Cookie" DNR session rules. A single shared,
-// ever-incrementing counter guarantees a distinct id per concurrent request and
-// stays clear of emulate.ts's per-tab User-Agent rules (base 100000).
-const COOKIE_RULE_ID_BASE = 210000;
-let cookieRuleCounter = 0;
+// Base id for the modifyHeaders "Cookie" DNR session rules. Ids are allocated
+// from [COOKIE_RULE_ID_BASE, COOKIE_RULE_ID_MAX) and nowhere else.
+// Exported (with COOKIE_RULE_ID_MAX below) so emulate.ts's User-Agent band and
+// this one can be asserted DISJOINT by construction rather than by comment.
+export const COOKIE_RULE_ID_BASE = 210000;
+
+// Ids currently backing an installed rule. Tracked so the allocator can wrap
+// inside the band without ever handing out an id another in-flight request is
+// still using.
+const inUseCookieRuleIds = new Set<number>();
+let cookieRuleCursor = 0;
+
+/**
+ * Take the next free id in the reserved Cookie band.
+ *
+ * This deliberately does NOT use a bare ever-incrementing counter: past a full
+ * band width that escapes COOKIE_RULE_ID_MAX, i.e. lands outside the window
+ * clearStaleCookieRules() sweeps — so a service-worker eviction mid-stream would
+ * strand a stale Cookie-injecting rule that nothing can ever reap. Nor a bare
+ * modulo, which would wrap onto an id another live request still holds and
+ * silently replace its rule. Scans forward from a rotating cursor instead,
+ * skipping in-use ids, and throws rather than escaping the band (Chrome caps
+ * session rules far below the band width, so exhaustion is unreachable).
+ */
 function nextCookieRuleId(): number {
-  return COOKIE_RULE_ID_BASE + cookieRuleCounter++;
+  const span = COOKIE_RULE_ID_MAX - COOKIE_RULE_ID_BASE;
+  for (let i = 0; i < span; i++) {
+    const candidate = COOKIE_RULE_ID_BASE + ((cookieRuleCursor + i) % span);
+    if (!inUseCookieRuleIds.has(candidate)) {
+      cookieRuleCursor = (candidate - COOKIE_RULE_ID_BASE + 1) % span;
+      inUseCookieRuleIds.add(candidate);
+      return candidate;
+    }
+  }
+  throw new Error(
+    `browser-http: no free Cookie rule id in [${COOKIE_RULE_ID_BASE}, ${COOKIE_RULE_ID_MAX}) — ${inUseCookieRuleIds.size} rules are installed`
+  );
+}
+
+/** Return an id to the band once its rule is off the wire. Idempotent. */
+function releaseCookieRuleId(id: number): void {
+  inUseCookieRuleIds.delete(id);
+}
+
+/** TEST-ONLY handle on the allocator. @internal */
+export function __nextCookieRuleId(): number {
+  return nextCookieRuleId();
+}
+/** TEST-ONLY handle on the allocator. @internal */
+export function __releaseCookieRuleId(id: number): void {
+  releaseCookieRuleId(id);
 }
 
 // ---------------------------------------------------------------------------
@@ -192,16 +236,29 @@ async function installCookieRule(
   });
 }
 
+/**
+ * Take the rule off the wire and return its id to the band. The id is released
+ * in a `finally` so a rejected update still frees it: every caller treats a
+ * failed removal as best-effort (`.catch(() => {})`) and drops the id, so
+ * holding it would leak the slot for the life of the service worker. A rule that
+ * survives a failed removal is collected by clearStaleCookieRules() at startup.
+ */
 async function removeCookieRule(ruleId: number): Promise<void> {
-  await (browser as any).declarativeNetRequest.updateSessionRules({
-    removeRuleIds: [ruleId],
-  });
+  try {
+    await (browser as any).declarativeNetRequest.updateSessionRules({
+      removeRuleIds: [ruleId],
+    });
+  } finally {
+    releaseCookieRuleId(ruleId);
+  }
 }
 
-// Upper bound of the reserved Cookie-rule id band. The startup sweep only touches
-// ids in [COOKIE_RULE_ID_BASE, COOKIE_RULE_ID_MAX), so emulate.ts's User-Agent
-// rules (base 100000) are never disturbed.
-const COOKIE_RULE_ID_MAX = COOKIE_RULE_ID_BASE + 100000;
+// Upper bound (exclusive) of the reserved Cookie-rule id band. The startup sweep
+// only touches ids in [COOKIE_RULE_ID_BASE, COOKIE_RULE_ID_MAX), and emulate.ts
+// allocates User-Agent rule ids from a band that ends at or below
+// COOKIE_RULE_ID_BASE, so the two sweeps are strictly disjoint and neither can
+// delete the other's live rules. Exported so that invariant is unit-testable.
+export const COOKIE_RULE_ID_MAX = COOKIE_RULE_ID_BASE + 100000;
 
 /**
  * Remove leftover "Cookie" DNR session rules in our reserved id band. A
@@ -211,18 +268,30 @@ const COOKIE_RULE_ID_MAX = COOKIE_RULE_ID_BASE + 100000;
  * (stale) session cookie onto same-URL requests until the browser restarts. Run
  * once at service-worker startup, this sweep clears any such orphan. One-shot
  * browserFetch removes its rule synchronously in a finally, so it can't orphan.
+ *
+ * `keep` is a PROVIDER, evaluated AFTER the getSessionRules() await — the same
+ * shape emulate.ts's User-Agent sweep uses, and for the same reason. This sweep
+ * is void-ed by initBrowserHttp() while background.ts goes on to connect the
+ * broker clients, so a browser-fetch can install a rule while the read-back is
+ * still in flight. That rule IS in the read-back, so a set frozen before the
+ * await would not contain it and the sweep would delete a live rule out from
+ * under an in-flight request, while the allocator still holds its id reserved.
  */
-export async function clearStaleCookieRules(): Promise<void> {
+async function removeCookieRulesInBand(
+  keep: () => ReadonlySet<number>
+): Promise<void> {
   try {
     const dnr = (browser as any).declarativeNetRequest;
     const existing: Array<{ id?: number }> = (await dnr.getSessionRules()) ?? [];
+    const live = keep();
     const stale = existing
       .map((r) => r.id)
       .filter(
         (id): id is number =>
           typeof id === "number" &&
           id >= COOKIE_RULE_ID_BASE &&
-          id < COOKIE_RULE_ID_MAX
+          id < COOKIE_RULE_ID_MAX &&
+          !live.has(id)
       );
     if (stale.length > 0) {
       await dnr.updateSessionRules({ removeRuleIds: stale });
@@ -233,6 +302,10 @@ export async function clearStaleCookieRules(): Promise<void> {
       errMessage(e)
     );
   }
+}
+
+export async function clearStaleCookieRules(): Promise<void> {
+  await removeCookieRulesInBand(() => inUseCookieRuleIds);
 }
 
 /**

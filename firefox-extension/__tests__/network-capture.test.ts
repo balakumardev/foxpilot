@@ -396,9 +396,9 @@ describe("registerNetworkListeners idempotency and error handling", () => {
     await unregisterNetworkListeners();
   });
 
-  it("setBodyCaptureEnabled toggles a module flag without throwing", () => {
-    expect(() => setBodyCaptureEnabled(true)).not.toThrow();
-    expect(() => setBodyCaptureEnabled(false)).not.toThrow();
+  it("setBodyCaptureEnabled toggles a tab's flag without throwing", () => {
+    expect(() => setBodyCaptureEnabled(1, true)).not.toThrow();
+    expect(() => setBodyCaptureEnabled(1, false)).not.toThrow();
   });
 });
 
@@ -440,12 +440,10 @@ describe("attachBodyFilter response-body capture (fake StreamFilter)", () => {
     await unregisterNetworkListeners();
     jest.clearAllMocks();
     clearAllNetworkState();
-    setBodyCaptureEnabled(false);
   });
 
   afterEach(async () => {
     await unregisterNetworkListeners();
-    setBodyCaptureEnabled(false);
     clearAllNetworkState();
   });
 
@@ -476,7 +474,7 @@ describe("attachBodyFilter response-body capture (fake StreamFilter)", () => {
   });
 
   it("re-emits each chunk, disconnects on stop, and decodes the body onto the record", async () => {
-    setBodyCaptureEnabled(true);
+    setBodyCaptureEnabled(41, true);
     const filter = makeFakeFilter();
     const onBeforeRequest = await setupWithFilter(filter);
 
@@ -517,7 +515,7 @@ describe("attachBodyFilter response-body capture (fake StreamFilter)", () => {
   });
 
   it("caps the stored body at ~64KB but still re-emits every (over-cap) chunk to the page", async () => {
-    setBodyCaptureEnabled(true);
+    setBodyCaptureEnabled(42, true);
     const filter = makeFakeFilter();
     const onBeforeRequest = await setupWithFilter(filter);
 
@@ -552,7 +550,7 @@ describe("attachBodyFilter response-body capture (fake StreamFilter)", () => {
     // page's response. We feed `ondata` an event whose `data` is not a valid
     // ArrayBuffer, so `new Uint8Array(event.data)` throws inside the capture
     // block — and assert the chunk was still written out to the page.
-    setBodyCaptureEnabled(true);
+    setBodyCaptureEnabled(43, true);
     const filter = makeFakeFilter();
     const onBeforeRequest = await setupWithFilter(filter);
 
@@ -570,7 +568,7 @@ describe("attachBodyFilter response-body capture (fake StreamFilter)", () => {
   });
 
   it("disconnects on filter error without throwing", async () => {
-    setBodyCaptureEnabled(true);
+    setBodyCaptureEnabled(44, true);
     const filter = makeFakeFilter();
     const onBeforeRequest = await setupWithFilter(filter);
 
@@ -585,11 +583,9 @@ describe("request-body capture (covert, no debugger)", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     clearAllNetworkState();
-    setBodyCaptureEnabled(false);
   });
 
   afterEach(() => {
-    setBodyCaptureEnabled(false);
     clearAllNetworkState();
   });
 
@@ -617,7 +613,7 @@ describe("request-body capture (covert, no debugger)", () => {
   });
 
   it("serializes formData to JSON when body capture is enabled", () => {
-    setBodyCaptureEnabled(true);
+    setBodyCaptureEnabled(51, true);
     onBeforeRequestRecord(
       details({
         requestId: "rbForm",
@@ -632,7 +628,7 @@ describe("request-body capture (covert, no debugger)", () => {
   });
 
   it("decodes a raw ArrayBuffer part to a UTF-8 string when body capture is enabled", () => {
-    setBodyCaptureEnabled(true);
+    setBodyCaptureEnabled(52, true);
     onBeforeRequestRecord(
       details({
         requestId: "rbRaw",
@@ -645,7 +641,7 @@ describe("request-body capture (covert, no debugger)", () => {
   });
 
   it("concatenates raw byte parts and skips file-upload parts (no bytes)", () => {
-    setBodyCaptureEnabled(true);
+    setBodyCaptureEnabled(53, true);
     onBeforeRequestRecord(
       details({
         requestId: "rbMulti",
@@ -664,7 +660,7 @@ describe("request-body capture (covert, no debugger)", () => {
   });
 
   it("captures nothing for a pure file upload (all parts lack bytes)", () => {
-    setBodyCaptureEnabled(true);
+    setBodyCaptureEnabled(54, true);
     onBeforeRequestRecord(
       details({
         requestId: "rbFile",
@@ -674,6 +670,63 @@ describe("request-body capture (covert, no debugger)", () => {
       })
     );
     expect(bodyAfter("rbFile", 54)).toBeUndefined();
+  });
+
+  // The tool is tab-scoped, so the flag must be too — a single module-wide flag
+  // meant one includeBody:true call started retaining request bodies (and
+  // attaching a filterResponseData stream filter to every response) for EVERY
+  // tab in the browser.
+  describe("body capture is per-tab", () => {
+    function postOn(tabId: number, requestId: string) {
+      onBeforeRequestRecord(
+        details({
+          requestId,
+          tabId,
+          method: "POST",
+          requestBody: { formData: { field: ["value"] } },
+        })
+      );
+    }
+
+    it("enabling capture for one tab does not enable it for another", () => {
+      setBodyCaptureEnabled(55, true);
+
+      postOn(55, "mine");
+      postOn(56, "theirs");
+
+      expect(bodyAfter("mine", 55)).toBe(JSON.stringify({ field: ["value"] }));
+      expect(bodyAfter("theirs", 56)).toBeUndefined();
+    });
+
+    it("disabling capture for one tab leaves other tabs enabled", () => {
+      setBodyCaptureEnabled(57, true);
+      setBodyCaptureEnabled(58, true);
+      setBodyCaptureEnabled(57, false);
+
+      postOn(57, "off");
+      postOn(58, "on");
+
+      expect(bodyAfter("off", 57)).toBeUndefined();
+      expect(bodyAfter("on", 58)).toBe(JSON.stringify({ field: ["value"] }));
+    });
+
+    it("clears the flag when the tab is removed, so a recycled tabId starts clean", () => {
+      setBodyCaptureEnabled(59, true);
+      clearNetworkRequests(59); // the tabs.onRemoved path
+
+      postOn(59, "recycled");
+
+      expect(bodyAfter("recycled", 59)).toBeUndefined();
+    });
+
+    it("clearAllNetworkState resets every tab's flag", () => {
+      setBodyCaptureEnabled(60, true);
+      clearAllNetworkState();
+
+      postOn(60, "after");
+
+      expect(bodyAfter("after", 60)).toBeUndefined();
+    });
   });
 });
 

@@ -2052,7 +2052,9 @@ export class MessageHandler {
     opts: { filter?: string; limit?: number; includeBody?: boolean }
   ): Promise<void> {
     if (opts.includeBody !== undefined) {
-      setBodyCaptureEnabled(opts.includeBody);
+      // Tab-scoped: enabling bodies for this tab must not start capturing (and,
+      // on Firefox, stream-filtering) every other tab's responses.
+      setBodyCaptureEnabled(tabId, opts.includeBody);
     }
     const requests = getNetworkRequests(tabId, {
       filter: opts.filter,

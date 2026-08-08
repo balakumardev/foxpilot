@@ -7,6 +7,8 @@ import {
   onBeforeRequestRecord,
   onCompletedRecord,
   clearNetworkRequests,
+  clearAllNetworkState,
+  getNetworkRequests,
 } from "../network-capture";
 import { getTabUserAgent, clearTabUserAgent } from "../emulate";
 import * as screenshotScript from "../injected/screenshot-script";
@@ -2656,6 +2658,96 @@ describe("MessageHandler", () => {
       await expect(
         messageHandler.handleDecodedMessage(request)
       ).rejects.toThrow("requires Automation Mode");
+    });
+
+    // BUG E (Firefox twin) — the tool is tab-scoped but the body-capture flag it
+    // flips is a module global, so one includeBody:true call silently starts
+    // capturing bodies for EVERY tab in the browser.
+    describe("includeBody scoping (per-tab, not global)", () => {
+      function seedPost(tabId: number, requestId: string) {
+        onBeforeRequestRecord({
+          requestId,
+          url: "https://example.com/api",
+          method: "POST",
+          type: "xmlhttprequest",
+          tabId,
+          timeStamp: 1000,
+          requestBody: { formData: { field: ["value"] } },
+        });
+        onCompletedRecord({
+          requestId,
+          url: "https://example.com/api",
+          method: "POST",
+          type: "xmlhttprequest",
+          tabId,
+          statusCode: 200,
+          timeStamp: 1100,
+        });
+      }
+
+      beforeEach(() => {
+        clearAllNetworkState();
+      });
+
+      afterEach(() => {
+        clearAllNetworkState();
+      });
+
+      it("does not turn on body capture for other tabs", async () => {
+        await messageHandler.handleDecodedMessage({
+          cmd: "get-network-requests",
+          tabId: 810,
+          includeBody: true,
+          correlationId: "fb1",
+        } as ServerMessageRequest);
+
+        seedPost(811, "other-tab");
+
+        expect(getNetworkRequests(811)[0].requestBody).toBeUndefined();
+      });
+
+      it("does turn on body capture for the tab that asked", async () => {
+        await messageHandler.handleDecodedMessage({
+          cmd: "get-network-requests",
+          tabId: 810,
+          includeBody: true,
+          correlationId: "fb2",
+        } as ServerMessageRequest);
+
+        seedPost(810, "asked-tab");
+
+        expect(getNetworkRequests(810)[0].requestBody).toBe(
+          JSON.stringify({ field: ["value"] })
+        );
+      });
+
+      it("includeBody:false turns capture off again for that tab only", async () => {
+        for (const [tabId, correlationId] of [
+          [810, "fb3"],
+          [812, "fb4"],
+        ] as const) {
+          await messageHandler.handleDecodedMessage({
+            cmd: "get-network-requests",
+            tabId,
+            includeBody: true,
+            correlationId,
+          } as ServerMessageRequest);
+        }
+        await messageHandler.handleDecodedMessage({
+          cmd: "get-network-requests",
+          tabId: 810,
+          includeBody: false,
+          correlationId: "fb5",
+        } as ServerMessageRequest);
+
+        seedPost(810, "off-tab");
+        seedPost(812, "still-on-tab");
+
+        expect(getNetworkRequests(810)[0].requestBody).toBeUndefined();
+        expect(getNetworkRequests(812)[0].requestBody).toBe(
+          JSON.stringify({ field: ["value"] })
+        );
+      });
     });
   });
 

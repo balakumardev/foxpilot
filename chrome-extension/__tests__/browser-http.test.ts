@@ -9,6 +9,10 @@ import {
   pollStream,
   closeStream,
   clearStaleCookieRules,
+  COOKIE_RULE_ID_BASE,
+  COOKIE_RULE_ID_MAX,
+  __nextCookieRuleId,
+  __releaseCookieRuleId,
 } from "../browser-http";
 
 // Build a minimal fetch Response stand-in for the one-shot browserFetch path.
@@ -368,6 +372,44 @@ describe("streaming (start/poll/close)", () => {
   });
 });
 
+describe("Cookie rule id allocation band", () => {
+  it("never returns an id outside the reserved band, however many are allocated", () => {
+    // An ever-incrementing counter escapes its OWN sweep window once it passes
+    // COOKIE_RULE_ID_MAX: clearStaleCookieRules() then cannot reap the rule, so
+    // a mid-stream service-worker eviction leaves a stale Cookie-injecting DNR
+    // rule installed until the browser restarts. Allocate past a full band width
+    // (releasing each, as the fetch/stream finally paths do) and assert none
+    // escapes.
+    const span = COOKIE_RULE_ID_MAX - COOKIE_RULE_ID_BASE;
+    let escaped = 0;
+    for (let i = 0; i < span + 10; i++) {
+      const id = __nextCookieRuleId();
+      if (id < COOKIE_RULE_ID_BASE || id >= COOKIE_RULE_ID_MAX) {
+        escaped++;
+      }
+      __releaseCookieRuleId(id);
+    }
+    expect(escaped).toBe(0);
+  });
+
+  it("never hands out an id that is still in use", () => {
+    // Guards the wrap: a bare modulo would collide with a live rule after one
+    // full lap, silently replacing another request's Cookie header rule.
+    const held = __nextCookieRuleId();
+    const span = COOKIE_RULE_ID_MAX - COOKIE_RULE_ID_BASE;
+    let collided = false;
+    for (let i = 0; i < span; i++) {
+      const id = __nextCookieRuleId();
+      if (id === held) {
+        collided = true;
+      }
+      __releaseCookieRuleId(id);
+    }
+    __releaseCookieRuleId(held);
+    expect(collided).toBe(false);
+  });
+});
+
 describe("clearStaleCookieRules", () => {
   it("removes only orphaned session rules within the cookie-rule id band", async () => {
     (browser as any).declarativeNetRequest.getSessionRules.mockResolvedValue([
@@ -382,6 +424,35 @@ describe("clearStaleCookieRules", () => {
     expect(
       (browser as any).declarativeNetRequest.updateSessionRules
     ).toHaveBeenCalledWith({ removeRuleIds: [210000, 210007] });
+  });
+
+  it("does not delete a rule installed while the sweep awaits getSessionRules", async () => {
+    // initBrowserHttp() void-s this sweep and background.ts continues on to
+    // connect the broker clients, so a browser-fetch can land while the sweep is
+    // still awaiting its read-back. Reading the in-use set BEFORE that await
+    // would let the sweep delete the just-installed rule while the allocator
+    // still holds its id — the rule is gone but the id stays reserved.
+    let releaseRead!: (rules: Array<{ id: number }>) => void;
+    const read = new Promise<Array<{ id: number }>>((r) => {
+      releaseRead = r;
+    });
+    (browser as any).declarativeNetRequest.getSessionRules.mockReturnValue(read);
+
+    const sweep = clearStaleCookieRules();
+    await Promise.resolve(); // let the sweep reach its await
+
+    const liveId = __nextCookieRuleId(); // a fetch allocates mid-sweep
+    releaseRead([{ id: liveId }]);
+    await sweep;
+
+    const removed = (
+      browser as any
+    ).declarativeNetRequest.updateSessionRules.mock.calls.flatMap(
+      (c: any[]) => c[0].removeRuleIds ?? []
+    );
+    expect(removed).not.toContain(liveId);
+
+    __releaseCookieRuleId(liveId);
   });
 
   it("makes no removal call when there are no stale cookie rules", async () => {
