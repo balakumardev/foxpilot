@@ -1,6 +1,6 @@
 import type { ServerMessageRequest } from "@foxpilot/common";
 import { ExtensionTransport } from "./transport";
-import { isCommandAllowed, isDomainInDenyList, COMMAND_TO_TOOL_ID, addAuditLogEntry, requiresAutomationMode, isAutomationModeEnabled, getInputRealismMode, getSidecarPort, getSecret } from "./extension-config";
+import { isCommandAllowed, isDomainInDenyList, COMMAND_TO_TOOL_ID, addAuditLogEntry, requiresAutomationMode, isAutomationModeEnabled, getInputRealismMode, getSidecarPort, getSecret, isConsoleCaptureEnabled, CONSOLE_CAPTURE_TOGGLE_LABEL } from "./extension-config";
 import { buildSnapshot } from "./injected/snapshot-script";
 import { performInputAction } from "./injected/action-script";
 import {
@@ -2020,15 +2020,32 @@ export class MessageHandler {
   }
 
   // Reads the per-tab console ring buffer populated by the document_start
-  // capture script (registered while Automation Mode is on). This is a pure
-  // in-memory read — no page scripting, no permission prompt. If nothing was
-  // captured (e.g. the page loaded before Automation Mode was enabled), the
-  // buffer is empty and an empty list is returned.
+  // capture script. That script is only registered when console capture is
+  // opted into, and that opt-in is OFF by default — so when it is off the buffer
+  // is empty for a reason, and returning an empty list would read as "the page
+  // logged nothing". Fail loudly instead, and say exactly what to flip: the
+  // toggle AND a reload, since registration is document_start and cannot
+  // retroactively capture a page that is already loaded.
+  //
+  // With capture on this is a pure in-memory read — no page scripting, no
+  // permission prompt. An empty list then genuinely means nothing was captured
+  // for the tab (e.g. the page loaded before capture was enabled).
   private async getConsoleMessages(
     correlationId: string,
     tabId: number,
     limit?: number
   ): Promise<void> {
+    if (!(await isConsoleCaptureEnabled())) {
+      throw new Error(
+        `Console capture is disabled — it is OFF by default, because capturing ` +
+          `replaces the page's console methods, which some sites detect and ` +
+          `treat as automation. No console output has been recorded. ` +
+          `To enable it, ask the user to turn on "${CONSOLE_CAPTURE_TOGGLE_LABEL}" ` +
+          `in the FoxPilot extension's options page (Automation section), then ` +
+          `RELOAD the page: capture is installed at document_start, so pages ` +
+          `already open when it is enabled are still not captured.`
+      );
+    }
     const entries = getConsoleEntries(tabId, limit);
     await this.client.sendResourceToServer({
       resource: "console-messages",

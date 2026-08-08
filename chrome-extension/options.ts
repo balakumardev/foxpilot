@@ -16,6 +16,8 @@ import {
   getToolNameById,
   isAutomationModeEnabled,
   setAutomationModeEnabled,
+  isConsoleCaptureEnabled,
+  setConsoleCaptureEnabled,
   getTransport,
   setTransport,
   getInputRealismMode,
@@ -81,6 +83,12 @@ const automationModeToggle = document.getElementById(
 ) as HTMLInputElement;
 const automationModeStatus = document.getElementById(
   "automation-mode-status"
+) as HTMLDivElement;
+const consoleCaptureToggle = document.getElementById(
+  "console-capture-toggle"
+) as HTMLInputElement;
+const consoleCaptureStatus = document.getElementById(
+  "console-capture-status"
 ) as HTMLDivElement;
 const transportSelect = document.getElementById(
   "transport-select"
@@ -460,6 +468,45 @@ async function handleAutomationModeToggle(event: Event) {
   } catch (error) {
     console.error("Error toggling automation mode:", error);
     automationModeToggle.checked = !enabled;
+  }
+}
+
+/**
+ * Loads the current console-capture state into the toggle.
+ */
+async function loadConsoleCapture() {
+  try {
+    consoleCaptureToggle.checked = await isConsoleCaptureEnabled();
+  } catch (error) {
+    console.error("Error loading console capture:", error);
+  }
+}
+
+/**
+ * Handles enabling/disabling page console capture. Independent of Automation
+ * Mode and off by default: capture replaces the page's console methods in every
+ * frame of every page loaded while it is on, which sites can detect. No
+ * permission request here — capture rides on the host permission Automation Mode
+ * already grants, and does nothing until Automation Mode is also on.
+ */
+async function handleConsoleCaptureToggle(event: Event) {
+  if (!event.isTrusted) {
+    return;
+  }
+  const enabled = consoleCaptureToggle.checked;
+  try {
+    await setConsoleCaptureEnabled(enabled);
+    consoleCaptureStatus.textContent = enabled
+      ? "Console capture enabled. Reload a page to start capturing it."
+      : "Console capture disabled. Pages no longer have console replaced.";
+    consoleCaptureStatus.style.color = "var(--success)";
+    setTimeout(() => {
+      consoleCaptureStatus.textContent = "";
+      consoleCaptureStatus.style.color = "";
+    }, 4000);
+  } catch (error) {
+    console.error("Error toggling console capture:", error);
+    consoleCaptureToggle.checked = !enabled;
   }
 }
 
@@ -1210,6 +1257,7 @@ saveDomainListsButton.addEventListener("click", saveDomainLists);
 savePortsButton.addEventListener("click", savePorts);
 clearAuditLogButton.addEventListener("click", handleClearAuditLog);
 automationModeToggle.addEventListener("change", handleAutomationModeToggle);
+consoleCaptureToggle.addEventListener("change", handleConsoleCaptureToggle);
 transportSelect.addEventListener("change", handleTransportChange);
 inputRealismSelect.addEventListener("change", handleInputRealismChange);
 makeActiveButton.addEventListener("click", handleMakeActive);
@@ -1239,6 +1287,7 @@ document.addEventListener("DOMContentLoaded", () => {
   loadPorts();
   loadAuditLog();
   loadAutomationMode();
+  loadConsoleCapture();
   loadTransport();
   loadInputRealism();
   // Topbar liveness indicator: "is the broker reachable?" (Connected/Disconnected).

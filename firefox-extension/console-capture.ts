@@ -3,17 +3,27 @@
  *
  * A page's `console.*` output and uncaught errors are NOT visible to a
  * WebExtension. To make them available to the `get-console-messages` tool we,
- * while Automation Mode is ON, register a `document_start` content script that
- * injects a PAGE-WORLD wrapper over `console.*` and `window.onerror` /
+ * while capture is ON, register a `document_start` content script that injects a
+ * PAGE-WORLD wrapper over `console.*` and `window.onerror` /
  * `unhandledrejection`. Captured entries are posted (via `window.postMessage`)
  * to the isolated content-script world, which forwards them to this background
  * script with `runtime.sendMessage`. Here we keep a bounded per-tab ring buffer
  * that the tool reads.
  *
+ * Registration is gated on BOTH Automation Mode and the separate console-capture
+ * opt-in, and that opt-in defaults to OFF (see shouldCaptureConsole). The gate is
+ * two-flag because this registration is broad — all URLs, all frames,
+ * document_start — and the page-world wrapper replaces
+ * console.log/info/warn/error/debug. A page can see that replacement, and
+ * bot-detection challenges probe exactly those five methods, so injecting it into
+ * every page the user browses breaks those challenges site-wide. Capture is
+ * therefore something the user turns on for a debugging session, not a standing
+ * consequence of leaving Automation Mode enabled.
+ *
  * Known caveats (documented for callers):
  *   - Only pages that load AFTER the capture script is registered are captured
- *     (registration happens when Automation Mode turns on). A page already open
- *     must be reloaded to start capturing.
+ *     (registration happens when both flags are on). A page already open must be
+ *     reloaded to start capturing.
  *   - Only app-level console output is captured — output the browser itself
  *     emits (CSP violations, network errors logged by the engine, messages from
  *     other extensions) does not flow through the page's `console` object and is
@@ -24,7 +34,11 @@
  */
 
 import type { ConsoleEntry } from "@foxpilot/common";
-import { isAutomationModeEnabled } from "./extension-config";
+import {
+  isAutomationModeEnabled,
+  isConsoleCaptureEnabled,
+  shouldCaptureConsole,
+} from "./extension-config";
 
 export type { ConsoleEntry };
 
@@ -218,16 +232,21 @@ export function initConsoleCapture(): void {
     clearConsoleEntries(tabId);
   });
 
-  // 3) Register/unregister the capture script as Automation Mode flips.
+  // 3) Register/unregister the capture script as either gating flag flips. The
+  //    gate is re-evaluated on every config write, so EITHER flag going false
+  //    tears the capture script down.
   browser.storage.onChanged.addListener(
     (changes: { [key: string]: { oldValue?: unknown; newValue?: unknown } }, areaName: string) => {
       if (areaName !== "local" || !changes.config) {
         return;
       }
       const newConfig = changes.config.newValue as
-        | { automationMode?: boolean }
+        | { automationMode?: boolean; consoleCapture?: boolean }
         | undefined;
-      const enabled = newConfig?.automationMode === true;
+      const enabled = shouldCaptureConsole(
+        newConfig?.automationMode === true,
+        newConfig?.consoleCapture === true
+      );
       if (enabled) {
         void registerCaptureScript();
       } else {
@@ -239,9 +258,22 @@ export function initConsoleCapture(): void {
     }
   );
 
-  // 4) If Automation Mode is already on at startup, register immediately.
-  void isAutomationModeEnabled().then((enabled) => {
-    if (enabled) {
+  // 4) If BOTH flags are already on at startup, register immediately. Applying
+  //    the same combined gate here matters: without it, leaving Automation Mode
+  //    on would silently re-inject the console patch on every browser start.
+  //
+  //    No "sweep a stale registration" branch here, unlike Chrome. A
+  //    contentScripts.register() registration is unregistered automatically when
+  //    the extension page that made it unloads, so it cannot outlive this
+  //    background page — there is never a prior session's registration still
+  //    installed to clear. Chrome's registerContentScripts persists across
+  //    browser restarts and extension updates, which is why its boot probe has
+  //    to actively sweep when the gate is off.
+  void Promise.all([
+    isAutomationModeEnabled(),
+    isConsoleCaptureEnabled(),
+  ]).then(([automationMode, consoleCapture]) => {
+    if (shouldCaptureConsole(automationMode, consoleCapture)) {
       void registerCaptureScript();
     }
   });

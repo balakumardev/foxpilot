@@ -10,6 +10,8 @@ import {
   getInputRealismMode,
   getSidecarPort,
   getSecret,
+  isConsoleCaptureEnabled,
+  CONSOLE_CAPTURE_TOGGLE_LABEL,
 } from "./extension-config";
 import { applyUserAgentRule, clearUserAgentRule } from "./emulate";
 import {
@@ -2057,11 +2059,29 @@ export class MessageHandler {
     });
   }
 
+  // Reads the per-tab console ring buffer populated by the document_start
+  // capture scripts. Those scripts are only registered when console capture is
+  // opted into, and that opt-in is OFF by default — so when it is off the buffer
+  // is empty for a reason, and returning an empty list would read as "the page
+  // logged nothing". Fail loudly instead, and say exactly what to flip: the
+  // toggle AND a reload, since registration is document_start and cannot
+  // retroactively capture a page that is already loaded.
   private async getConsoleMessages(
     correlationId: string,
     tabId: number,
     limit?: number
   ): Promise<void> {
+    if (!(await isConsoleCaptureEnabled())) {
+      throw new Error(
+        `Console capture is disabled — it is OFF by default, because capturing ` +
+          `replaces the page's console methods, which some sites detect and ` +
+          `treat as automation. No console output has been recorded. ` +
+          `To enable it, ask the user to turn on "${CONSOLE_CAPTURE_TOGGLE_LABEL}" ` +
+          `in the FoxPilot extension's options page (Automation section), then ` +
+          `RELOAD the page: capture is installed at document_start, so pages ` +
+          `already open when it is enabled are still not captured.`
+      );
+    }
     const entries = getConsoleEntries(tabId, limit);
     await this.client.sendResourceToServer({
       resource: "console-messages",

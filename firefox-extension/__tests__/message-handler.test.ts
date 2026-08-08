@@ -2442,12 +2442,15 @@ describe("MessageHandler", () => {
   });
 
   describe("get-console-messages command", () => {
+    // Console capture is an independent opt-in on top of Automation Mode, so the
+    // happy-path tests must set BOTH flags.
     const automationConfig = {
       secret: "test-secret",
       ports: [8089],
       domainDenyList: [] as string[],
       auditLog: [],
       automationMode: true,
+      consoleCapture: true,
     };
 
     beforeEach(() => {
@@ -2537,6 +2540,78 @@ describe("MessageHandler", () => {
       await expect(
         messageHandler.handleDecodedMessage(request)
       ).rejects.toThrow("requires Automation Mode");
+    });
+
+    // Capture is off by default. Returning an empty list in that state is a lie
+    // by omission — the agent reads it as "the page logged nothing" and moves on.
+    // It must fail loudly and say how to turn capture on.
+    describe("when console capture is disabled", () => {
+      const captureOffConfig = {
+        secret: "test-secret",
+        ports: [8089],
+        domainDenyList: [] as string[],
+        auditLog: [],
+        automationMode: true,
+      };
+
+      beforeEach(() => {
+        (browser.storage.local.get as jest.Mock).mockResolvedValue({
+          config: captureOffConfig,
+        });
+      });
+
+      it("throws instead of silently returning an empty list", async () => {
+        const request: ServerMessageRequest = {
+          cmd: "get-console-messages",
+          tabId: 700,
+          correlationId: "test-correlation-id",
+        };
+
+        await expect(
+          messageHandler.handleDecodedMessage(request)
+        ).rejects.toThrow(/console capture is disabled/i);
+
+        expect(mockClient.sendResourceToServer).not.toHaveBeenCalledWith(
+          expect.objectContaining({ resource: "console-messages" })
+        );
+      });
+
+      it("throws even when the buffer happens to hold stale entries", async () => {
+        addConsoleEntry(700, { level: "log", text: "stale", timestamp: 1 });
+
+        const request: ServerMessageRequest = {
+          cmd: "get-console-messages",
+          tabId: 700,
+          correlationId: "test-correlation-id",
+        };
+
+        await expect(
+          messageHandler.handleDecodedMessage(request)
+        ).rejects.toThrow(/console capture is disabled/i);
+      });
+
+      it("names the exact options toggle and the required page reload", async () => {
+        const request: ServerMessageRequest = {
+          cmd: "get-console-messages",
+          tabId: 700,
+          correlationId: "test-correlation-id",
+        };
+
+        const err = await messageHandler
+          .handleDecodedMessage(request)
+          .then(() => null)
+          .catch((e: Error) => e);
+
+        expect(err).toBeInstanceOf(Error);
+        const msg = (err as Error).message;
+        // The exact options-page toggle label.
+        expect(msg).toContain("Capture page console output");
+        // Enabling alone is not enough: registration is document_start, so a page
+        // already loaded is not captured until it is reloaded.
+        expect(msg).toMatch(/reload/i);
+        // And it must say this is the default, not a malfunction.
+        expect(msg).toMatch(/default/i);
+      });
     });
   });
 

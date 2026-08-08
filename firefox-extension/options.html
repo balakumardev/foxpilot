@@ -1368,6 +1368,30 @@
               Grants the <code>&lt;all_urls&gt;</code> host permission. Leave off unless you want full browser automation.
             </div>
             <div class="status" id="automation-mode-status"></div>
+
+            <div class="subhead">Console Capture <span style="color:var(--text-faint);font-weight:500">· off by default</span></div>
+            <p style="font-size:12.5px">Required for the <code>get-console-messages</code> tool. Off by default, and
+              separate from Automation Mode — both must be on for capture to run.</p>
+            <div class="feature-row">
+              <div class="tool-label-container">
+                <div class="tool-name">Capture page console output</div>
+                <div class="tool-description">Replaces <code>console.log/info/warn/error/debug</code> in every frame of
+                  every page you load, so their output can be read back.</div>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="console-capture-toggle" />
+                <span class="slider"></span>
+              </label>
+            </div>
+            <div class="note warn">
+              <svg class="icon" viewBox="0 0 24 24"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
+              <span>The replacement is visible to the page. This is known to break Cloudflare and similar bot-detection
+              challenges, which check whether <code>console</code> is native — on every site, not just the one being
+              automated. Turn it on for a debugging session, then turn it back off.</span>
+            </div>
+            <p style="font-size:12.5px">Capture is installed as the page loads, so reload a page after enabling this to
+              capture it.</p>
+            <div class="status" id="console-capture-status"></div>
           </div>
         </section>
 

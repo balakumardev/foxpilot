@@ -266,3 +266,88 @@ describe("zero-config secret migration", () => {
     expect(store.config.secret).toBe("my-remote-secret");
   });
 });
+
+import {
+  isConsoleCaptureEnabled,
+  setConsoleCaptureEnabled,
+  shouldCaptureConsole,
+} from "../extension-config";
+
+/**
+ * Console capture is an INDEPENDENT opt-in, separate from Automation Mode.
+ *
+ * Registering the capture content script injects a page-world wrapper over
+ * `console.log/info/warn/error/debug` in every frame of every page at
+ * document_start. That patch is observable from the page, and bot-detection
+ * challenges probe exactly those five methods — so an always-on capture (keyed
+ * off Automation Mode alone) broke those challenges on every site the user merely
+ * browsed. Capture therefore gets its own flag, defaulting OFF.
+ */
+describe("console capture config flag", () => {
+  function statefulStore(initial: any) {
+    const store: any = { config: initial };
+    (browser.storage.local.get as jest.Mock).mockImplementation(async () => store);
+    (browser.storage.local.set as jest.Mock).mockImplementation(async (v: any) => {
+      Object.assign(store, v);
+    });
+    return store;
+  }
+
+  beforeEach(() => jest.clearAllMocks());
+
+  it("defaults to DISABLED when the flag is absent", async () => {
+    statefulStore({ secret: "s", ports: [8089] });
+    expect(await isConsoleCaptureEnabled()).toBe(false);
+  });
+
+  it("stays disabled when only Automation Mode is on", async () => {
+    statefulStore({ secret: "s", ports: [8089], automationMode: true });
+    expect(await isConsoleCaptureEnabled()).toBe(false);
+  });
+
+  it("reports enabled only when the flag is explicitly true", async () => {
+    statefulStore({ secret: "s", ports: [8089], consoleCapture: true });
+    expect(await isConsoleCaptureEnabled()).toBe(true);
+  });
+
+  it("treats a non-true value as disabled", async () => {
+    statefulStore({ secret: "s", ports: [8089], consoleCapture: "yes" as any });
+    expect(await isConsoleCaptureEnabled()).toBe(false);
+  });
+
+  it("persists the flag through setConsoleCaptureEnabled", async () => {
+    const store = statefulStore({ secret: "s", ports: [8089] });
+    await setConsoleCaptureEnabled(true);
+    expect(store.config.consoleCapture).toBe(true);
+    expect(await isConsoleCaptureEnabled()).toBe(true);
+
+    await setConsoleCaptureEnabled(false);
+    expect(store.config.consoleCapture).toBe(false);
+    expect(await isConsoleCaptureEnabled()).toBe(false);
+  });
+
+  it("does not disturb Automation Mode when toggled", async () => {
+    const store = statefulStore({
+      secret: "s",
+      ports: [8089],
+      automationMode: true,
+    });
+    await setConsoleCaptureEnabled(true);
+    expect(store.config.automationMode).toBe(true);
+  });
+});
+
+describe("shouldCaptureConsole (pure gate)", () => {
+  it("requires BOTH Automation Mode and the console-capture opt-in", () => {
+    expect(shouldCaptureConsole(true, true)).toBe(true);
+  });
+
+  it("is false when console capture is off, however Automation Mode is set", () => {
+    expect(shouldCaptureConsole(true, false)).toBe(false);
+    expect(shouldCaptureConsole(false, false)).toBe(false);
+  });
+
+  it("is false when Automation Mode is off even if console capture is on", () => {
+    expect(shouldCaptureConsole(false, true)).toBe(false);
+  });
+});

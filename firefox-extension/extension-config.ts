@@ -342,6 +342,32 @@ export function shouldBlockForAutomationMode(
   return requiresAutomationMode(cmd) && !automationModeEnabled;
 }
 
+/**
+ * The exact options-page label for the console-capture toggle. Shared with the
+ * `get-console-messages` failure message so the tool can name the control the
+ * user actually has to flip, and a relabel cannot silently desync the two.
+ */
+export const CONSOLE_CAPTURE_TOGGLE_LABEL = "Capture page console output";
+
+/**
+ * Whether the console-capture script should be registered.
+ *
+ * Capture requires BOTH Automation Mode and its own opt-in. It is deliberately
+ * NOT implied by Automation Mode: the registration covers all URLs, all frames,
+ * at document_start, and the page-world wrapper it injects replaces
+ * console.log/info/warn/error/debug. That replacement is observable from the
+ * page — bot-detection challenges probe exactly those methods and fail closed
+ * when they are not native — so injecting it into every page the user merely
+ * browses breaks those challenges site-wide. Pure decision so both the boot
+ * probe and the storage watcher share one rule.
+ */
+export function shouldCaptureConsole(
+  automationModeEnabled: boolean,
+  consoleCaptureEnabled: boolean
+): boolean {
+  return automationModeEnabled && consoleCaptureEnabled;
+}
+
 // Storage schema for tool settings
 export interface ToolSettings {
   [toolId: string]: boolean;
@@ -363,6 +389,12 @@ export interface ExtensionConfig {
   ports: number[];
   auditLog?: AuditLogEntry[];
   automationMode?: boolean;
+  /**
+   * Independent opt-in for page console capture (see shouldCaptureConsole).
+   * Absent/false — the default — means the capture script is never registered,
+   * so no page's `console` methods are replaced.
+   */
+  consoleCapture?: boolean;
   transport?: "websocket" | "longpoll";
   inputRealismMode?: "off" | "synthetic" | "native";
   sidecarPort?: number;
@@ -722,6 +754,28 @@ export async function isAutomationModeEnabled(): Promise<boolean> {
 export async function setAutomationModeEnabled(enabled: boolean): Promise<void> {
   const config = await getConfig();
   config.automationMode = enabled;
+  await saveConfig(config);
+}
+
+/**
+ * Returns whether page console capture is enabled. Defaults to false: capture
+ * replaces the page's console methods, which is detectable, so it is never on
+ * unless the user asks for it. Independent of Automation Mode — see
+ * shouldCaptureConsole for the combined gate.
+ */
+export async function isConsoleCaptureEnabled(): Promise<boolean> {
+  const config = await getConfig();
+  return config.consoleCapture === true;
+}
+
+/**
+ * Enables or disables page console capture.
+ */
+export async function setConsoleCaptureEnabled(
+  enabled: boolean
+): Promise<void> {
+  const config = await getConfig();
+  config.consoleCapture = enabled;
   await saveConfig(config);
 }
 

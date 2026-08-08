@@ -246,9 +246,14 @@ describe("initConsoleCapture wiring", () => {
     expect(getConsoleEntries(tabId)).toEqual([]);
   });
 
-  it("registers the capture script on init when Automation Mode is already on", async () => {
+  it("registers the capture script on init when Automation Mode AND console capture are already on", async () => {
     (browser.storage.local.get as jest.Mock).mockResolvedValue({
-      config: { secret: "s", ports: [8089], automationMode: true },
+      config: {
+        secret: "s",
+        ports: [8089],
+        automationMode: true,
+        consoleCapture: true,
+      },
     });
     initConsoleCapture();
     // initConsoleCapture reads config asynchronously; let the chain settle.
@@ -273,9 +278,14 @@ describe("initConsoleCapture wiring", () => {
     const handle = { unregister: jest.fn() };
     (browser.contentScripts.register as jest.Mock).mockResolvedValue(handle);
 
-    // Flip ON: config.automationMode changes false -> true.
+    // Flip ON: config.automationMode changes false -> true (capture already opted in).
     onChanged(
-      { config: { oldValue: { automationMode: false }, newValue: { automationMode: true } } },
+      {
+        config: {
+          oldValue: { automationMode: false, consoleCapture: true },
+          newValue: { automationMode: true, consoleCapture: true },
+        },
+      },
       "local"
     );
     await flushPromises();
@@ -283,7 +293,12 @@ describe("initConsoleCapture wiring", () => {
 
     // Flip OFF: config.automationMode changes true -> false → unregister.
     onChanged(
-      { config: { oldValue: { automationMode: true }, newValue: { automationMode: false } } },
+      {
+        config: {
+          oldValue: { automationMode: true, consoleCapture: true },
+          newValue: { automationMode: false, consoleCapture: true },
+        },
+      },
       "local"
     );
     await flushPromises();
@@ -296,7 +311,7 @@ describe("initConsoleCapture wiring", () => {
 
     // sync area — ignored.
     onChanged(
-      { config: { newValue: { automationMode: true } } },
+      { config: { newValue: { automationMode: true, consoleCapture: true } } },
       "sync"
     );
     // local area but a different key — ignored.
@@ -316,7 +331,12 @@ describe("initConsoleCapture wiring", () => {
 
     // Flip ON so capture is active and accumulate some entries.
     onChanged(
-      { config: { oldValue: { automationMode: false }, newValue: { automationMode: true } } },
+      {
+        config: {
+          oldValue: { automationMode: false, consoleCapture: true },
+          newValue: { automationMode: true, consoleCapture: true },
+        },
+      },
       "local"
     );
     await flushPromises();
@@ -327,7 +347,12 @@ describe("initConsoleCapture wiring", () => {
     // Flip OFF: the capture script is unregistered AND the buffers are cleared so
     // a later re-enable does not surface stale prior-session output.
     onChanged(
-      { config: { oldValue: { automationMode: true }, newValue: { automationMode: false } } },
+      {
+        config: {
+          oldValue: { automationMode: true, consoleCapture: true },
+          newValue: { automationMode: false, consoleCapture: true },
+        },
+      },
       "local"
     );
     await flushPromises();
@@ -455,5 +480,180 @@ describe("clearAllConsoleState", () => {
 
     expect(getConsoleEntries(901)).toEqual([]);
     expect(getConsoleEntries(902)).toEqual([]);
+  });
+});
+
+/**
+ * Console capture must be gated on its OWN opt-in, not on Automation Mode alone.
+ *
+ * The registered capture script injects a page-world wrapper over
+ * console.log/info/warn/error/debug across <all_urls>, all frames, at
+ * document_start. That patch is visible to the page. Bot-detection challenges
+ * probe exactly those five methods, so capturing on every page the user merely
+ * browses (which is what keying off Automation Mode alone did) breaks those
+ * challenges permanently. Capture is now OFF by default and requires BOTH flags.
+ */
+describe("console capture requires its own opt-in (not Automation Mode alone)", () => {
+  beforeEach(async () => {
+    (browser.contentScripts.register as jest.Mock).mockResolvedValue({
+      unregister: jest.fn(),
+    });
+    await unregisterCaptureScript();
+    jest.clearAllMocks();
+    clearAllConsoleState();
+    // jest.clearAllMocks() clears call records but NOT implementations, so pin a
+    // both-flags-off config here: otherwise initConsoleCapture()'s boot probe
+    // would read the previous test's config and register behind the test's back.
+    (browser.storage.local.get as jest.Mock).mockResolvedValue({
+      config: { secret: "s", ports: [8089] },
+    });
+    (browser.contentScripts.register as jest.Mock).mockResolvedValue({
+      unregister: jest.fn(),
+    });
+  });
+
+  afterEach(async () => {
+    await unregisterCaptureScript();
+  });
+
+  it("does NOT register on init when Automation Mode is on but console capture is off (the default)", async () => {
+    (browser.storage.local.get as jest.Mock).mockResolvedValue({
+      config: { secret: "s", ports: [8089], automationMode: true },
+    });
+    initConsoleCapture();
+    await flushPromises();
+    expect(browser.contentScripts.register).not.toHaveBeenCalled();
+  });
+
+  it("does NOT register on init when console capture is on but Automation Mode is off", async () => {
+    (browser.storage.local.get as jest.Mock).mockResolvedValue({
+      config: { secret: "s", ports: [8089], consoleCapture: true },
+    });
+    initConsoleCapture();
+    await flushPromises();
+    expect(browser.contentScripts.register).not.toHaveBeenCalled();
+  });
+
+  it("registers on init only when BOTH flags are on", async () => {
+    (browser.storage.local.get as jest.Mock).mockResolvedValue({
+      config: {
+        secret: "s",
+        ports: [8089],
+        automationMode: true,
+        consoleCapture: true,
+      },
+    });
+    initConsoleCapture();
+    await flushPromises();
+    expect(browser.contentScripts.register).toHaveBeenCalledTimes(1);
+  });
+
+  it("registers when storage.onChanged flips consoleCapture on with Automation Mode already on", async () => {
+    initConsoleCapture();
+    const onChanged = lastListener(
+      browser.storage.onChanged.addListener as jest.Mock
+    );
+
+    // Automation Mode alone: still no injection.
+    onChanged(
+      {
+        config: {
+          oldValue: { automationMode: false, consoleCapture: false },
+          newValue: { automationMode: true, consoleCapture: false },
+        },
+      },
+      "local"
+    );
+    await flushPromises();
+    expect(browser.contentScripts.register).not.toHaveBeenCalled();
+
+    // Console capture opted in: now it injects.
+    onChanged(
+      {
+        config: {
+          oldValue: { automationMode: true, consoleCapture: false },
+          newValue: { automationMode: true, consoleCapture: true },
+        },
+      },
+      "local"
+    );
+    await flushPromises();
+    expect(browser.contentScripts.register).toHaveBeenCalledTimes(1);
+  });
+
+  it("unregisters and clears buffers when consoleCapture flips off (Automation Mode stays on)", async () => {
+    const handle = { unregister: jest.fn() };
+    (browser.contentScripts.register as jest.Mock).mockResolvedValue(handle);
+
+    initConsoleCapture();
+    const onChanged = lastListener(
+      browser.storage.onChanged.addListener as jest.Mock
+    );
+
+    onChanged(
+      {
+        config: {
+          oldValue: { automationMode: true, consoleCapture: false },
+          newValue: { automationMode: true, consoleCapture: true },
+        },
+      },
+      "local"
+    );
+    await flushPromises();
+    expect(browser.contentScripts.register).toHaveBeenCalledTimes(1);
+
+    addConsoleEntry(660, { level: "log", text: "prior", timestamp: 1 });
+    expect(getConsoleEntries(660)).toHaveLength(1);
+
+    onChanged(
+      {
+        config: {
+          oldValue: { automationMode: true, consoleCapture: true },
+          newValue: { automationMode: true, consoleCapture: false },
+        },
+      },
+      "local"
+    );
+    await flushPromises();
+    expect(handle.unregister).toHaveBeenCalledTimes(1);
+    expect(getConsoleEntries(660)).toEqual([]);
+  });
+
+  it("unregisters and clears buffers when automationMode flips off (consoleCapture stays on)", async () => {
+    const handle = { unregister: jest.fn() };
+    (browser.contentScripts.register as jest.Mock).mockResolvedValue(handle);
+
+    initConsoleCapture();
+    const onChanged = lastListener(
+      browser.storage.onChanged.addListener as jest.Mock
+    );
+
+    onChanged(
+      {
+        config: {
+          oldValue: { automationMode: false, consoleCapture: true },
+          newValue: { automationMode: true, consoleCapture: true },
+        },
+      },
+      "local"
+    );
+    await flushPromises();
+    expect(browser.contentScripts.register).toHaveBeenCalledTimes(1);
+
+    addConsoleEntry(661, { level: "log", text: "prior", timestamp: 1 });
+    expect(getConsoleEntries(661)).toHaveLength(1);
+
+    onChanged(
+      {
+        config: {
+          oldValue: { automationMode: true, consoleCapture: true },
+          newValue: { automationMode: false, consoleCapture: true },
+        },
+      },
+      "local"
+    );
+    await flushPromises();
+    expect(handle.unregister).toHaveBeenCalledTimes(1);
+    expect(getConsoleEntries(661)).toEqual([]);
   });
 });

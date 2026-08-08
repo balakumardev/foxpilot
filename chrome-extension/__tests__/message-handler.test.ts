@@ -2,6 +2,7 @@ import { MessageHandler } from "../message-handler";
 import type { ExtensionTransport } from "../transport";
 import type { ServerMessageRequest } from "@foxpilot/common";
 import { cdpEval } from "../cdp-eval";
+import { addConsoleEntry, clearConsoleEntries } from "../console-capture";
 
 // The native-input client is mocked so importing/constructing the handler never
 // touches a real socket or OS input. None of the paths exercised below use it.
@@ -1781,5 +1782,102 @@ describe("MessageHandler (chrome) — foreground-tab preservation", () => {
         } as ServerMessageRequest)
       ).rejects.toThrow("image readback failed");
     });
+  });
+});
+
+/**
+ * `get-console-messages` must FAIL LOUDLY when console capture is off.
+ *
+ * Capture is off by default (patching page `console` is detectable and breaks
+ * bot-detection challenges). If the tool silently returned an empty list in that
+ * state, an agent would read it as "the page logged nothing" and move on — so the
+ * handler throws, and the message names the exact options toggle plus the reload
+ * requirement (registration is document_start, so an already-loaded page is not
+ * captured until it reloads).
+ */
+describe("MessageHandler (chrome) — get-console-messages capture gate", () => {
+  let messageHandler: MessageHandler;
+  let transport: jest.Mocked<ExtensionTransport>;
+
+  const baseConfig = {
+    secret: "test-secret",
+    ports: [8089],
+    domainDenyList: [] as string[],
+    auditLog: [],
+    automationMode: true,
+  };
+
+  function setConfig(extra: Record<string, unknown>) {
+    (browser.storage.local.get as jest.Mock).mockResolvedValue({
+      config: { ...baseConfig, ...extra },
+    });
+  }
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    transport = makeTransport();
+    messageHandler = new MessageHandler(transport);
+    clearConsoleEntries(700);
+    setConfig({});
+  });
+
+  it("replies with the buffered entries when capture is enabled", async () => {
+    setConfig({ consoleCapture: true });
+    addConsoleEntry(700, { level: "log", text: "hello", timestamp: 10 });
+
+    await messageHandler.handleDecodedMessage({
+      cmd: "get-console-messages",
+      tabId: 700,
+      correlationId: "c-on",
+    } as ServerMessageRequest);
+
+    expect(transport.sendResourceToServer).toHaveBeenCalledWith({
+      resource: "console-messages",
+      correlationId: "c-on",
+      entries: [{ level: "log", text: "hello", timestamp: 10 }],
+    });
+  });
+
+  it("throws instead of silently returning an empty list when capture is off", async () => {
+    await expect(
+      messageHandler.handleDecodedMessage({
+        cmd: "get-console-messages",
+        tabId: 700,
+        correlationId: "c-off",
+      } as ServerMessageRequest)
+    ).rejects.toThrow(/console capture is disabled/i);
+
+    expect(transport.sendResourceToServer).not.toHaveBeenCalledWith(
+      expect.objectContaining({ resource: "console-messages" })
+    );
+  });
+
+  it("throws even when the buffer happens to hold stale entries", async () => {
+    addConsoleEntry(700, { level: "log", text: "stale", timestamp: 1 });
+
+    await expect(
+      messageHandler.handleDecodedMessage({
+        cmd: "get-console-messages",
+        tabId: 700,
+        correlationId: "c-stale",
+      } as ServerMessageRequest)
+    ).rejects.toThrow(/console capture is disabled/i);
+  });
+
+  it("names the exact options toggle and the required page reload", async () => {
+    const err = await messageHandler
+      .handleDecodedMessage({
+        cmd: "get-console-messages",
+        tabId: 700,
+        correlationId: "c-msg",
+      } as ServerMessageRequest)
+      .then(() => null)
+      .catch((e: Error) => e);
+
+    expect(err).toBeInstanceOf(Error);
+    const msg = (err as Error).message;
+    expect(msg).toContain("Capture page console output");
+    expect(msg).toMatch(/reload/i);
+    expect(msg).toMatch(/default/i);
   });
 });

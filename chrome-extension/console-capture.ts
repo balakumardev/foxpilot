@@ -8,10 +8,24 @@
  * the background via chrome.runtime.sendMessage. The MAIN/bridge split is needed
  * because only a MAIN-world script can see the page's real console, while only an
  * isolated-world script can reach chrome.runtime.
+ *
+ * Registration is gated on BOTH Automation Mode and the separate console-capture
+ * opt-in, and that opt-in defaults to OFF (see shouldCaptureConsole). The gate is
+ * two-flag because this registration is the broadest injection the API permits —
+ * MAIN world, <all_urls>, allFrames, document_start — and the MAIN-world script
+ * replaces console.log/info/warn/error/debug. A page can see that replacement,
+ * and bot-detection challenges probe exactly those five methods, so injecting it
+ * into every page the user browses breaks those challenges site-wide. Capture is
+ * therefore something the user turns on for a debugging session, not a standing
+ * consequence of leaving Automation Mode enabled.
  */
 
 import type { ConsoleEntry } from "@foxpilot/common";
-import { isAutomationModeEnabled } from "./extension-config";
+import {
+  isAutomationModeEnabled,
+  isConsoleCaptureEnabled,
+  shouldCaptureConsole,
+} from "./extension-config";
 
 export type { ConsoleEntry };
 
@@ -75,6 +89,33 @@ let desiredRegistered = false;
 const MAIN_ID = "bcmcp-console-capture-main";
 const BRIDGE_ID = "bcmcp-console-capture-bridge";
 
+/**
+ * Drop any capture registration currently installed under our IDs, regardless of
+ * this service worker's in-memory state.
+ *
+ * Registrations made without `persistAcrossSessions: false` persist across
+ * service-worker restarts, browser restarts, AND extension updates — while the
+ * module-level `captureId` resets to null on every SW boot. So the on-disk
+ * registration and our idea of it can disagree in both directions, and only a
+ * query can settle it. Used for two things: avoiding "Duplicate script ID" on
+ * re-registration, and sweeping a registration a previous session left behind.
+ * Never throws — `getRegisteredContentScripts` may be unsupported.
+ */
+async function clearPersistedRegistration(): Promise<void> {
+  try {
+    const existing = await (
+      browser.scripting as any
+    ).getRegisteredContentScripts({ ids: [MAIN_ID, BRIDGE_ID] });
+    if (existing && existing.length > 0) {
+      await browser.scripting.unregisterContentScripts({
+        ids: existing.map((s: { id: string }) => s.id),
+      });
+    }
+  } catch (e) {
+    /* getRegisteredContentScripts unsupported or failed — fall through */
+  }
+}
+
 export async function registerCaptureScript(): Promise<void> {
   desiredRegistered = true;
   if (captureId || registering) {
@@ -85,18 +126,7 @@ export async function registerCaptureScript(): Promise<void> {
     // Idempotent registration: a prior registration can persist across
     // service-worker restarts, and re-registering the same IDs throws
     // "Duplicate script ID". Clear any stale registration first.
-    try {
-      const existing = await (
-        browser.scripting as any
-      ).getRegisteredContentScripts({ ids: [MAIN_ID, BRIDGE_ID] });
-      if (existing && existing.length > 0) {
-        await browser.scripting.unregisterContentScripts({
-          ids: existing.map((s: { id: string }) => s.id),
-        });
-      }
-    } catch (e) {
-      /* getRegisteredContentScripts unsupported or failed — fall through */
-    }
+    await clearPersistedRegistration();
     // Capture all frames, including iframes. The per-frame batching (one
     // coalesced message per flush interval) plus the source-side rate limit
     // bound IPC per frame, so all-frames capture no longer floods the IO thread
@@ -178,15 +208,21 @@ export function initConsoleCapture(): void {
     clearConsoleEntries(tabId);
   });
 
+  // Re-evaluate the combined gate on every config write, so EITHER flag going
+  // false tears the capture scripts down (and drops the buffers, so a later
+  // re-enable cannot surface stale prior-session output).
   browser.storage.onChanged.addListener(
     (changes: { [key: string]: { oldValue?: unknown; newValue?: unknown } }, areaName: string) => {
       if (areaName !== "local" || !changes.config) {
         return;
       }
       const newConfig = changes.config.newValue as
-        | { automationMode?: boolean }
+        | { automationMode?: boolean; consoleCapture?: boolean }
         | undefined;
-      const enabled = newConfig?.automationMode === true;
+      const enabled = shouldCaptureConsole(
+        newConfig?.automationMode === true,
+        newConfig?.consoleCapture === true
+      );
       if (enabled) {
         void registerCaptureScript();
       } else {
@@ -196,9 +232,23 @@ export function initConsoleCapture(): void {
     }
   );
 
-  void isAutomationModeEnabled().then((enabled) => {
-    if (enabled) {
+  // Boot probe: the service worker re-arms registration on every restart, so
+  // this must apply the same combined gate — otherwise leaving Automation Mode
+  // on would silently re-inject the console patch into every page forever.
+  //
+  // When the gate is OFF we must actively sweep, not just decline to register.
+  // Registrations persist across browser restarts and extension updates, so an
+  // install that registered capture under the old Automation-Mode-only gate is
+  // still injecting after updating to this build; and unregisterCaptureScript()
+  // cannot clear it, because its in-memory handle is null on a fresh SW boot.
+  void Promise.all([
+    isAutomationModeEnabled(),
+    isConsoleCaptureEnabled(),
+  ]).then(([automationMode, consoleCapture]) => {
+    if (shouldCaptureConsole(automationMode, consoleCapture)) {
       void registerCaptureScript();
+    } else {
+      void clearPersistedRegistration();
     }
   });
 }
