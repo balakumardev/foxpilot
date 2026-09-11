@@ -720,6 +720,54 @@ describe("MessageHandler", () => {
       );
     });
 
+    it("wait-for-text with activateTab:true foregrounds the tab, then restores it", async () => {
+      // Regression: wait-for-text had no activateTab field at all, so a frozen
+      // BACKGROUND tab could never be un-frozen — and because this command
+      // polls for a CHANGE (not a current-state read), a frozen tab can never
+      // produce the awaited text, so the call burned its whole deadline and
+      // reported "did not appear" on a page that was actually fine.
+      (browser.storage.local.get as jest.Mock).mockResolvedValue({
+        config: {
+          secret: "test-secret",
+          ports: [8089],
+          domainDenyList: [],
+          auditLog: [],
+          automationMode: true,
+        },
+      });
+      (browser.tabs.get as jest.Mock).mockResolvedValue({
+        id: 123,
+        url: "https://example.com",
+        windowId: 7,
+      });
+      (browser.permissions.contains as jest.Mock).mockResolvedValue(true);
+      (browser.tabs.query as jest.Mock).mockResolvedValue([{ id: 99 }]);
+      (browser.tabs.update as jest.Mock).mockResolvedValue(undefined);
+      // The isolated-world probe returns the matched needle (or null).
+      (browser.tabs.executeScript as jest.Mock).mockResolvedValue(["Hello"]);
+
+      await messageHandler.handleDecodedMessage({
+        cmd: "wait-for-text",
+        tabId: 123,
+        text: "Hello",
+        activateTab: true,
+        correlationId: "w1",
+      } as ServerMessageRequest);
+
+      expect(browser.tabs.update).toHaveBeenNthCalledWith(1, 123, {
+        active: true,
+      });
+      expect(browser.tabs.update).toHaveBeenNthCalledWith(2, 99, {
+        active: true,
+      });
+      expect(mockClient.sendResourceToServer).toHaveBeenCalledWith(
+        expect.objectContaining({
+          resource: "wait-for-text-result",
+          found: true,
+        })
+      );
+    });
+
     it("without activateTab, tab activation is untouched", async () => {
       (browser.storage.local.get as jest.Mock).mockResolvedValue({
         config: {

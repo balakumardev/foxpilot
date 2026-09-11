@@ -110,6 +110,12 @@ export interface WaitForTextServerMessage extends ServerMessageBase {
   // soon as ANY string appears). The result reports which string matched.
   text: string | string[];
   timeoutMs?: number;
+  // See GetTabContentServerMessage.activateTab. This command needs it more than
+  // any other tab-scoped read: the others return whatever is on the page right
+  // now, but wait-for-text polls for a CHANGE. A frozen background tab never
+  // advances, so the awaited text can never appear and the call is guaranteed
+  // to burn its full deadline before reporting "did not appear".
+  activateTab?: boolean;
 }
 
 export interface ClickElementServerMessage extends ServerMessageBase {

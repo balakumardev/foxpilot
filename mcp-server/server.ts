@@ -442,17 +442,19 @@ mcpServer.tool(
 
 mcpServer.tool(
   "wait-for-text",
-  "Wait until text appears on a tab's page, polling until found or the timeout elapses (default 30000ms). 'text' may be a single string OR an array of strings — with an array it resolves as soon as ANY of them appears and reports which one matched.",
+  "Wait until text appears on a tab's page, polling until found or the timeout elapses (default 30000ms). 'text' may be a single string OR an array of strings — with an array it resolves as soon as ANY of them appears and reports which one matched. If the target tab is in the BACKGROUND, pass activateTab:true — a frozen background tab never renders the awaited text, so the call would otherwise poll for the full timeout and report 'did not appear' even though the page is fine.",
   {
     tabId: z.number(),
     text: z.union([z.string(), z.array(z.string()).nonempty()]),
     timeoutMs: z.number().optional(),
+    ...activateTabField,
   },
-  async ({ tabId, text, timeoutMs }) => {
+  async ({ tabId, text, timeoutMs, activateTab }) => {
     const { found, matched } = await browserApi.waitForText(
       tabId,
       text,
-      timeoutMs
+      timeoutMs,
+      { activateTab }
     );
     if (found) {
       const which =

@@ -584,13 +584,19 @@ export class BrowserAPI {
   async waitForText(
     tabId: number,
     text: string | string[],
-    timeoutMs?: number
+    timeoutMs?: number,
+    opts?: { activateTab?: boolean }
   ): Promise<{ found: boolean; matched?: string }> {
     const message = await this.sendTool<WaitForTextResultExtensionMessage>({
       cmd: "wait-for-text",
       tabId,
       text,
       timeoutMs,
+      // Spread so an omitted flag stays ABSENT rather than becoming
+      // `activateTab: undefined` — the extension dispatcher keys on
+      // `"activateTab" in req`, and the wire message stays byte-for-byte
+      // unchanged for existing callers.
+      ...opts,
     });
     return { found: message.found, matched: message.matched };
   }

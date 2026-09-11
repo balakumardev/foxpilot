@@ -331,6 +331,39 @@ describe("MessageHandler (chrome) — foreground-tab preservation", () => {
       );
     });
 
+    it("wait-for-text with activateTab:true foregrounds the tab, then restores it", async () => {
+      // Regression: wait-for-text had no activateTab field at all, so a frozen
+      // BACKGROUND tab could never be un-frozen — and because this command
+      // polls for a CHANGE (not a current-state read), a frozen tab can never
+      // produce the awaited text, so the call burned its whole deadline and
+      // reported "did not appear" on a page that was actually fine.
+      (browser.tabs.query as jest.Mock).mockResolvedValue([{ id: 99 }]);
+      (browser.tabs.sendMessage as jest.Mock).mockResolvedValue({
+        found: true,
+      });
+
+      await messageHandler.handleDecodedMessage({
+        cmd: "wait-for-text",
+        tabId: 123,
+        text: "Hello",
+        activateTab: true,
+        correlationId: "w1",
+      } as ServerMessageRequest);
+
+      expect(browser.tabs.update).toHaveBeenNthCalledWith(1, 123, {
+        active: true,
+      });
+      expect(browser.tabs.update).toHaveBeenNthCalledWith(2, 99, {
+        active: true,
+      });
+      expect(transport.sendResourceToServer).toHaveBeenCalledWith(
+        expect.objectContaining({
+          resource: "wait-for-text-result",
+          found: true,
+        })
+      );
+    });
+
     it("take-snapshot WITHOUT activateTab does not touch tab activation", async () => {
       (browser.tabs.query as jest.Mock).mockResolvedValue([{ id: 99 }]);
 
