@@ -137,3 +137,123 @@ describe("B10: selectOption rejects a recycled uid (identity guard)", () => {
     expect(res.selected).toMatch(/United States/);
   });
 });
+
+describe("antd 4 / rc-select shape", () => {
+  // antd's REAL option rows are `.ant-select-item-option` and carry NO role
+  // attribute, so the old selector — which only knew role="option", <li>s and
+  // react-select's .select__option — could not see them at all. The only
+  // role="option" nodes antd renders live in a 0x0 overflow:hidden listbox that
+  // backs aria-activedescendant, so the old code clicked THAT and reported
+  // success while the value never changed.
+  //
+  // Scope note: rejecting the aria mirror depends on it having zero width, which
+  // needs a layout engine. jsdom has none (every rect is 0x0, so the geometry
+  // guard is deliberately disabled there), and jsdom also does not inherit a
+  // parent's display:none to descendants. That half of the fix is therefore
+  // proven in e2e/antd-select-option.spec.ts against real antd in a real
+  // browser. What jsdom CAN prove is asserted here: the real antd row is now
+  // matched at all, a row hidden in its own right is skipped, and `selected` is
+  // read from the control rather than echoed back from the clicked row.
+  it("clicks the real .ant-select-item-option row (it was previously invisible to the selector)", async () => {
+    document.body.innerHTML = `
+      <div class="ant-select ant-select-multiple" data-bcmcp-uid="e1">
+        <div class="ant-select-selector">
+          <div class="ant-select-selection-overflow"></div>
+        </div>
+      </div>
+      <div class="ant-select-dropdown">
+        <div class="rc-virtual-list-holder-inner">
+          <div class="ant-select-item ant-select-item-option" title="India">
+            <div class="ant-select-item-option-content">India</div>
+          </div>
+          <div class="ant-select-item ant-select-item-option" title="Japan">
+            <div class="ant-select-item-option-content">Japan</div>
+          </div>
+        </div>
+      </div>`;
+    const india = document.querySelector(
+      '.ant-select-item-option[title="India"]'
+    ) as HTMLElement;
+    const japan = document.querySelector(
+      '.ant-select-item-option[title="Japan"]'
+    ) as HTMLElement;
+    let indiaClicks = 0;
+    let japanClicks = 0;
+    india.addEventListener("click", () => {
+      indiaClicks++;
+    });
+    japan.addEventListener("click", () => {
+      japanClicks++;
+    });
+
+    const r = await selectOption(document, { uid: "e1", option: "India" });
+
+    expect(r.ok).toBe(true);
+    expect(indiaClicks).toBe(1);
+    expect(japanClicks).toBe(0);
+  });
+
+  it("skips an option row that is hidden in its own right", async () => {
+    document.body.innerHTML = `
+      <div class="ant-select ant-select-multiple" data-bcmcp-uid="e1">
+        <div class="ant-select-selector"></div>
+      </div>
+      <div class="ant-select-dropdown">
+        <div class="rc-virtual-list-holder-inner">
+          <div class="ant-select-item ant-select-item-option" title="India"
+               style="display:none">India</div>
+          <div class="ant-select-item ant-select-item-option" title="India (live)">India</div>
+        </div>
+      </div>`;
+    const hidden = document.querySelector(
+      '.ant-select-item-option[title="India"]'
+    ) as HTMLElement;
+    const live = document.querySelector(
+      '.ant-select-item-option[title="India (live)"]'
+    ) as HTMLElement;
+    let hiddenClicks = 0;
+    let liveClicks = 0;
+    hidden.addEventListener("click", () => {
+      hiddenClicks++;
+    });
+    live.addEventListener("click", () => {
+      liveClicks++;
+    });
+
+    await selectOption(document, { uid: "e1", option: "India" });
+
+    expect(hiddenClicks).toBe(0);
+    expect(liveClicks).toBe(1);
+  });
+
+  it("reports the committed value from the control, not the row it clicked", async () => {
+    document.body.innerHTML = `
+      <div class="ant-select ant-select-multiple" data-bcmcp-uid="e1">
+        <div class="ant-select-selector">
+          <div class="ant-select-selection-overflow"></div>
+        </div>
+      </div>
+      <div class="ant-select-dropdown">
+        <div class="rc-virtual-list-holder-inner">
+          <div class="ant-select-item ant-select-item-option" title="India">
+            <div class="ant-select-item-option-content">India</div>
+          </div>
+        </div>
+      </div>`;
+    const control = document.querySelector(".ant-select-multiple") as HTMLElement;
+    // Stand in for antd committing the pick: the tag the control renders is what
+    // `selected` must be read from. The remove button inside the tag carries a
+    // different class token, so it must not leak into the reported value.
+    (
+      document.querySelector('.ant-select-item-option[title="India"]') as HTMLElement
+    ).addEventListener("click", () => {
+      control.querySelector(".ant-select-selection-overflow")!.innerHTML =
+        '<span class="ant-select-selection-item" title="India">India' +
+        '<span class="ant-select-selection-item-remove">x</span></span>';
+    });
+
+    const r = await selectOption(document, { uid: "e1", option: "India" });
+    expect(r.ok).toBe(true);
+    expect(r.selected).toBe("India");
+  });
+});

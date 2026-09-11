@@ -19,6 +19,61 @@ export async function selectOption(
   const wantExact = args.exact === true;
   const rawWant = args.option == null ? "" : String(args.option);
   const want = rawWant.replace(/\s+/g, " ").trim().toLowerCase();
+  // Option rows across the supported combobox families. `.ant-select-item-option`
+  // is antd 4 / rc-select, whose REAL rows carry NO role attribute at all: the
+  // only role="option" nodes it renders live inside a 0x0 overflow:hidden
+  // listbox that exists purely to back aria-activedescendant. Matching those and
+  // nothing else is what made select-option click an invisible mirror row and
+  // then report success while the value never changed.
+  const OPTION_SELECTOR =
+    '[role="option"], [role="listbox"] li, li[role="option"], .select__option, .ant-select-item-option';
+
+  // Is a real layout engine active? In jsdom every getBoundingClientRect() is
+  // 0x0, so the geometry guard below must be disabled there or it would reject
+  // every option. Mirrors snapshot-script.ts's layoutActive.
+  const layoutActive = (function (): boolean {
+    try {
+      const de = doc.documentElement as Element | null;
+      if (de && typeof de.getBoundingClientRect === "function") {
+        const r = de.getBoundingClientRect();
+        return !!(r && r.height > 0);
+      }
+    } catch (e) {
+      /* no layout — treat as inactive */
+    }
+    return false;
+  })();
+
+  // Reject option rows that cannot receive a real click: a closed dropdown's
+  // rows (display:none) and rc-select's aria mirror, whose rows inherit zero
+  // WIDTH from their 0x0 overflow:hidden listbox while keeping a nonzero height
+  // (so a width-and-height test would miss them). Geometry is gated on
+  // layoutActive, leaving the jsdom unit tests byte-for-byte unaffected.
+  function isUnclickableOption(el: Element): boolean {
+    const dv = doc.defaultView;
+    if (dv && typeof dv.getComputedStyle === "function") {
+      let cs: CSSStyleDeclaration | null = null;
+      try {
+        cs = dv.getComputedStyle(el);
+      } catch (e) {
+        cs = null;
+      }
+      if (cs && (cs.display === "none" || cs.visibility === "hidden")) {
+        return true;
+      }
+    }
+    if (layoutActive) {
+      try {
+        const r = el.getBoundingClientRect();
+        if (r && (r.width === 0 || r.height === 0)) {
+          return true;
+        }
+      } catch (e) {
+        /* unreadable geometry — do not exclude on this basis */
+      }
+    }
+    return false;
+  }
 
   function norm(s: string | null | undefined): string {
     return (s == null ? "" : String(s)).replace(/\s+/g, " ").trim();
@@ -39,9 +94,7 @@ export async function selectOption(
     if (!textMatches(el.textContent || "")) {
       return false;
     }
-    const kids = el.querySelectorAll(
-      '[role="option"], [role="listbox"] li, li[role="option"], .select__option'
-    );
+    const kids = el.querySelectorAll(OPTION_SELECTOR);
     for (let k = 0; k < kids.length; k++) {
       if (textMatches(kids[k].textContent || "")) {
         return false;
@@ -237,10 +290,11 @@ export async function selectOption(
     //    ≤ 15 iterations × 300ms. First check is at iter 0 (no sleep) so an
     //    already-open menu resolves immediately.
     function findOption(): Element | null {
-      const nodes = doc.querySelectorAll(
-        '[role="option"], [role="listbox"] li, li[role="option"], .select__option'
-      );
+      const nodes = doc.querySelectorAll(OPTION_SELECTOR);
       for (let i = 0; i < nodes.length; i++) {
+        if (isUnclickableOption(nodes[i])) {
+          continue;
+        }
         if (isLeafTextMatch(nodes[i])) {
           return nodes[i];
         }
@@ -286,6 +340,25 @@ export async function selectOption(
       );
       if (single && norm(single.textContent || "")) {
         return norm(single.textContent || "");
+      }
+      // antd renders one .ant-select-selection-item per COMMITTED value (a
+      // single select has exactly one; a multiple select has one tag each), so
+      // reading it reports what the control actually holds instead of echoing
+      // back the row we clicked. The remove button inside a tag carries the
+      // class ant-select-selection-item-remove, a different class token, so it
+      // is not matched here.
+      const items = control.querySelectorAll(".ant-select-selection-item");
+      const picked: string[] = [];
+      for (let i = 0; i < items.length; i++) {
+        const t = norm(
+          items[i].getAttribute("title") || items[i].textContent || ""
+        );
+        if (t) {
+          picked.push(t);
+        }
+      }
+      if (picked.length) {
+        return picked.join(", ");
       }
       const vt = control.getAttribute("aria-valuetext");
       if (vt && norm(vt)) {

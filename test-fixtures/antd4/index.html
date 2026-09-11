@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>antd 4.x fixture</title>
+    <link rel="stylesheet" href="vendor/antd.min.css" />
+    <style>
+      body { margin: 0; padding: 16px; font-family: system-ui, sans-serif; max-width: 880px; }
+      h1 { font-size: 18px; }
+      section { border: 1px solid #ddd; border-radius: 8px; padding: 12px; margin: 12px 0; }
+      section h2 { font-size: 14px; margin: 0 0 8px; color: #333; }
+      #state-mirror { background: #111; color: #6f6; padding: 8px; border-radius: 6px; font-size: 12px; white-space: pre-wrap; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <!-- Real antd 4.24.16 + React 18, vendored UMD and loaded same-origin.
+         antd's UMD externalizes react / react-dom / moment; only the first two
+         are needed for Select and Checkbox, so no moment global is provided. -->
+    <script src="vendor/react.development.js"></script>
+    <script src="vendor/react-dom.development.js"></script>
+    <script src="vendor/antd.min.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>
