@@ -1101,3 +1101,107 @@ describe("A5 refinement: contenteditable respects a canceled beforeinput", () =>
     expect(inputs[0].data).toBe("hi");
   });
 });
+
+describe("label-wrapped checkbox activation (antd .ant-checkbox-wrapper shape)", () => {
+  // A trusted click anywhere in a <label> toggles the labeled control. Firefox
+  // does not run that forwarding for an untrusted click, so clicking antd's
+  // wrapper label — or the painted span over its visually-hidden input — did
+  // nothing while still reporting ok:true. The browser-divergent half is proven
+  // in e2e/antd-checkbox-click.spec.ts, which runs on Firefox AND Chromium.
+  //
+  // What these jsdom tests pin is the invariant that holds on every engine, and
+  // the one a naive fix breaks: EXACTLY ONE toggle. Forwarding unconditionally
+  // would double-activate wherever the browser already forwards, flipping the
+  // box straight back off. Counting `change` events catches that in either
+  // direction.
+  function mountAntdCheckbox(): HTMLInputElement {
+    document.body.innerHTML = `
+      <label class="ant-checkbox-wrapper">
+        <span class="ant-checkbox">
+          <input type="checkbox" class="ant-checkbox-input" />
+          <span class="ant-checkbox-inner"></span>
+        </span>
+        <span class="label-text">I accept the terms</span>
+      </label>`;
+    return document.querySelector("input[type=checkbox]") as HTMLInputElement;
+  }
+
+  function clickUid(el: Element): void {
+    el.setAttribute("data-bcmcp-uid", "e1");
+    performInputAction(document, { action: "click", uid: "e1" });
+  }
+
+  it("clicking the wrapper label toggles the checkbox exactly once", () => {
+    const input = mountAntdCheckbox();
+    let changes = 0;
+    input.addEventListener("change", () => {
+      changes++;
+    });
+
+    clickUid(document.querySelector("label")!);
+
+    expect(input.checked).toBe(true);
+    expect(changes).toBe(1);
+  });
+
+  it("clicking the painted inner span toggles the checkbox exactly once", () => {
+    const input = mountAntdCheckbox();
+    let changes = 0;
+    input.addEventListener("change", () => {
+      changes++;
+    });
+
+    clickUid(document.querySelector(".ant-checkbox-inner")!);
+
+    expect(input.checked).toBe(true);
+    expect(changes).toBe(1);
+  });
+
+  it("clicking the input itself toggles exactly once (no forwarded second click)", () => {
+    const input = mountAntdCheckbox();
+    let changes = 0;
+    input.addEventListener("change", () => {
+      changes++;
+    });
+
+    clickUid(input);
+
+    expect(input.checked).toBe(true);
+    expect(changes).toBe(1);
+  });
+
+  it("a label click on a radio selects it exactly once", () => {
+    document.body.innerHTML = `
+      <label class="ant-radio-wrapper">
+        <span class="ant-radio"><input type="radio" name="g" value="a" /></span>
+        <span>Option A</span>
+      </label>`;
+    const radio = document.querySelector("input[type=radio]") as HTMLInputElement;
+    let changes = 0;
+    radio.addEventListener("change", () => {
+      changes++;
+    });
+
+    clickUid(document.querySelector("label")!);
+
+    expect(radio.checked).toBe(true);
+    expect(changes).toBe(1);
+  });
+
+  it("a label wrapping a TEXT input gains no extra activation", () => {
+    // Scope guard: only checkbox/radio are forwarded. The control still receives
+    // one click here — that is the ENGINE's own label activation, not ours — so
+    // the thing worth pinning is that nothing adds a second one on top.
+    document.body.innerHTML = `
+      <label>Name <input type="text" /></label>`;
+    const text = document.querySelector("input[type=text]") as HTMLInputElement;
+    let clicks = 0;
+    text.addEventListener("click", () => {
+      clicks++;
+    });
+
+    clickUid(document.querySelector("label")!);
+
+    expect(clicks).toBeLessThanOrEqual(1);
+  });
+});

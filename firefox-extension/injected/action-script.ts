@@ -155,6 +155,84 @@ export function performInputAction(
       return new MouseEvent(type, init);
     }
 
+    // A trusted click on a <label> — or on anything inside it — runs the label's
+    // activation behavior and toggles the labeled control. Firefox does NOT run
+    // that forwarding for an UNTRUSTED (script-dispatched) click, so a synthetic
+    // click on antd's .ant-checkbox-wrapper label, or on the painted
+    // .ant-checkbox-inner span stacked over its visually-hidden input, did
+    // nothing at all while still reporting ok:true. Chromium does forward it,
+    // which is why this only ever reproduced on Firefox — the one browser where
+    // there is no CDP/trusted-input fallback to escape to.
+    //
+    // Forward it ourselves, but ONLY when the browser demonstrably did not: a
+    // capture-phase listener on the control records whether the click actually
+    // reached it, so on Chromium (where it did) we never activate a second time
+    // and toggle the box straight back off.
+    function labeledCheckControl(el: Element): Element | null {
+      try {
+        const label = (
+          el.tagName === "LABEL"
+            ? el
+            : typeof (el as { closest?: (s: string) => Element | null })
+                .closest === "function"
+            ? el.closest("label")
+            : null
+        ) as ({ control?: Element | null } & Element) | null;
+        if (!label) {
+          return null;
+        }
+        const ctl = label.control;
+        if (!ctl || ctl === el) {
+          return null;
+        }
+        // Restricted to checkbox/radio: their state is driven purely by the
+        // label forwarding, and a missed forward is silent. Other labelable
+        // controls (text inputs, selects) are left untouched — a trusted label
+        // click only focuses those, which the press sequence already does.
+        const type = (ctl.getAttribute("type") || "").toLowerCase();
+        if (ctl.tagName !== "INPUT" || (type !== "checkbox" && type !== "radio")) {
+          return null;
+        }
+        return ctl;
+      } catch (e) {
+        return null;
+      }
+    }
+
+    function clickWithLabelForwarding(el: Element): void {
+      const ctl = labeledCheckControl(el);
+      let reached = false;
+      const mark = function (): void {
+        reached = true;
+      };
+      if (ctl) {
+        try {
+          ctl.addEventListener("click", mark, true);
+        } catch (e) {
+          /* ignore */
+        }
+      }
+      try {
+        (el as { click?: () => void }).click?.();
+      } catch (e) {
+        /* ignore activation errors */
+      }
+      if (ctl) {
+        try {
+          ctl.removeEventListener("click", mark, true);
+        } catch (e) {
+          /* ignore */
+        }
+        if (!reached) {
+          try {
+            (ctl as { click?: () => void }).click?.();
+          } catch (e) {
+            /* ignore activation errors */
+          }
+        }
+      }
+    }
+
     function dispatchClickSequence(el: Element, doubleClick?: boolean): void {
       const c = elementCenter(el);
       // Realistic covert press sequence: symmetric pointer/mouse pairs with
@@ -179,11 +257,7 @@ export function performInputAction(
       // AND performs the default action (follows links, toggles checkboxes,
       // submits forms). We deliberately do NOT also dispatch a synthetic
       // `click` MouseEvent — doing so would double-activate the element.
-      try {
-        (el as { click?: () => void }).click?.();
-      } catch (e) {
-        /* ignore activation errors */
-      }
+      clickWithLabelForwarding(el);
       if (doubleClick) {
         // A real double-click fires `dblclick` after the click above.
         el.dispatchEvent(mouseEvt("dblclick", { x: c.x, y: c.y }));

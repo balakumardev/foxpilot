@@ -32,6 +32,11 @@ const server = createServer(async (req, res) => {
       "Content-Type",
       TYPES[extname(filePath)] || "application/octet-stream"
     );
+    // The vendored antd/React bundles are immutable and large; letting the
+    // browser cache them keeps repeated navigations in a test run cheap.
+    if (rel.startsWith("vendor/")) {
+      res.setHeader("Cache-Control", "public, max-age=3600");
+    }
     res.statusCode = 200;
     res.end(body);
   } catch {

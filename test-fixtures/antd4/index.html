@@ -17,9 +17,12 @@
     <div id="root"></div>
     <!-- Real antd 4.24.16 + React 18, vendored UMD and loaded same-origin.
          antd's UMD externalizes react / react-dom / moment; only the first two
-         are needed for Select and Checkbox, so no moment global is provided. -->
-    <script src="vendor/react.development.js"></script>
-    <script src="vendor/react-dom.development.js"></script>
+         are needed for Select and Checkbox, so no moment global is provided.
+         PRODUCTION React builds on purpose: the development pair is ~1.2MB and
+         every test navigates fresh, which made page loads time out under
+         parallel workers. Nothing here depends on dev-only warnings. -->
+    <script src="vendor/react.production.min.js"></script>
+    <script src="vendor/react-dom.production.min.js"></script>
     <script src="vendor/antd.min.js"></script>
     <script src="app.js"></script>
   </body>
