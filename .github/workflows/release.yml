@@ -107,6 +107,10 @@ jobs:
         run: |
           npm install -g npm@latest
           npm publish --loglevel verbose
+        env:
+          # Fallback: npm tries the trusted-publishing OIDC exchange first and
+          # only uses this token when the exchange is refused.
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Flag a failed npm publish
         if: steps.npm_publish.outcome == 'failure'
@@ -139,6 +143,10 @@ jobs:
         run: |
           npm install -g npm@latest
           npm publish --loglevel verbose
+        env:
+          # Fallback: npm tries the trusted-publishing OIDC exchange first and
+          # only uses this token when the exchange is refused.
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
   publish-amo:
     # Republish the Firefox add-on to addons.mozilla.org on every commit.
