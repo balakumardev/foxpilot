@@ -600,29 +600,34 @@ export function buildSnapshot(
     return el.ownerDocument || doc;
   }
 
+  // label[for] targets, one map per tree (document or shadow root) per call,
+  // first label in tree order winning — what querySelector('label[for=…]')
+  // returned, without querying the whole tree once per element with an id
+  // (that made names, and textContains, quadratic on pages with ids).
+  const labelMaps = new Map<Node, Map<string, Element>>();
+  function labelForId(el: Element, id: string): Element | null {
+    const tree = treeOf(el);
+    let map = labelMaps.get(tree);
+    if (!map) {
+      map = new Map<string, Element>();
+      const labels = tree.querySelectorAll("label[for]");
+      for (let i = 0; i < labels.length; i++) {
+        const target = labels[i].getAttribute("for");
+        if (target !== null && !map.has(target)) {
+          map.set(target, labels[i]);
+        }
+      }
+      labelMaps.set(tree, map);
+    }
+    return map.get(id) || null;
+  }
+
   function labelFromFor(el: Element): string {
     const id = el.getAttribute("id");
     if (!id) {
       return "";
     }
-    // Escape the id for use in a CSS attribute selector.
-    let selectorId = id;
-    try {
-      const anyWin = doc.defaultView as unknown as {
-        CSS?: { escape?: (v: string) => string };
-      } | null;
-      if (anyWin && anyWin.CSS && typeof anyWin.CSS.escape === "function") {
-        selectorId = anyWin.CSS.escape(id);
-      }
-    } catch (e) {
-      selectorId = id;
-    }
-    let labelEl: Element | null = null;
-    try {
-      labelEl = treeOf(el).querySelector('label[for="' + selectorId + '"]');
-    } catch (e) {
-      labelEl = null;
-    }
+    const labelEl = labelForId(el, id);
     if (labelEl) {
       const text = textOf(labelEl);
       if (text) {

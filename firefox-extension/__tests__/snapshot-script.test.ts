@@ -2045,3 +2045,45 @@ describe("textContains: name matches never steal a control's match", () => {
     );
   });
 });
+
+/**
+ * label[for] names come from one map per tree (the document, each shadow root)
+ * per snapshot. Querying the tree for every element with an id made the default
+ * snapshot, and textContains' name matching, quadratic on pages with ids
+ * (measured: 16k elements, textContains 154 ms → 2.8 s; 32k → 8.3 s).
+ */
+describe("label[for] names are looked up once per tree", () => {
+  afterEach(() => {
+    jest.restoreAllMocks();
+    document.body.innerHTML = "";
+    document.head.innerHTML = "";
+  });
+
+  it.each([
+    ["default", {}],
+    ["textContains", { textContains: "field" }],
+  ])("%s: one label query for the whole document, none per element", (_label, extra) => {
+    document.body.innerHTML = Array.from(
+      { length: 40 },
+      (_, i) => `<label for="f${i}">Field ${i}</label><input id="f${i}">`
+    ).join("");
+    const one = jest.spyOn(Document.prototype, "querySelector");
+    const many = jest.spyOn(Document.prototype, "querySelectorAll");
+    const res = snap(extra);
+    const perElement = one.mock.calls.filter((c) => String(c[0]).indexOf("label[for") === 0).length;
+    const perTree = many.mock.calls.filter((c) => String(c[0]) === "label[for]").length;
+    expect(perElement).toBe(0);
+    expect(perTree).toBe(1);
+    expect(res.tree).toContain('textbox "Field 39" |');
+  });
+
+  it("still takes the first label[for] in tree order, and resolves per tree", () => {
+    document.body.innerHTML = `<label for="a">First</label><label for="a">Second</label><input id="a"><div id="h"></div>`;
+    attachHost("x-field", `<label for="a">Shadow label</label><input id="a">`, {
+      parent: document.getElementById("h")!,
+    });
+    expect(snap().tree).toBe(
+      ['textbox "First" |  |  [uid=e1]', 'textbox "Shadow label" |  |  [uid=e2]'].join("\n")
+    );
+  });
+});
