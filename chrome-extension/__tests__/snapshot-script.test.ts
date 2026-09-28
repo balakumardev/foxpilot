@@ -1438,6 +1438,12 @@ describe("textContains: slots, box-less wrappers and hidden text", () => {
     document.body.innerHTML = `<script>var q = "quarterly";</script><p>Nothing to see</p>`;
     expect(snap({ textContains: "quarterly" }).total).toBe(0);
   });
+
+  it("never attributes text inside display:contents directly under body to body or html", () => {
+    document.body.innerHTML = `<div style="display:contents">Welcome back, Ada</div><button>Logout</button>`;
+    expect(snap({ textContains: "welcome" }).total).toBe(0);
+    expect(snap({ textContains: "welcome" }).tree).toBe("");
+  });
 });
 
 /**
@@ -1492,6 +1498,17 @@ describe("textContains: name matches never steal a control's match", () => {
     expect(snap({ textContains: "agree" }).tree).toBe(
       ['clickable "I agree to the Terms" |  |  [uid=e1]', 'checkbox "I agree to the Terms" |  |  [uid=e2]'].join("\n")
     );
+  });
+
+  it("gives a wrapping <label>'s text to custom ARIA controls", () => {
+    document.body.innerHTML = `<label><span role="checkbox" tabindex="0"></span> Remember me</label>`;
+    expect(snap().tree).toBe('checkbox "Remember me" |  |  [uid=e1]');
+
+    document.body.innerHTML = `<label><span role="switch" tabindex="0"></span> Dark mode</label>`;
+    expect(snap().tree).toBe('switch "Dark mode" |  |  [uid=e1]');
+
+    document.body.innerHTML = `<label>Notes <div contenteditable="true" role="textbox"></div></label>`;
+    expect(snap().tree).toBe('textbox "Notes" |  |  [uid=e1]');
   });
 });
 
@@ -1605,6 +1622,20 @@ describe("collapsed rows: merged states and structural wrappers", () => {
         'menuitem "Rename" |  |  [uid=e1] (selected, wraps button [uid=e2])',
         'menuitem "Delete" |  |  [uid=e3] (wraps button [uid=e4])',
       ].join("\n")
+    );
+  });
+
+  it("merges dropped structural wrapper states into the control's row", () => {
+    document.body.innerHTML = `<div role="grid"><div role="row"><div role="gridcell" aria-selected="true"><button>15</button></div></div></div>`;
+    expect(snap().tree).toBe(
+      ['grid "" |  |  [uid=e1]', 'row "" |  |  [uid=e2]', 'button "15" |  |  [uid=e3] (selected)'].join("\n")
+    );
+  });
+
+  it("keeps innermost semantic wrapper row when nested through a structural wrapper", () => {
+    document.body.innerHTML = `<div role="listbox"><div role="option" aria-selected="true" aria-label="Open file"><div role="gridcell"><a href="/f">Open file</a></div></div></div>`;
+    expect(snap().tree).toBe(
+      ['listbox "" |  |  [uid=e1]', 'option "Open file" |  |  [uid=e2] (selected, via inner link)'].join("\n")
     );
   });
 });

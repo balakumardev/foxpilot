@@ -636,21 +636,11 @@ export function buildSnapshot(
     return "";
   }
 
-  // What a <label> can label (HTML's labelable elements). Only these take a
-  // wrapping label's text as their name — a link inside a label keeps its own.
-  function isLabelable(el: Element): boolean {
-    const tag = el.localName;
-    if (tag === "input") {
-      return (el.getAttribute("type") || "").toLowerCase() !== "hidden";
-    }
-    return (
-      tag === "select" ||
-      tag === "textarea" ||
-      tag === "button" ||
-      tag === "meter" ||
-      tag === "output" ||
-      tag === "progress"
-    );
+  // Every element takes a wrapping label's text as its name except links (a and
+  // area elements), which keep their own name.
+  function takesAncestorLabel(el: Element): boolean {
+    const tag = (el.localName || el.tagName).toLowerCase();
+    return tag !== "a" && tag !== "area";
   }
 
   function labelFromAncestor(el: Element): string {
@@ -737,7 +727,7 @@ export function buildSnapshot(
       return clip(forLabel);
     }
 
-    const ancestorLabel = isLabelable(el) ? labelFromAncestor(el) : "";
+    const ancestorLabel = takesAncestorLabel(el) ? labelFromAncestor(el) : "";
     if (collapseWhitespace(ancestorLabel)) {
       return clip(ancestorLabel);
     }
@@ -1474,7 +1464,8 @@ export function buildSnapshot(
         if (!passedHost && isInteractiveControl(el)) {
           return el;
         }
-        if (!nearestBox) {
+        const tag = (el.localName || el.tagName).toLowerCase();
+        if (!nearestBox && tag !== "body" && tag !== "html") {
           nearestBox = el;
         }
       }
@@ -1490,9 +1481,10 @@ export function buildSnapshot(
 
   // Default mode: settle the role-wrapper collapses up front — a wrapper row
   // precedes its inner control in reading order, and when nested wrappers
-  // collapse onto one control only the innermost keeps a row.
+  // collapse onto one control only the innermost semantic wrapper keeps a row.
   const collapseOf = new Map<Element, Element>(); // wrapper → inner control
-  const wrapperOf = new Map<Element, Element>(); // inner control → innermost wrapper
+  const semanticWrapperOf = new Map<Element, Element>(); // inner control → innermost semantic wrapper
+  const structuralWrappersOf = new Map<Element, Element[]>(); // inner control → dropped structural wrappers
   if (!selectorMode && !textMode) {
     for (let i = 0; i < candidates.length; i++) {
       const w = candidates[i];
@@ -1502,15 +1494,29 @@ export function buildSnapshot(
       const inner = collapseTargetOf(w);
       if (inner) {
         collapseOf.set(w, inner);
-        wrapperOf.set(inner, w); // visited later = nested deeper, so it wins
+        if (isStructuralRole(firstRoleToken(w))) {
+          let list = structuralWrappersOf.get(inner);
+          if (!list) {
+            list = [];
+            structuralWrappersOf.set(inner, list);
+          }
+          list.push(w);
+        } else {
+          semanticWrapperOf.set(inner, w); // visited later = nested deeper, so it wins
+        }
       }
     }
   }
 
-  // Text mode: the innermost wrapper (under root) that collapses onto d.
-  function collapsingWrapperOf(d: Element): Element | null {
+  // Text mode: wrappers (under root) that collapse onto d.
+  function wrappersFor(d: Element): {
+    semantic: Element | null;
+    structural: Element[];
+  } {
+    const structural: Element[] = [];
+    let semantic: Element | null = null;
     if (!isInteractiveControl(d)) {
-      return null;
+      return { semantic: null, structural: structural };
     }
     let n = flatParent(d);
     for (let up = 0; n && n !== root && n.nodeType === 1 && up < WALK_MAX; up++, n = flatParent(n)) {
@@ -1519,13 +1525,17 @@ export function buildSnapshot(
         continue;
       }
       if (soleInteractiveDescendant(w) !== d) {
-        return null; // w holds other controls too, and so does every outer wrapper
+        break; // w holds other controls too, and so does every outer wrapper
       }
       if (sameName(w, d)) {
-        return w;
+        if (isStructuralRole(firstRoleToken(w))) {
+          structural.push(w);
+        } else if (!semantic) {
+          semantic = w;
+        }
       }
     }
-    return null;
+    return { semantic: semantic, structural: structural };
   }
 
   // --- 3..6. walk, compute, stamp, and build the output ---
@@ -1562,36 +1572,37 @@ export function buildSnapshot(
     // that collapses is dropped: the control's own row stands for it.
     let rowEl = el;
     let uidEl = el;
+    let droppedStructural: Element[] = [];
     if (!selectorMode && !textMode) {
       const inner = collapseOf.get(el);
       if (inner) {
-        if (wrapperOf.get(inner) !== el) {
-          continue; // a nested wrapper owns this control's row
-        }
         if (isStructuralRole(firstRoleToken(el))) {
-          continue; // the control's own row stands for it
+          continue; // structural wrappers never own the row
+        }
+        if (semanticWrapperOf.get(inner) !== el) {
+          continue; // a nested semantic wrapper owns this control's row
         }
         uidEl = inner;
+        droppedStructural = structuralWrappersOf.get(inner) || [];
       } else {
-        const wrapper = wrapperOf.get(el);
-        if (wrapper && !isStructuralRole(firstRoleToken(wrapper))) {
-          continue; // listed through its wrapper's row
+        if (semanticWrapperOf.has(el)) {
+          continue; // listed through its semantic wrapper's row
         }
+        droppedStructural = structuralWrappersOf.get(el) || [];
       }
     } else if (!selectorMode) {
       // Text mode, same rule: a match is shown through its collapsing wrapper.
       const inner = collapseTargetOf(el);
-      if (inner) {
-        uidEl = inner;
-        if (isStructuralRole(firstRoleToken(el))) {
-          rowEl = inner;
-        }
+      const target = inner || el;
+      const ws = wrappersFor(target);
+      if (ws.semantic) {
+        rowEl = ws.semantic;
+        uidEl = target;
       } else {
-        const wrapper = collapsingWrapperOf(el);
-        if (wrapper && !isStructuralRole(firstRoleToken(wrapper))) {
-          rowEl = wrapper;
-        }
+        rowEl = target;
+        uidEl = target;
       }
+      droppedStructural = ws.structural;
     }
     // One row per target: a text-mode wrapper and its inner control can both
     // match and resolve to the same row.
@@ -1613,6 +1624,10 @@ export function buildSnapshot(
     let flags = getStateFlags(rowEl, role);
     let value = getCurrentValue(rowEl, role);
     const uid = stampUid(uidEl);
+    for (let k = 0; k < droppedStructural.length; k++) {
+      const sw = droppedStructural[k];
+      flags = mergeFlags(flags, getStateFlags(sw, getRole(sw)));
+    }
     // Every note rides in the row's (flags) group, so each row keeps the one-line
     // `... [uid=eN] (flags)` shape agents parse.
     if (uidEl !== rowEl) {
