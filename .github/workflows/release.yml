@@ -14,6 +14,9 @@ on:
 
 permissions:
   contents: write
+  # npm trusted publishing (OIDC) mints a short-lived publish credential from
+  # this token; no NPM_TOKEN secret is involved.
+  id-token: write
 
 jobs:
   release:
@@ -34,11 +37,6 @@ jobs:
 
       - name: Install dependencies
         run: npm install
-
-      - name: Detect optional publish secrets
-        id: secrets
-        run: |
-          echo "npm=${{ secrets.NPM_TOKEN != '' }}" >> "$GITHUB_OUTPUT"
 
       - name: Bump + sync version, tag, push
         id: version
@@ -92,13 +90,24 @@ jobs:
             foxpilot-extension.zip
             foxpilot-chrome-extension.zip
 
+      # Trusted publishing: npm >= 11.5.1 exchanges the workflow's OIDC token for
+      # a one-off publish credential. The trusted publisher must be configured on
+      # npmjs.com (foxpilot-mcp -> Settings -> balakumardev/foxpilot, release.yml).
+      # continue-on-error keeps the store jobs running; the next step makes a
+      # failed publish visible instead of silently green.
       - name: Publish MCP server to npm
-        if: steps.secrets.outputs.npm == 'true'
+        id: npm_publish
         continue-on-error: true
         working-directory: mcp-server
-        run: npm publish
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          npm install -g npm@latest
+          npm publish
+
+      - name: Flag a failed npm publish
+        if: steps.npm_publish.outcome == 'failure'
+        run: |
+          echo "::error title=npm publish failed::foxpilot-mcp@${{ steps.version.outputs.VERSION }} was NOT published to npm. See the 'Publish MCP server to npm' step log."
+          echo "### npm publish failed: foxpilot-mcp@${{ steps.version.outputs.VERSION }} is not on npm" >> "$GITHUB_STEP_SUMMARY"
 
   publish-amo:
     # Republish the Firefox add-on to addons.mozilla.org on every commit.
