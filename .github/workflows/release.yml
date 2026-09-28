@@ -11,6 +11,11 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      npm_only:
+        description: "Only publish the version already on main to npm (no bump, no GitHub release, no store uploads)"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -21,7 +26,7 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
-    if: "!contains(github.event.head_commit.message, '[skip ci]')"
+    if: "!contains(github.event.head_commit.message, '[skip ci]') && !inputs.npm_only"
     outputs:
       version: ${{ steps.version.outputs.VERSION }}
     steps:
@@ -101,13 +106,39 @@ jobs:
         working-directory: mcp-server
         run: |
           npm install -g npm@latest
-          npm publish
+          npm publish --loglevel verbose
 
       - name: Flag a failed npm publish
         if: steps.npm_publish.outcome == 'failure'
         run: |
           echo "::error title=npm publish failed::foxpilot-mcp@${{ steps.version.outputs.VERSION }} was NOT published to npm. See the 'Publish MCP server to npm' step log."
           echo "### npm publish failed: foxpilot-mcp@${{ steps.version.outputs.VERSION }} is not on npm" >> "$GITHUB_STEP_SUMMARY"
+
+  npm-only:
+    # Manual retry for npm alone (Actions -> Release -> Run workflow -> npm_only):
+    # publishes the version already on main, so a failed npm publish doesn't
+    # need a new release and new store submissions.
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.npm_only }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build MCP server
+        run: npm run build --prefix mcp-server
+
+      - name: Publish MCP server to npm
+        working-directory: mcp-server
+        run: |
+          npm install -g npm@latest
+          npm publish --loglevel verbose
 
   publish-amo:
     # Republish the Firefox add-on to addons.mozilla.org on every commit.
