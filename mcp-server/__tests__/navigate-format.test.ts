@@ -63,6 +63,7 @@ describe("formatNavigateResult", () => {
   });
 
   it("keeps a wait-condition mismatch apart from the url", () => {
+    // As an extension from 093bd2c sends it: the mismatch only in its field.
     const out = formatNavigateResult(REQUESTED, {
       tabId: 7,
       url: "https://app.example.com/dashboard",
@@ -73,6 +74,20 @@ describe("formatNavigateResult", () => {
     expect(text).toContain("still shows https://app.example.com/dashboard");
     expect(text).not.toContain("dashboard — expected");
     expect(text).toContain('expected text "Create Token" not found');
+  });
+
+  it("prints the mismatch once when the extension also folded it into the url", () => {
+    // Newer extensions keep the old "<url> — <mismatch>" form in `url` too, so
+    // an older server still shows the mismatch.
+    const out = formatNavigateResult(REQUESTED, {
+      tabId: 7,
+      url: 'https://app.example.com/dashboard — expected text "Create Token" not found',
+      committed: false,
+      mismatch: 'expected text "Create Token" not found',
+    });
+    const text = out.content[0].text;
+    expect(text).toContain("still shows https://app.example.com/dashboard.");
+    expect(text.split('expected text "Create Token" not found').length - 1).toBe(1);
   });
 
   it("does not describe a page for a tab that has never committed one", () => {

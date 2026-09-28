@@ -88,6 +88,15 @@ function navigate(extra: Record<string, unknown> = {}): ServerMessageRequest {
   return { cmd: "navigate-tab", tabId: TAB, url: NEW, correlationId: "c1", ...extra } as any;
 }
 
+// Verbatim the template every mcp-server before 213aa14 rendered a
+// navigate-tab reply with: it knows nothing of committed/pendingUrl/mismatch.
+// Extensions update from the stores while npm installs stay pinned, so an old
+// server meets a new extension, and the reply's `url` alone must still carry
+// what matters.
+function renderedByOldServer(requested: string, reply: { tabId: number; url?: string }): string {
+  return `Navigated tab ${reply.tabId} to ${reply.url ?? requested}`;
+}
+
 describe("firefox navigate-tab reports the navigated-to url, never the old one", () => {
   let handler: MessageHandler;
   let transport: jest.Mocked<ExtensionTransport>;
@@ -292,7 +301,7 @@ describe("firefox navigate-tab reports the navigated-to url, never the old one",
     expect(Date.now() - started).toBeLessThan(1500);
   });
 
-  it("keeps a waitFor* mismatch out of the url when the navigation did not commit", async () => {
+  it("still folds a waitFor* mismatch into the url when the navigation did not commit, so an older server shows it", async () => {
     fakeTab({ url: OLD, status: "complete" }, [
       { at: 10, set: { status: "loading" }, event: { status: "loading" } },
       { at: 5000, set: { url: NEW }, event: { status: "loading", url: NEW } },
@@ -307,10 +316,14 @@ describe("firefox navigate-tab reports the navigated-to url, never the old one",
       resource: "navigated",
       correlationId: "c1",
       tabId: TAB,
-      url: OLD,
+      url: `${OLD} — expected text "Create Token" not found`,
       committed: false,
       mismatch: 'expected text "Create Token" not found',
     });
+    const sent = (transport.sendResourceToServer as jest.Mock).mock.calls[0][0];
+    expect(renderedByOldServer(NEW, sent)).toBe(
+      'Navigated tab 7 to https://app.example.com/dashboard — expected text "Create Token" not found'
+    );
   });
 
   it("does not credit the page being left with a navigation it starts after ours ended without a page", async () => {
@@ -335,7 +348,7 @@ describe("firefox navigate-tab reports the navigated-to url, never the old one",
       resource: "navigated",
       correlationId: "c1",
       tabId: TAB,
-      url: ELSEWHERE,
+      url: `${ELSEWHERE} — expected text "Settings" not found`,
       committed: false,
       mismatch: 'expected text "Settings" not found',
     });

@@ -1960,16 +1960,23 @@ export class MessageHandler {
       });
       return;
     }
-    // Until the navigation commits, tab.url is still the page being left (or ""
-    // for a tab that never committed one) and the destination sits in
-    // pendingUrl. Reporting that url as where the tab "navigated to" is exactly
-    // the old-url bug, so say it did not commit — and only call it "still
-    // loading" while the tab really is.
+    // Until the navigation commits, tab.url is still the page being left and the
+    // destination sits in pendingUrl. Reporting that url as where the tab
+    // "navigated to" is exactly the old-url bug, so say it did not commit — and
+    // only call it "still loading" while the tab really is.
+    //
+    // `url` stays readable to an OLDER server, which prints it verbatim after
+    // "Navigated tab N to" (extensions update from the stores while npm
+    // installs stay pinned): an unmet waitFor* condition is folded in as every
+    // reply before `mismatch` existed did (a newer server strips it back off),
+    // and a tab that has not committed any page yet — Chrome reports url "" for
+    // it — is named for the initial empty document it shows, about:blank.
+    const shown = finalTab.url || "about:blank";
     await this.client.sendResourceToServer({
       resource: "navigated",
       correlationId,
       tabId,
-      url: finalTab.url ?? "",
+      url: mismatch ? `${shown} — ${mismatch}` : shown,
       committed: false,
       ...(finalTab.status === "loading" && finalTab.pendingUrl
         ? { pendingUrl: finalTab.pendingUrl }

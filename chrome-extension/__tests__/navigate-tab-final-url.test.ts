@@ -114,6 +114,15 @@ function navigate(extra: Record<string, unknown> = {}): ServerMessageRequest {
   return { cmd: "navigate-tab", tabId: TAB, url: NEW, correlationId: "c1", ...extra } as any;
 }
 
+// Verbatim the template every mcp-server before 213aa14 rendered a
+// navigate-tab reply with: it knows nothing of committed/pendingUrl/mismatch.
+// Extensions update from the stores while npm installs stay pinned, so an old
+// server meets a new extension, and the reply's `url` alone must still carry
+// what matters.
+function renderedByOldServer(requested: string, reply: { tabId: number; url?: string }): string {
+  return `Navigated tab ${reply.tabId} to ${reply.url ?? requested}`;
+}
+
 describe("chrome navigate-tab reports the navigated-to url, never the old one", () => {
   let handler: MessageHandler;
   let transport: jest.Mocked<ExtensionTransport>;
@@ -320,8 +329,8 @@ describe("chrome navigate-tab reports the navigated-to url, never the old one", 
   });
 
   it("does not claim a destination for a tab that has never committed any page", async () => {
-    // A brand-new tab has url "" until its first commit; ours then outlasts
-    // the wait.
+    // A brand-new tab has url "" until its first commit (it shows the initial
+    // empty document, about:blank); ours then outlasts the wait.
     fakeTab({ url: "", status: "loading", pendingUrl: "https://app.example.com/start" }, [
       { at: 5000, set: { url: NEW, pendingUrl: undefined }, event: { status: "loading", url: NEW } },
     ]);
@@ -332,13 +341,16 @@ describe("chrome navigate-tab reports the navigated-to url, never the old one", 
       resource: "navigated",
       correlationId: "c1",
       tabId: TAB,
-      url: "",
+      url: "about:blank",
       committed: false,
       pendingUrl: NEW,
     });
+    // An older server must not print a sentence that ends in nothing.
+    const sent = (transport.sendResourceToServer as jest.Mock).mock.calls[0][0];
+    expect(renderedByOldServer(NEW, sent)).toBe("Navigated tab 7 to about:blank");
   });
 
-  it("keeps a waitFor* mismatch out of the url when the navigation did not commit", async () => {
+  it("still folds a waitFor* mismatch into the url when the navigation did not commit, so an older server shows it", async () => {
     fakeTab({ url: OLD, status: "complete" }, [
       { at: 5000, set: { url: NEW, pendingUrl: undefined }, event: { status: "loading", url: NEW } },
     ]);
@@ -352,11 +364,15 @@ describe("chrome navigate-tab reports the navigated-to url, never the old one", 
       resource: "navigated",
       correlationId: "c1",
       tabId: TAB,
-      url: OLD,
+      url: `${OLD} — expected text "Create Token" not found`,
       committed: false,
       pendingUrl: NEW,
       mismatch: 'expected text "Create Token" not found',
     });
+    const sent = (transport.sendResourceToServer as jest.Mock).mock.calls[0][0];
+    expect(renderedByOldServer(NEW, sent)).toBe(
+      'Navigated tab 7 to https://app.example.com/dashboard — expected text "Create Token" not found'
+    );
   });
 
   it("stops waiting, and does not claim it is still loading, once the navigation is over but a stale pendingUrl lingers", async () => {
@@ -399,7 +415,7 @@ describe("chrome navigate-tab reports the navigated-to url, never the old one", 
       resource: "navigated",
       correlationId: "c1",
       tabId: TAB,
-      url: LATER,
+      url: `${LATER} — expected text "Settings" not found`,
       committed: false,
       mismatch: 'expected text "Settings" not found',
     });

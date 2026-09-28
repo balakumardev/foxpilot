@@ -1933,11 +1933,17 @@ export class MessageHandler {
     // Until the navigation commits, the tab's url is still the page being left.
     // Reporting it as where the tab "navigated to" is exactly the old-url bug,
     // so say it did not commit instead.
+    //
+    // `url` stays readable to an OLDER server, which prints it verbatim after
+    // "Navigated tab N to" (extensions update from the stores while npm
+    // installs stay pinned): an unmet waitFor* condition is folded in as every
+    // reply before `mismatch` existed did (a newer server strips it back off).
+    const shown = finalTab.url || "about:blank";
     await this.client.sendResourceToServer({
       resource: "navigated",
       correlationId,
       tabId,
-      url: finalTab.url ?? "",
+      url: mismatch ? `${shown} — ${mismatch}` : shown,
       committed: false,
       ...(mismatch ? { mismatch } : {}),
     });
