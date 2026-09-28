@@ -85,9 +85,9 @@ export interface NavigationWatch {
    * The tab has reported committing this navigation. When the settle ran out of
    * time with the navigation still in flight, this keeps updating until
    * dispose(), so a commit that lands later (say, during a waitFor* poll) still
-   * counts — read it at the moment you read the tab. Once the settle saw the
-   * navigation end, the answer is final: a later url change belongs to the
-   * page the tab is showing, not to this navigation.
+   * counts — read it at the moment you read the tab. Once the navigation is
+   * seen to end, during the settle or after it, the answer is final: a later
+   * url change belongs to the page the tab is showing, not to this navigation.
    */
   committed(): boolean;
   /** The tab could no longer be read (closed). */
@@ -127,14 +127,22 @@ export interface NavigationWatch {
  * commit.
  *
  * Once the navigation has ended nothing counts any more: a later load or url
- * change is the page's own.
+ * change is the page's own. The listener marks that end itself (a url-less
+ * "complete" after our start), so it is also seen when it comes after a
+ * timed-out settle, during a waitFor* poll.
  *
- * Without Chrome's pendingUrl two gaps remain. Once our load has started, a
- * same-document url change the old page makes arrives exactly like our commit
- * and is taken as it. And a navigation that reports neither a start nor a url
- * change can only end at the deadline, reported as not committed — recorded on
- * Firefox 151 for one a beforeunload prompt blocked: no onUpdated event at
- * all, and tabs.get stayed "complete" on the old url.
+ * Without Chrome's pendingUrl, three gaps remain:
+ * - Once our load has started, a same-document url change the old page makes
+ *   arrives exactly like our commit and is taken as it.
+ * - A navigation that reports neither a start nor a url change can only end
+ *   at the deadline, reported as not committed — recorded on Firefox 151 for
+ *   one a beforeunload prompt blocked: no onUpdated event at all, and tabs.get
+ *   stayed "complete" on the old url.
+ * - Another load already in flight when we navigate — say navigate-page-history
+ *   immediately followed by navigate-tab, so its events arrive after our
+ *   listener is armed — cannot be told from ours. Its "loading" is taken for
+ *   our start and its aborted "complete" for our end, so the reply says not
+ *   committed even though ours goes on to commit.
  */
 export async function navigateAndSettle(
   tabId: number,
@@ -165,6 +173,11 @@ export async function navigateAndSettle(
       }
     } else if (info.status === "loading") {
       started = true;
+    } else if (info.status === "complete" && started) {
+      // Our load has ended, with or without a page. The settle loop notices
+      // this too, but only while it runs: after it timed out, this is the one
+      // place that learns it.
+      over = true;
     }
     events++;
     if (wake) wake();
@@ -199,7 +212,9 @@ export async function navigateAndSettle(
       gone = true; // closed — nothing left to wait for
       break;
     }
-    if (tab && tab.status === "complete" && (started || committed)) {
+    // The listener may already know the load ended, even if the tab now reads
+    // "loading" again for a load that is not ours.
+    if (over || (tab && tab.status === "complete" && (started || committed))) {
       over = true;
       break;
     }

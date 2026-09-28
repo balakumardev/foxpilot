@@ -91,6 +91,28 @@ describe("chrome navigateAndSettle", () => {
     watch.dispose();
   });
 
+  it("after a timed-out settle, stops counting once the navigation ends without a page, and stops reading the tab when disposed", async () => {
+    let state: Record<string, string> = {
+      status: "loading",
+      url: "https://old.example/",
+      pendingUrl: "https://new.example/",
+    };
+    (mockBrowser.tabs.get as jest.Mock).mockImplementation(async () => state);
+    const watch = await navigateAndSettle(5, jest.fn().mockResolvedValue(undefined), { timeoutMs: 60 });
+    // Ours ends without a page: Chromium fires no event, the tab just reads
+    // complete again.
+    state = { status: "complete", url: "https://old.example/" };
+    await new Promise((r) => setTimeout(r, 250));
+    // Then the old page changes its own url.
+    const moved = { status: "loading", url: "https://old.example/#later" };
+    listeners.slice().forEach((l) => l(5, { status: "loading", url: moved.url }, moved));
+    expect(watch.committed()).toBe(false);
+    watch.dispose();
+    const reads = (mockBrowser.tabs.get as jest.Mock).mock.calls.length;
+    await new Promise((r) => setTimeout(r, 250));
+    expect((mockBrowser.tabs.get as jest.Mock).mock.calls.length).toBe(reads);
+  });
+
   it("propagates a failure to start the navigation and still releases its listeners", async () => {
     const start = jest.fn().mockRejectedValue(new Error("No tab with id: 5."));
     await expect(navigateAndSettle(5, start, { timeoutMs: 1000 })).rejects.toThrow("No tab with id: 5.");

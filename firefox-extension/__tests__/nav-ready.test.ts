@@ -97,6 +97,22 @@ describe("firefox navigateAndSettle", () => {
     watch.dispose();
   });
 
+  it("after a timed-out settle, stops counting once our load ends without a page", async () => {
+    (mockBrowser.tabs.get as jest.Mock).mockResolvedValue({ status: "loading", url: "https://old.example/" });
+    const watch = await navigateAndSettle(5, jest.fn().mockResolvedValue(undefined), {
+      timeoutMs: 60,
+      targetUrl: NEW,
+    });
+    // Our load starts, then ends without a page (a 204 / download).
+    listeners.slice().forEach((l) => l(5, { status: "loading" }, {}));
+    listeners.slice().forEach((l) => l(5, { status: "complete" }, {}));
+    // Then the old page navigates itself.
+    listeners.slice().forEach((l) => l(5, { status: "loading" }, {}));
+    listeners.slice().forEach((l) => l(5, { status: "loading", url: "https://elsewhere.example/" }, {}));
+    expect(watch.committed()).toBe(false);
+    watch.dispose();
+  });
+
   it("propagates a failure to start the navigation and still releases its listener", async () => {
     const start = jest.fn().mockRejectedValue(new Error("Invalid tab ID: 5"));
     await expect(navigateAndSettle(5, start, { timeoutMs: 1000, targetUrl: NEW })).rejects.toThrow(

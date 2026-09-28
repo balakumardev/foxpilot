@@ -87,9 +87,9 @@ export interface NavigationWatch {
    * The tab has reported committing this navigation. When the settle ran out of
    * time with the navigation still in flight, this keeps updating until
    * dispose(), so a commit that lands later (say, during a waitFor* poll) still
-   * counts — read it at the moment you read the tab. Once the settle saw the
-   * navigation end, the answer is final: a later url change belongs to the
-   * page the tab is showing, not to this navigation.
+   * counts — read it at the moment you read the tab. Once the navigation is
+   * seen to end, during the settle or after it, the answer is final: a later
+   * url change belongs to the page the tab is showing, not to this navigation.
    */
   committed(): boolean;
   /** The tab could no longer be read: closed, or replaced (see replacedBy). */
@@ -127,6 +127,12 @@ export interface NavigationWatch {
  * moved, since the old page's own url changes look the same in tabs.get. For
  * the same reason nothing counts once the navigation has ended: with no
  * pendingUrl left to tell them apart, a later url change is the page's own.
+ *
+ * Chrome fires no event when a navigation ends WITHOUT a page, so after a
+ * timed-out settle the watch keeps reading the tab until it reads "complete"
+ * (or until dispose()) to see that end too. Between the end and that read — up
+ * to 100ms, or until the page being left finishes a load of its own — a url
+ * change the old page makes is still taken for ours.
  */
 export async function navigateAndSettle(
   tabId: number,
@@ -164,6 +170,7 @@ export async function navigateAndSettle(
   chrome.tabs.onUpdated.addListener(onUpdated);
   if (replacedEvent) replacedEvent.addListener(onReplaced);
   let disposed = false;
+  let endPoll: ReturnType<typeof setTimeout> | null = null;
   const watch: NavigationWatch = {
     committed: () => committed,
     gone: () => gone,
@@ -171,6 +178,10 @@ export async function navigateAndSettle(
     dispose: () => {
       if (disposed) return;
       disposed = true;
+      if (endPoll !== null) {
+        clearTimeout(endPoll);
+        endPoll = null;
+      }
       try {
         chrome.tabs.onUpdated.removeListener(onUpdated);
         if (replacedEvent) replacedEvent.removeListener(onReplaced);
@@ -214,6 +225,28 @@ export async function navigateAndSettle(
         resolve();
       };
     });
+  }
+  if (!over && !gone) {
+    // The settle ran out of time with the navigation still in flight, so the
+    // watch stays live for a late commit. It must still learn when the
+    // navigation ends without one, or the old page's next url change would be
+    // taken for it — and Chrome fires no event for that end. So keep reading
+    // the tab until it settles, or until dispose().
+    const readUntilSettled = async (): Promise<void> => {
+      endPoll = null;
+      if (disposed || over) return;
+      try {
+        const tab = await chrome.tabs.get(tabId);
+        if (tab && tab.status === "complete") {
+          over = true;
+          return;
+        }
+      } catch {
+        return; // closed: the caller's own read of the tab reports that
+      }
+      if (!disposed) endPoll = setTimeout(readUntilSettled, POLL_MS);
+    };
+    endPoll = setTimeout(readUntilSettled, POLL_MS);
   }
   return watch;
 }

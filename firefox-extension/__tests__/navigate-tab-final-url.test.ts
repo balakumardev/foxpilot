@@ -354,6 +354,56 @@ describe("firefox navigate-tab reports the navigated-to url, never the old one",
     });
   });
 
+  it("does not credit the page being left with a navigation it starts after ours ended without a page, when that end came after the settle window", async () => {
+    const ELSEWHERE = "https://app.example.com/elsewhere";
+    fakeTab({ url: OLD, status: "complete" }, [
+      { at: 10, set: { status: "loading" }, event: { status: "loading" } },
+      // Ours outlasts the settle window (700ms), then ends without a page
+      // while the waitFor* poll runs.
+      { at: 900, set: { status: "complete" }, event: { status: "complete" } },
+      // Then the old page navigates itself somewhere else.
+      { at: 1100, set: { status: "loading" }, event: { status: "loading" } },
+      { at: 1120, set: { url: ELSEWHERE }, event: { status: "loading", url: ELSEWHERE } },
+      { at: 1130, set: { status: "complete" }, event: { status: "complete" } },
+    ]);
+    (mockBrowser.tabs.executeScript as jest.Mock).mockImplementation(async (_id: number, d: { code: string }) =>
+      d.code === "1" ? [1] : [false]
+    );
+
+    await handler.handleDecodedMessage(navigate({ timeoutMs: 700, waitForText: "Settings" }));
+
+    expect(transport.sendResourceToServer).toHaveBeenCalledWith({
+      resource: "navigated",
+      correlationId: "c1",
+      tabId: TAB,
+      url: `${ELSEWHERE} — expected text "Settings" not found`,
+      committed: false,
+      mismatch: 'expected text "Settings" not found',
+    });
+  });
+
+  it("stops waiting once our load has ended, even if the old page is already loading again", async () => {
+    fakeTab({ url: OLD, status: "complete" }, [
+      { at: 10, set: { status: "loading" }, event: { status: "loading" } },
+      // Ours ends without a page, and by the time that is delivered the old
+      // page has already started a load of its own, which never finishes.
+      { at: 25, set: { status: "loading" }, event: { status: "complete" } },
+      { at: 26, event: { status: "loading" } },
+    ]);
+
+    const started = Date.now();
+    await handler.handleDecodedMessage(navigate({ timeoutMs: 3000 }));
+
+    expect(transport.sendResourceToServer).toHaveBeenCalledWith({
+      resource: "navigated",
+      correlationId: "c1",
+      tabId: TAB,
+      url: OLD,
+      committed: false,
+    });
+    expect(Date.now() - started).toBeLessThan(1500);
+  });
+
   it("does not wait out the budget probing a page that cannot be scripted when nothing committed", async () => {
     // The page being left refuses executeScript (e.g. an about: page or a
     // reader view) and the navigation ends without a new page.

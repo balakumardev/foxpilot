@@ -421,6 +421,32 @@ describe("chrome navigate-tab reports the navigated-to url, never the old one", 
     });
   });
 
+  it("does not credit the page being left with a url change it makes after ours ended without a page, when that end came after the settle window", async () => {
+    const LATER = OLD + "#later";
+    fakeTab({ url: OLD, status: "complete" }, [
+      // Ours outlasts the settle window (700ms), then ends without a page
+      // while the waitFor* poll runs: Chromium fires no event for that.
+      { at: 900, set: { status: "complete", pendingUrl: undefined } },
+      // Then the old page's router changes its own url.
+      { at: 1100, set: { url: LATER }, event: { status: "loading", url: LATER } },
+      { at: 1110, event: { status: "complete" } },
+    ]);
+    (mockBrowser.scripting.executeScript as jest.Mock).mockImplementation(async (d: { func?: unknown }) =>
+      d.func ? [{ result: false }] : []
+    );
+
+    await handler.handleDecodedMessage(navigate({ timeoutMs: 700, waitForText: "Settings" }));
+
+    expect(transport.sendResourceToServer).toHaveBeenCalledWith({
+      resource: "navigated",
+      correlationId: "c1",
+      tabId: TAB,
+      url: `${LATER} — expected text "Settings" not found`,
+      committed: false,
+      mismatch: 'expected text "Settings" not found',
+    });
+  });
+
   it("does not wait out the budget probing a page that cannot be scripted when nothing committed", async () => {
     // Recorded on Chromium 149: a 204 from the New Tab page. The tab stays on
     // chrome://newtab/, where no content script can run, so the readiness
