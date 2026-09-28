@@ -10,6 +10,7 @@ import {
 } from "./injected/point-action-script";
 import { selectOption } from "./injected/select-option-script";
 import { dismissOverlays } from "./injected/dismiss-overlays-script";
+import { extractPageContent } from "./injected/page-content-script";
 import { dispatchMouseMoveStep, typeCharStep, readElementScreenRect } from "./injected/humanize-steps";
 import { runHumanInput, HumanInputDeps, StepResult } from "./humanize/run-human-input";
 import { mousePath, typingPlan, Point } from "./humanize/motion-model";
@@ -807,40 +808,10 @@ export class MessageHandler {
 
     await this.checkForUrlPermission(tab.url);
 
-    const MAX_CONTENT_LENGTH = 50_000;
     const results = await browser.tabs.executeScript(tabId, {
-      code: `
-      (function () {
-        function getLinks() {
-          const linkElements = document.querySelectorAll('a[href]');
-          return Array.from(linkElements).map(el => ({
-            url: el.href,
-            text: el.innerText.trim() || el.getAttribute('aria-label') || el.getAttribute('title') || ''
-          })).filter(link => link.text !== '' && link.url.startsWith('https://') && !link.url.includes('#'));
-        }
-
-        function getTextContent() {
-          let isTruncated = false;
-          let text = document.body.innerText.substring(${Number(offset) || 0});
-          if (text.length > ${MAX_CONTENT_LENGTH}) {
-            text = text.substring(0, ${MAX_CONTENT_LENGTH});
-            isTruncated = true;
-          }
-          return {
-            text, isTruncated
-          }
-        }
-
-        const textContent = getTextContent();
-
-        return {
-          links: getLinks(),
-          fullText: textContent.text,
-          isTruncated: textContent.isTruncated,
-          totalLength: document.body.innerText.length
-        };
-      })();
-    `,
+      code: `(${extractPageContent.toString()})(document, ${JSON.stringify({
+        offset: Number(offset) || 0,
+      })})`,
     });
     const { isTruncated, fullText, links, totalLength } = results[0];
     await this.client.sendResourceToServer({

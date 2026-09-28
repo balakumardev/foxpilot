@@ -12,6 +12,7 @@ import {
 } from "../network-capture";
 import { getTabUserAgent, clearTabUserAgent } from "../emulate";
 import * as screenshotScript from "../injected/screenshot-script";
+import { extractPageContent } from "../injected/page-content-script";
 
 // Mock the WebsocketClient
 jest.mock("../client", () => {
@@ -440,6 +441,31 @@ describe("MessageHandler", () => {
           links: [{ url: "https://example.com/page", text: "Page" }],
           totalLength: 12,
         });
+      });
+
+      it("injects the shared extractPageContent executor with the requested offset", async () => {
+        (browser.tabs.get as jest.Mock).mockResolvedValue({
+          id: 123,
+          url: "https://example.com",
+        });
+        (browser.permissions.contains as jest.Mock).mockResolvedValue(true);
+        (browser.tabs.executeScript as jest.Mock).mockResolvedValue([
+          { links: [], fullText: "", isTruncated: false, totalLength: 0 },
+        ]);
+
+        await messageHandler.handleDecodedMessage({
+          cmd: "get-tab-content",
+          tabId: 123,
+          offset: 25,
+          correlationId: "test-correlation-id",
+        });
+
+        // The same self-contained function Chrome's content script calls — not
+        // a second, hand-maintained copy of the extraction in a code string.
+        const call = (browser.tabs.executeScript as jest.Mock).mock.calls[0][1];
+        expect(call.code).toBe(
+          `(${extractPageContent.toString()})(document, {"offset":25})`
+        );
       });
 
       it("should throw an error if tab URL domain is in deny list", async () => {

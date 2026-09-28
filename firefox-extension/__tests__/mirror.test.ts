@@ -124,6 +124,7 @@ describe("injected/* is mirrored across the two extensions", () => {
     "action-script.ts",
     "dismiss-overlays-script.ts",
     "humanize-steps.ts",
+    "page-content-script.ts",
     "point-action-script.ts",
     "screenshot-script.ts",
     "select-option-script.ts",

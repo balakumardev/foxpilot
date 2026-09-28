@@ -24,6 +24,7 @@ import {
 } from "./injected/point-action-script";
 import { selectOption } from "./injected/select-option-script";
 import { dismissOverlays } from "./injected/dismiss-overlays-script";
+import { extractPageContent } from "./injected/page-content-script";
 
 // Guard against duplicate injection in the same isolated world.
 if ((window as any).__bcmcpContentScriptLoaded) {
@@ -200,46 +201,6 @@ if ((window as any).__bcmcpContentScriptLoaded) {
     };
   }
 
-  // Get tab content (links and text).
-  function getTabContent(offset: number = 0): {
-    links: { url: string; text: string }[];
-    fullText: string;
-    isTruncated: boolean;
-    totalLength: number;
-  } {
-    const MAX_CONTENT_LENGTH = 50_000;
-    const linkElements = document.querySelectorAll("a[href]");
-    const links = Array.from(linkElements)
-      .map((el) => ({
-        url: (el as HTMLAnchorElement).href,
-        text:
-          (el as HTMLElement).innerText.trim() ||
-          el.getAttribute("aria-label") ||
-          el.getAttribute("title") ||
-          "",
-      }))
-      .filter(
-        (link) =>
-          link.text !== "" &&
-          link.url.startsWith("https://") &&
-          !link.url.includes("#")
-      );
-
-    let isTruncated = false;
-    let text = document.body.innerText.substring(offset);
-    if (text.length > MAX_CONTENT_LENGTH) {
-      text = text.substring(0, MAX_CONTENT_LENGTH);
-      isTruncated = true;
-    }
-
-    return {
-      links,
-      fullText: text,
-      isTruncated,
-      totalLength: document.body.innerText.length,
-    };
-  }
-
   // Wait for any of the given needles to appear on the page. Returns which one
   // matched. Runs in the ISOLATED content-script world (CSP-immune).
   async function waitForText(
@@ -367,7 +328,7 @@ if ((window as any).__bcmcpContentScriptLoaded) {
           }
 
           case "getTabContent": {
-            sendResponse(getTabContent(message.offset));
+            sendResponse(extractPageContent(document, { offset: message.offset }));
             break;
           }
 
