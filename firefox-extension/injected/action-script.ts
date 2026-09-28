@@ -40,6 +40,10 @@ export function performInputAction(
     role?: string;
     name?: string;
   };
+  // Set only when a click was dispatched on an interactive DESCENDANT of the
+  // uid element (see activationTargetFor), never when it went to the uid
+  // element itself.
+  dispatchedTo?: { tag: string; name?: string };
 } {
   const UID_ATTR = "data-bcmcp-uid";
 
@@ -47,6 +51,94 @@ export function performInputAction(
     const win = doc.defaultView as (Window & typeof globalThis) | null;
 
     // --- inner helpers (must stay inside this function body) ---
+
+    // --- shadow-DOM helpers. The same bodies are inlined in every injected
+    //     module that walks shadow roots; keep the copies identical. ---
+
+    // Elements allowed to host a shadow root (attachShadow's list) plus autonomous custom elements —
+    // the closed-root APIs are only worth calling for these.
+    const SHADOW_HOST_TAGS: Record<string, true> = { article: true, aside: true, blockquote: true, body: true,
+      div: true, footer: true, h1: true, h2: true, h3: true, h4: true, h5: true, h6: true, header: true,
+      main: true, nav: true, p: true, section: true, span: true };
+
+    // Open root, else a closed root via the extension-only APIs (content-script world only):
+    // Firefox exposes a read-only `openOrClosedShadowRoot` PROPERTY (Fx 63+); Chrome exposes
+    // `chrome.dom.openOrClosedShadowRoot(el)` (Chrome 88+, no permission). Neither exists in the page world.
+    function shadowRootOf(el: Element): ShadowRoot | null {
+      const open = (el as any).shadowRoot as ShadowRoot | null | undefined;
+      if (open) return open;
+      const tag = el.localName;
+      if (tag.indexOf("-") < 0 && !SHADOW_HOST_TAGS[tag]) return null;
+      try { const ff = (el as any).openOrClosedShadowRoot; if (ff) return ff as ShadowRoot; } catch (_) {}
+      try {
+        const dom = (globalThis as any).chrome && (globalThis as any).chrome.dom;
+        if (dom && typeof dom.openOrClosedShadowRoot === "function") return (dom.openOrClosedShadowRoot(el) as ShadowRoot) || null;
+      } catch (_) {}
+      return null;
+    }
+    // Tree-of-trees search (document tree + every reachable shadow tree, incl. unassigned light nodes'
+    // roots). Use for uid resolution and for clearing stale uids — NOT for listing (listing is flat-tree).
+    function deepQuery(root: Document | ShadowRoot, sel: string): Element | null {
+      const hit = root.querySelector(sel);
+      if (hit) return hit;
+      const all = root.querySelectorAll("*");
+      for (let i = 0; i < all.length; i++) {
+        const sr = shadowRootOf(all[i]);
+        if (sr) { const h = deepQuery(sr, sel); if (h) return h; }
+      }
+      return null;
+    }
+    // document.elementFromPoint retargets to the outermost host; ShadowRoot.elementFromPoint drills one level
+    // only, so loop. Stops when a root has no elementFromPoint or returns the host itself.
+    function deepElementFromPoint(doc: Document, x: number, y: number): Element | null {
+      let hit = doc.elementFromPoint(x, y);
+      for (let depth = 0; hit && depth < 32; depth++) {
+        const sr = shadowRootOf(hit);
+        const efp = sr ? (sr as any).elementFromPoint : null;
+        if (typeof efp !== "function") break;
+        const inner = efp.call(sr, x, y) as Element | null;
+        // Engines disagree off-root: Chrome can return an element OUTSIDE the root (a slotted child or an
+        // unrelated page element), Firefox returns null. Only accept a hit that lives in this root.
+        if (!inner || inner === hit || inner.getRootNode() !== sr) break;
+        hit = inner;
+      }
+      return hit;
+    }
+    // Flat-tree parent: slotted node → its slot, top-level node of a shadow tree → host, else parentNode.
+    // assignedSlot is ALWAYS null when the host's root is closed (even for extensions), so for a child of a
+    // closed host we find the slot from the root side (root.querySelectorAll("slot") + assignedNodes()).
+    function composedParent(n: Node): Node | null {
+      const slot = (n as any).assignedSlot as Element | null | undefined;
+      if (slot) return slot;
+      const p = n.parentNode;
+      if (!p) return null;
+      if (p.nodeType === 11 && (p as any).host) return (p as any).host as Element;
+      if (p.nodeType === 1 && !(p as any).shadowRoot) {
+        const sr = shadowRootOf(p as Element); // non-null here only for a closed root
+        if (sr) {
+          const slots = sr.querySelectorAll("slot");
+          for (let i = 0; i < slots.length; i++) {
+            const assigned = (slots[i] as HTMLSlotElement).assignedNodes();
+            for (let j = 0; j < assigned.length; j++) if (assigned[j] === n) return slots[i];
+          }
+        }
+      }
+      return p;
+    }
+    function composedContains(ancestor: Node, node: Node | null): boolean {
+      for (let n: Node | null = node; n; n = composedParent(n)) if (n === ancestor) return true;
+      return false;
+    }
+    function deepActiveElement(doc: Document): Element | null {
+      let a: Element | null = doc.activeElement;
+      for (let depth = 0; a && depth < 32; depth++) {
+        const sr = shadowRootOf(a);
+        const inner = sr ? sr.activeElement : null;
+        if (!inner || inner === a) break;
+        a = inner;
+      }
+      return a;
+    }
 
     function bcmcpSig(el: any): string {
       var role = el.getAttribute && (el.getAttribute("role") || "");
@@ -66,7 +158,10 @@ export function performInputAction(
     }
 
     function resolve(uid: string): Element | null {
-      const node = doc.querySelector("[" + UID_ATTR + '="' + uid + '"]');
+      // deepQuery: a uid stamped inside a shadow root (open, or closed via the
+      // extension APIs) resolves too; a light-DOM uid still resolves on the
+      // first querySelector, exactly as before.
+      const node = deepQuery(doc, "[" + UID_ATTR + '="' + uid + '"]');
       if (!node) {
         return null;
       }
@@ -233,8 +328,15 @@ export function performInputAction(
       }
     }
 
-    function dispatchClickSequence(el: Element, doubleClick?: boolean): void {
-      const c = elementCenter(el);
+    // `at` overrides the event coordinates: a retargeted click (see
+    // activationTargetFor) reports the point the hit-test actually landed on,
+    // not the centre of the inner control it was forwarded to.
+    function dispatchClickSequence(
+      el: Element,
+      doubleClick?: boolean,
+      at?: { x: number; y: number }
+    ): void {
+      const c = at || elementCenter(el);
       // Realistic covert press sequence: symmetric pointer/mouse pairs with
       // coordinates and button state. None of these activate the element, so they
       // are safe to dispatch alongside the single real activation below.
@@ -264,9 +366,14 @@ export function performInputAction(
       }
     }
 
-    // --- interception hit-test helpers (inner; classifyHit is a byte-identical
-    //     twin of the exported module-scope classifyHit the unit tests import) ---
+    // --- interception hit-test helpers (inner; classifyHit's decision body is a
+    //     byte-identical twin of the exported module-scope classifyHit the unit
+    //     tests import, which carries its own copies of the composed helpers) ---
 
+    // Containment is COMPOSED (flat-tree): a node inside a shadow root is a
+    // descendant of its host, and slotted light content is a descendant of its
+    // slot. Plain contains() stops at every shadow boundary, so a click on a
+    // shadow-DOM button used to read as "intercepted by <its host>".
     function classifyHit(
       target: Element | null,
       topmost: Element | null
@@ -277,13 +384,132 @@ export function performInputAction(
       if (topmost === target) {
         return "self";
       }
-      if (target.contains(topmost)) {
+      if (composedContains(target, topmost)) {
         return "descendant";
       }
-      if (topmost.contains(target)) {
+      if (composedContains(topmost, target)) {
         return "ancestor";
       }
       return "unrelated";
+    }
+
+    // The element to NAME for an interception: the cover as seen from a tree the
+    // target shares. A cover inside some OTHER component's shadow root is named
+    // by that component's host (a cookie banner built as a web component reads as
+    // its host element, exactly as the old document-level hit-test reported it);
+    // a cover in the target's own tree is named itself. Without shadow roots
+    // this is always the topmost element.
+    function interceptSubject(target: Element, cover: Element): Element {
+      const shared: Node[] = [];
+      for (let r: Node | null = target.getRootNode(); r; ) {
+        shared.push(r);
+        const h = (r as any).host as Element | undefined;
+        r = h ? h.getRootNode() : null;
+      }
+      let c: Element = cover;
+      for (let depth = 0; depth < 32; depth++) {
+        const r = c.getRootNode();
+        const h = (r as any).host as Element | undefined;
+        if (shared.indexOf(r) >= 0 || !h) {
+          break;
+        }
+        c = h;
+      }
+      return c;
+    }
+
+    // --- role-wrapper click retargeting ---
+
+    // First role token that makes an element an interactive control (the shared
+    // interactive-control predicate; the snapshot's role-wrapper collapse keys
+    // on the same list).
+    const INTERACTIVE_ROLES: Record<string, true> = {
+      button: true, link: true, checkbox: true, radio: true, switch: true,
+      menuitem: true, menuitemcheckbox: true, menuitemradio: true, option: true,
+      tab: true, treeitem: true, textbox: true, searchbox: true, combobox: true,
+      slider: true, spinbutton: true,
+    };
+
+    function isInteractiveControl(el: Element): boolean {
+      const tag = el.localName;
+      if (tag === "button" || tag === "select" || tag === "textarea" || tag === "summary") {
+        return true;
+      }
+      if ((tag === "a" || tag === "area") && el.hasAttribute("href")) {
+        return true;
+      }
+      if (tag === "input") {
+        return (el.getAttribute("type") || "").toLowerCase() !== "hidden";
+      }
+      const ce = el.getAttribute("contenteditable");
+      if (ce !== null && ce.toLowerCase() !== "false") {
+        return true;
+      }
+      const ti = el.getAttribute("tabindex");
+      if (ti !== null && parseInt(ti, 10) >= 0) {
+        return true;
+      }
+      const role = (el.getAttribute("role") || "").trim().split(/\s+/)[0].toLowerCase();
+      return INTERACTIVE_ROLES[role] === true;
+    }
+
+    // Hidden controls don't count as activation targets (the snapshot never
+    // lists them). Only checks that can hold for a node on a rendered hit path.
+    function isHiddenControl(el: Element): boolean {
+      if (el.hasAttribute("hidden") || el.getAttribute("aria-hidden") === "true") {
+        return true;
+      }
+      try {
+        const cs =
+          win && typeof win.getComputedStyle === "function"
+            ? win.getComputedStyle(el)
+            : null;
+        return (
+          !!cs &&
+          (cs.display === "none" ||
+            cs.visibility === "hidden" ||
+            cs.visibility === "collapse")
+        );
+      } catch (e) {
+        return false;
+      }
+    }
+
+    // Where a real click at the uid element's centre would land its activation.
+    // When the centre hit is a descendant of the uid element, a trusted click
+    // targets that descendant and the NEAREST activatable element on its path
+    // runs — e.g. the <button> inside an li[role=menuitem] wrapper, whose own
+    // click handler a click dispatched on the li never reached. So walk the
+    // composed path from the hit up to (not including) the uid element and take
+    // the first interactive control or <label> (label forwarding then still
+    // runs on it). None → the uid element itself, exactly as before; that keeps
+    // button>span and a>span on the button/link (activation never depends on
+    // the browser forwarding an untrusted click from an inner span) and
+    // li(handler)>span on the li. Elements without click() (SVG) are skipped.
+    function activationTargetFor(target: Element, hit: Element): Element {
+      for (let n: Node | null = hit; n && n !== target; n = composedParent(n)) {
+        if (n.nodeType !== 1) {
+          continue;
+        }
+        const e = n as Element;
+        if (typeof (e as { click?: unknown }).click !== "function") {
+          continue;
+        }
+        if (e.localName === "label" || (isInteractiveControl(e) && !isHiddenControl(e))) {
+          return e;
+        }
+      }
+      return target;
+    }
+
+    function describeTarget(el: Element): { tag: string; name?: string } {
+      const label = (el.getAttribute("aria-label") || "").replace(/\s+/g, " ").trim();
+      const text = label || (el.textContent || "").replace(/\s+/g, " ").trim();
+      const name = text ? text.slice(0, 80) : undefined;
+      return {
+        tag: el.tagName.toLowerCase(),
+        ...(name ? { name: name } : {}),
+      };
     }
 
     function describeIntercept(el: Element): {
@@ -365,7 +591,11 @@ export function performInputAction(
       }
     }
 
-    function fillElement(el: Element, value: string): { ok: boolean; error?: string } {
+    function fillElement(
+      el: Element,
+      value: string,
+      uid: string
+    ): { ok: boolean; error?: string } {
       scrollTo(el);
 
       if (el.tagName === "SELECT") {
@@ -433,6 +663,22 @@ export function performInputAction(
           dispatchClickSequence(el);
         }
         return { ok: true };
+      }
+
+      // Anything that is not an <input>/<textarea> (a shadow host, a plain div, a
+      // contenteditable editor) has no value to set: the native
+      // HTMLInputElement setter would throw "Illegal invocation" at it, which
+      // told the caller nothing. Say what the element is instead.
+      if (el.tagName !== "INPUT" && el.tagName !== "TEXTAREA") {
+        return {
+          ok: false,
+          error:
+            "Element uid '" +
+            uid +
+            "' (<" +
+            el.tagName.toLowerCase() +
+            ">) is not a fillable field — fill-element sets <input>, <textarea> and <select> values. Target the field itself (take a fresh snapshot); for a contenteditable editor, click it and use type-text.",
+        };
       }
 
       // Text input / textarea.
@@ -612,7 +858,9 @@ export function performInputAction(
       // (the caller); the topmost node is handed to the PURE classifyHit, so the
       // decision logic is unit-testable. jsdom has no layout (elementFromPoint
       // undefined, zero rects) so this whole block no-ops there — existing click
-      // tests are unaffected; real geometry is Playwright-covered.
+      // tests are unaffected; real geometry is Playwright-covered. The hit-test
+      // pierces shadow roots: document.elementFromPoint alone stops at the
+      // outermost host.
       let intercepted:
         | {
             tag: string;
@@ -622,6 +870,10 @@ export function performInputAction(
             name?: string;
           }
         | undefined;
+      // What receives the pointer sequence: the uid element, or the interactive
+      // descendant a real click at its centre would activate.
+      let dispatchEl: Element = el;
+      let hitPoint: { x: number; y: number } | undefined;
       const efp = (doc as {
         elementFromPoint?: (x: number, y: number) => Element | null;
       }).elementFromPoint;
@@ -631,9 +883,15 @@ export function performInputAction(
           if (r.width > 0 && r.height > 0) {
             const cx = r.left + r.width / 2;
             const cy = r.top + r.height / 2;
-            const topmost = efp.call(doc, cx, cy);
-            if (topmost && classifyHit(el, topmost) === "unrelated") {
-              intercepted = describeIntercept(topmost);
+            const topmost = deepElementFromPoint(doc, cx, cy);
+            const rel = topmost ? classifyHit(el, topmost) : "self";
+            if (topmost && rel === "unrelated") {
+              intercepted = describeIntercept(interceptSubject(el, topmost));
+            } else if (topmost && rel === "descendant") {
+              dispatchEl = activationTargetFor(el, topmost);
+              if (dispatchEl !== el) {
+                hitPoint = { x: cx, y: cy };
+              }
             }
           }
         } catch (e) {
@@ -647,8 +905,13 @@ export function performInputAction(
           error: "click intercepted by " + selectorFor(intercepted),
         };
       }
-      dispatchClickSequence(el, args.doubleClick);
-      return intercepted ? { ok: true, intercepted: intercepted } : { ok: true };
+      dispatchClickSequence(dispatchEl, args.doubleClick, hitPoint);
+      const dispatchedTo = dispatchEl !== el ? describeTarget(dispatchEl) : undefined;
+      return {
+        ok: true,
+        ...(intercepted ? { intercepted: intercepted } : {}),
+        ...(dispatchedTo ? { dispatchedTo: dispatchedTo } : {}),
+      };
     }
 
     if (args.action === "classify-intercept") {
@@ -694,9 +957,9 @@ export function performInputAction(
           if (r.width > 0 && r.height > 0) {
             const cx = r.left + r.width / 2;
             const cy = r.top + r.height / 2;
-            const topmost = efp.call(doc, cx, cy);
+            const topmost = deepElementFromPoint(doc, cx, cy);
             if (topmost && classifyHit(el, topmost) === "unrelated") {
-              intercepted = describeIntercept(topmost);
+              intercepted = describeIntercept(interceptSubject(el, topmost));
             }
           }
         } catch (e) {
@@ -727,7 +990,7 @@ export function performInputAction(
       if (!el) {
         return notFound(args.uid);
       }
-      return fillElement(el, args.value);
+      return fillElement(el, args.value, args.uid);
     }
 
     if (args.action === "fill-form") {
@@ -737,7 +1000,7 @@ export function performInputAction(
         if (!el) {
           return notFound(field.uid);
         }
-        const r = fillElement(el, field.value);
+        const r = fillElement(el, field.value, field.uid);
         if (!r.ok) {
           return r;
         }
@@ -746,7 +1009,9 @@ export function performInputAction(
     }
 
     if (args.action === "type") {
-      const active = doc.activeElement;
+      // Focus inside a shadow tree leaves document.activeElement on the
+      // outermost host; drill down to the element that actually has focus.
+      const active = deepActiveElement(doc);
       const tag = active ? active.tagName : "";
       const isField = tag === "INPUT" || tag === "TEXTAREA";
       const isCE = !!active && contentEditableHost(active as Element);
@@ -796,7 +1061,9 @@ export function performInputAction(
     }
 
     if (args.action === "press-key") {
-      const target: EventTarget = doc.activeElement || doc.body;
+      // deepActiveElement: keys land on the focused element inside a shadow
+      // root, not on its host (they still bubble out, composed).
+      const target: EventTarget = deepActiveElement(doc) || doc.body;
       const mods: {
         ctrl?: boolean;
         shift?: boolean;
@@ -924,12 +1191,14 @@ export function performInputAction(
 
 /**
  * Pure hit-test classifier for click-interception detection. Given the intended
- * click `target` and the `topmost` element document.elementFromPoint returned at
- * the target's center, classify their DOM relationship. elementFromPoint is
- * deliberately NOT called here — the CALLER passes `topmost` in — so this stays a
- * pure function that jsdom unit tests exercise with fabricated nodes (jsdom has
- * no layout / no elementFromPoint). Only "unrelated" (a foreign overlay covering
- * the target) counts as an interception.
+ * click `target` and the `topmost` element the (shadow-piercing) hit-test found
+ * at the target's center, classify their relationship in the COMPOSED (flat)
+ * tree: a node inside a shadow root is inside its host, slotted light content is
+ * inside its slot. elementFromPoint is deliberately NOT called here — the CALLER
+ * passes `topmost` in — so this stays a pure function that jsdom unit tests
+ * exercise with fabricated nodes (jsdom has no layout / no elementFromPoint).
+ * Only "unrelated" (a foreign overlay covering the target) counts as an
+ * interception.
  *
  *   "self"        topmost IS the target.
  *   "descendant"  topmost is inside the target (e.g. an inner label) — the click
@@ -940,23 +1209,71 @@ export function performInputAction(
  *                 the target. THIS is an interception.
  *
  * DUPLICATION NOTE: `performInputAction` carries a byte-identical INNER copy of
- * this body (it is stringified-and-injected and may not reference module scope).
- * Keep the two in sync.
+ * the decision body below (it is stringified-and-injected and may not reference
+ * module scope). Both rely on the shared shadow-DOM helper bodies, which this
+ * export inlines for itself. Keep the copies in sync.
  */
 export function classifyHit(
   target: Element | null,
   topmost: Element | null
 ): "self" | "ancestor" | "descendant" | "unrelated" {
+  // Elements allowed to host a shadow root (attachShadow's list) plus autonomous custom elements —
+  // the closed-root APIs are only worth calling for these.
+  const SHADOW_HOST_TAGS: Record<string, true> = { article: true, aside: true, blockquote: true, body: true,
+    div: true, footer: true, h1: true, h2: true, h3: true, h4: true, h5: true, h6: true, header: true,
+    main: true, nav: true, p: true, section: true, span: true };
+
+  // Open root, else a closed root via the extension-only APIs (content-script world only):
+  // Firefox exposes a read-only `openOrClosedShadowRoot` PROPERTY (Fx 63+); Chrome exposes
+  // `chrome.dom.openOrClosedShadowRoot(el)` (Chrome 88+, no permission). Neither exists in the page world.
+  function shadowRootOf(el: Element): ShadowRoot | null {
+    const open = (el as any).shadowRoot as ShadowRoot | null | undefined;
+    if (open) return open;
+    const tag = el.localName;
+    if (tag.indexOf("-") < 0 && !SHADOW_HOST_TAGS[tag]) return null;
+    try { const ff = (el as any).openOrClosedShadowRoot; if (ff) return ff as ShadowRoot; } catch (_) {}
+    try {
+      const dom = (globalThis as any).chrome && (globalThis as any).chrome.dom;
+      if (dom && typeof dom.openOrClosedShadowRoot === "function") return (dom.openOrClosedShadowRoot(el) as ShadowRoot) || null;
+    } catch (_) {}
+    return null;
+  }
+  // Flat-tree parent: slotted node → its slot, top-level node of a shadow tree → host, else parentNode.
+  // assignedSlot is ALWAYS null when the host's root is closed (even for extensions), so for a child of a
+  // closed host we find the slot from the root side (root.querySelectorAll("slot") + assignedNodes()).
+  function composedParent(n: Node): Node | null {
+    const slot = (n as any).assignedSlot as Element | null | undefined;
+    if (slot) return slot;
+    const p = n.parentNode;
+    if (!p) return null;
+    if (p.nodeType === 11 && (p as any).host) return (p as any).host as Element;
+    if (p.nodeType === 1 && !(p as any).shadowRoot) {
+      const sr = shadowRootOf(p as Element); // non-null here only for a closed root
+      if (sr) {
+        const slots = sr.querySelectorAll("slot");
+        for (let i = 0; i < slots.length; i++) {
+          const assigned = (slots[i] as HTMLSlotElement).assignedNodes();
+          for (let j = 0; j < assigned.length; j++) if (assigned[j] === n) return slots[i];
+        }
+      }
+    }
+    return p;
+  }
+  function composedContains(ancestor: Node, node: Node | null): boolean {
+    for (let n: Node | null = node; n; n = composedParent(n)) if (n === ancestor) return true;
+    return false;
+  }
+
   if (!target || !topmost) {
     return "self";
   }
   if (topmost === target) {
     return "self";
   }
-  if (target.contains(topmost)) {
+  if (composedContains(target, topmost)) {
     return "descendant";
   }
-  if (topmost.contains(target)) {
+  if (composedContains(topmost, target)) {
     return "ancestor";
   }
   return "unrelated";

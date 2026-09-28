@@ -1393,6 +1393,52 @@ describe("MessageHandler (chrome) — foreground-tab preservation", () => {
         args: { action: "click", uid: "e5", doubleClick: undefined, failIfIntercepted: undefined },
       });
     });
+
+    it("synthetic click forwards the injected dispatchedTo on the action-result", async () => {
+      (browser.tabs.sendMessage as jest.Mock).mockImplementation(
+        (_id: number, msg: any) =>
+          Promise.resolve(
+            msg && msg.type === "performInputAction"
+              ? { ok: true, dispatchedTo: { tag: "button", name: "Draft macOS Submission (1)" } }
+              : { ok: true }
+          )
+      );
+      await messageHandler.handleDecodedMessage({
+        cmd: "click-element",
+        tabId: 8,
+        uid: "e2",
+        correlationId: "uiddt",
+      } as ServerMessageRequest);
+
+      const call = (transport.sendResourceToServer as jest.Mock).mock.calls.find(
+        (c: any[]) => c[0].correlationId === "uiddt"
+      );
+      expect(call[0].dispatchedTo).toEqual({ tag: "button", name: "Draft macOS Submission (1)" });
+    });
+
+    it("leaves dispatchedTo off the frame entirely when the click went to the uid element", async () => {
+      await messageHandler.handleDecodedMessage({
+        cmd: "click-element",
+        tabId: 8,
+        uid: "e5",
+        correlationId: "uidnodt",
+      } as ServerMessageRequest);
+      await messageHandler.handleDecodedMessage({
+        cmd: "click-element",
+        tabId: 8,
+        uid: "e5",
+        engine: "cdp",
+        correlationId: "uidnodtcdp",
+      } as ServerMessageRequest);
+
+      for (const id of ["uidnodt", "uidnodtcdp"]) {
+        const call = (transport.sendResourceToServer as jest.Mock).mock.calls.find(
+          (c: any[]) => c[0].correlationId === id
+        );
+        expect(call[0].ok).toBe(true);
+        expect("dispatchedTo" in call[0]).toBe(false);
+      }
+    });
   });
 
   describe("coordinate tools (Task 2+)", () => {

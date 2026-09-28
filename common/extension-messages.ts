@@ -131,6 +131,12 @@ export interface ActionResultExtensionMessage extends ExtensionMessageBase {
   // dismiss-overlays: identifiers of what was dismissed, and how.
   dismissed?: string[];
   method?: "reject" | "remove";
+  // click-element (synthetic engine): set ONLY when the click was dispatched on
+  // an interactive DESCENDANT of the uid element rather than on the element
+  // itself — the nearest control (or <label>) between the centre hit and the
+  // uid element, e.g. the <button> inside an li[role=menuitem] wrapper. Absent
+  // when the uid element received the click. Append-only.
+  dispatchedTo?: { tag: string; name?: string };
 }
 
 // Reply for the evaluate-script tool. `ok` is false when the in-page evaluation

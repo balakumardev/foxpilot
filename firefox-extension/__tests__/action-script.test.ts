@@ -1205,3 +1205,719 @@ describe("label-wrapped checkbox activation (antd .ant-checkbox-wrapper shape)",
     expect(clicks).toBeLessThanOrEqual(1);
   });
 });
+
+/**
+ * Shadow DOM (open, nested, slotted, closed) + role-wrapper click retargeting.
+ * jsdom has attachShadow + slots but no layout: elementFromPoint (on the
+ * Document AND on each ShadowRoot) is stubbed by assignment and rects come from
+ * a getBoundingClientRect spy. Closed roots are reached through BOTH
+ * extension-only shapes the injected shadowRootOf helper supports — Firefox's
+ * `openOrClosedShadowRoot` PROPERTY and Chrome's
+ * `chrome.dom.openOrClosedShadowRoot(el)` function — because the helper is
+ * byte-identical across the two extensions, so both code paths ship in both.
+ * Identical block in the Firefox and Chrome suites.
+ */
+describe("shadow DOM + role-wrapper click retargeting", () => {
+  const UID_ATTR = "data-bcmcp-uid";
+  const closedRoots = new Map<Element, ShadowRoot>();
+  let restoreClosed: (() => void) | null = null;
+
+  beforeEach(() => {
+    // Earlier suites leave stamped nodes behind; a stray light-DOM "e1" would
+    // (correctly) win over the shadow uid under test.
+    document.body.innerHTML = "";
+  });
+  afterEach(() => {
+    jest.restoreAllMocks();
+    delete (document as unknown as { elementFromPoint?: unknown }).elementFromPoint;
+    if (restoreClosed) {
+      restoreClosed();
+      restoreClosed = null;
+    }
+    closedRoots.clear();
+    document.body.innerHTML = "";
+  });
+
+  function openHost(tag: string, html: string, parent: Element = document.body): ShadowRoot {
+    const host = document.createElement(tag);
+    parent.appendChild(host);
+    const root = host.attachShadow({ mode: "open" });
+    root.innerHTML = html;
+    return root;
+  }
+  function closedHost(tag: string, html: string, parent: Element = document.body): ShadowRoot {
+    const host = document.createElement(tag);
+    parent.appendChild(host);
+    const root = host.attachShadow({ mode: "closed" });
+    root.innerHTML = html;
+    closedRoots.set(host, root);
+    return root;
+  }
+  // Firefox shape: a read-only PROPERTY on every element (open roots too).
+  function exposeClosedViaProperty(): void {
+    Object.defineProperty(Element.prototype, "openOrClosedShadowRoot", {
+      configurable: true,
+      get(this: Element) {
+        return closedRoots.get(this) || this.shadowRoot || null;
+      },
+    });
+    restoreClosed = () => {
+      delete (Element.prototype as unknown as { openOrClosedShadowRoot?: unknown })
+        .openOrClosedShadowRoot;
+    };
+  }
+  // Chrome shape: chrome.dom.openOrClosedShadowRoot(el).
+  function exposeClosedViaChromeDom(): void {
+    const g = globalThis as unknown as { chrome?: { dom?: unknown } };
+    const hadChrome = typeof g.chrome !== "undefined";
+    if (!hadChrome) {
+      g.chrome = {};
+    }
+    g.chrome!.dom = {
+      openOrClosedShadowRoot: (el: Element) => closedRoots.get(el) || el.shadowRoot || null,
+    };
+    restoreClosed = () => {
+      delete g.chrome!.dom;
+      if (!hadChrome) {
+        delete g.chrome;
+      }
+    };
+  }
+  function stubRect(): void {
+    jest.spyOn(Element.prototype, "getBoundingClientRect").mockReturnValue({
+      left: 0, top: 0, width: 20, height: 20,
+      right: 20, bottom: 20, x: 0, y: 0, toJSON: () => ({}),
+    } as DOMRect);
+  }
+  function stubDocHit(el: Element | null): void {
+    (document as unknown as { elementFromPoint: (x: number, y: number) => Element | null })
+      .elementFromPoint = () => el;
+  }
+  function stubRootHit(root: ShadowRoot, el: Element | null): void {
+    (root as unknown as { elementFromPoint: (x: number, y: number) => Element | null })
+      .elementFromPoint = () => el;
+  }
+  function hostOf(root: ShadowRoot): Element {
+    return root.host;
+  }
+
+  describe("uid resolution pierces shadow roots", () => {
+    it("clicks a uid stamped inside an OPEN shadow root", () => {
+      const root = openHost("amp-nav", `<button data-bcmcp-uid="e1">Users and Access</button>`);
+      const btn = root.querySelector("button")!;
+      const onClick = jest.fn();
+      btn.addEventListener("click", onClick);
+
+      const res = performInputAction(document, { action: "click", uid: "e1" });
+
+      expect(res.ok).toBe(true);
+      expect(onClick).toHaveBeenCalledTimes(1);
+    });
+
+    it("clicks a uid inside NESTED open roots", () => {
+      const outer = openHost("amp-nav", `<nav aria-label="Primary"><div class="acct"></div></nav>`);
+      const inner = openHost(
+        "amp-account-menu",
+        `<button data-bcmcp-uid="e2">Sign Out</button>`,
+        outer.querySelector(".acct")!
+      );
+      const onClick = jest.fn();
+      inner.querySelector("button")!.addEventListener("click", onClick);
+
+      const res = performInputAction(document, { action: "click", uid: "e2" });
+
+      expect(res.ok).toBe(true);
+      expect(onClick).toHaveBeenCalledTimes(1);
+    });
+
+    it("clicks a uid inside a CLOSED root via the Firefox openOrClosedShadowRoot property", () => {
+      const root = closedHost("amp-secret", `<button data-bcmcp-uid="e3">Closed Button</button>`);
+      exposeClosedViaProperty();
+      const onClick = jest.fn();
+      root.querySelector("button")!.addEventListener("click", onClick);
+
+      const res = performInputAction(document, { action: "click", uid: "e3" });
+
+      expect(res.ok).toBe(true);
+      expect(onClick).toHaveBeenCalledTimes(1);
+    });
+
+    it("clicks a uid inside a CLOSED root via chrome.dom.openOrClosedShadowRoot", () => {
+      const root = closedHost("amp-secret", `<button data-bcmcp-uid="e3">Closed Button</button>`);
+      exposeClosedViaChromeDom();
+      const onClick = jest.fn();
+      root.querySelector("button")!.addEventListener("click", onClick);
+
+      const res = performInputAction(document, { action: "click", uid: "e3" });
+
+      expect(res.ok).toBe(true);
+      expect(onClick).toHaveBeenCalledTimes(1);
+    });
+
+    it("a closed root stays unreachable when neither extension API exists (page world)", () => {
+      closedHost("amp-secret", `<button data-bcmcp-uid="e3">Closed Button</button>`);
+      const res = performInputAction(document, { action: "click", uid: "e3" });
+      expect(res.ok).toBe(false);
+      expect(res.error).toContain("fresh snapshot");
+    });
+
+    it("fills, hovers and fill-forms shadow uids", () => {
+      const root = openHost(
+        "amp-search",
+        `<input id="q" type="search" data-bcmcp-uid="e1" /><input id="r" data-bcmcp-uid="e2" /><a href="#x" data-bcmcp-uid="e3">Menu</a>`
+      );
+      const q = root.getElementById("q") as HTMLInputElement;
+      const r = root.getElementById("r") as HTMLInputElement;
+      const onOver = jest.fn();
+      root.querySelector("a")!.addEventListener("mouseover", onOver);
+
+      expect(performInputAction(document, { action: "fill", uid: "e1", value: "ios" }).ok).toBe(true);
+      expect(q.value).toBe("ios");
+      expect(
+        performInputAction(document, {
+          action: "fill-form",
+          fields: [
+            { uid: "e1", value: "tvos" },
+            { uid: "e2", value: "mac" },
+          ],
+        }).ok
+      ).toBe(true);
+      expect(q.value).toBe("tvos");
+      expect(r.value).toBe("mac");
+      expect(performInputAction(document, { action: "hover", uid: "e3" }).ok).toBe(true);
+      expect(onOver).toHaveBeenCalled();
+    });
+
+    it("drags between a light-DOM uid and a shadow uid", () => {
+      document.body.innerHTML = `<div id="from" data-bcmcp-uid="e1">Drag me</div>`;
+      const root = openHost("amp-drop", `<div id="to" data-bcmcp-uid="e2">Drop here</div>`);
+      const onDrop = jest.fn();
+      root.getElementById("to")!.addEventListener("drop", onDrop);
+
+      const res = performInputAction(document, { action: "drag", fromUid: "e1", toUid: "e2" });
+
+      expect(res.ok).toBe(true);
+      expect(onDrop).toHaveBeenCalled();
+    });
+
+    it("B10: a recycled node inside a shadow root is still rejected as stale", () => {
+      // Stamp uid + sig with the real snapshot, then move the node into a shadow root.
+      document.body.innerHTML = `<button aria-label="Save">S</button>`;
+      const btn = document.querySelector("button")!;
+      buildSnapshot(document, { verbose: false, maxLength: 25000 });
+      const uid = btn.getAttribute(UID_ATTR)!;
+      expect(btn.getAttribute("data-bcmcp-sig")).toBeTruthy();
+      const root = openHost("amp-nav", "");
+      root.appendChild(btn);
+      const onClick = jest.fn();
+      btn.addEventListener("click", onClick);
+
+      expect(performInputAction(document, { action: "click", uid }).ok).toBe(true);
+      expect(onClick).toHaveBeenCalledTimes(1);
+
+      btn.setAttribute("aria-label", "Delete");
+      const stale = performInputAction(document, { action: "click", uid });
+      expect(stale.ok).toBe(false);
+      expect(stale.error).toContain("fresh snapshot");
+      expect(onClick).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe("hit-testing pierces shadow roots (click arm + classify-intercept)", () => {
+    it("a shadow button is NOT reported intercepted by its own host", () => {
+      const root = openHost("amp-nav", `<button data-bcmcp-uid="e1">Users and Access</button>`);
+      const btn = root.querySelector("button")!;
+      const onClick = jest.fn();
+      btn.addEventListener("click", onClick);
+      stubRect();
+      stubDocHit(hostOf(root)); // document.elementFromPoint retargets to the host
+      stubRootHit(root, btn);
+
+      const res = performInputAction(document, { action: "click", uid: "e1" });
+
+      expect(res.ok).toBe(true);
+      expect(res.intercepted).toBeUndefined();
+      expect(onClick).toHaveBeenCalledTimes(1);
+    });
+
+    it("classify-intercept (the CDP probe) pierces the same way — no false positive, real cover still named", () => {
+      const root = openHost("amp-nav", `<button data-bcmcp-uid="e1">Users and Access</button>`);
+      const cover = document.createElement("div");
+      cover.id = "cover";
+      document.body.appendChild(cover);
+      stubRect();
+      stubDocHit(hostOf(root));
+      stubRootHit(root, root.querySelector("button"));
+
+      const clear = performInputAction(document, { action: "classify-intercept", uid: "e1" });
+      stubDocHit(cover);
+      const covered = performInputAction(document, { action: "classify-intercept", uid: "e1" });
+
+      expect(clear.ok).toBe(true);
+      expect(clear.intercepted).toBeUndefined();
+      expect(covered.intercepted).toMatchObject({ id: "cover" });
+    });
+
+    it("still no false interception when the root cannot be pierced (host = ancestor)", () => {
+      const root = openHost("amp-nav", `<button data-bcmcp-uid="e1">Users and Access</button>`);
+      stubRect();
+      stubDocHit(hostOf(root)); // no ShadowRoot.elementFromPoint available
+
+      const res = performInputAction(document, { action: "click", uid: "e1" });
+
+      expect(res.ok).toBe(true);
+      expect(res.intercepted).toBeUndefined();
+    });
+
+    it("pierces a CLOSED root for the hit-test via the Firefox property", () => {
+      const root = closedHost("amp-secret", `<button data-bcmcp-uid="e1">Closed Button</button>`);
+      exposeClosedViaProperty();
+      const onClick = jest.fn();
+      root.querySelector("button")!.addEventListener("click", onClick);
+      stubRect();
+      stubDocHit(hostOf(root));
+      stubRootHit(root, root.querySelector("button"));
+
+      const res = performInputAction(document, { action: "click", uid: "e1", failIfIntercepted: true });
+
+      expect(res.ok).toBe(true);
+      expect(res.intercepted).toBeUndefined();
+      expect(onClick).toHaveBeenCalledTimes(1);
+    });
+
+    it("pierces a CLOSED root for the hit-test via chrome.dom", () => {
+      const root = closedHost("amp-secret", `<button data-bcmcp-uid="e1">Closed Button</button>`);
+      exposeClosedViaChromeDom();
+      const onClick = jest.fn();
+      root.querySelector("button")!.addEventListener("click", onClick);
+      stubRect();
+      stubDocHit(hostOf(root));
+      stubRootHit(root, root.querySelector("button"));
+
+      const res = performInputAction(document, { action: "click", uid: "e1", failIfIntercepted: true });
+
+      expect(res.ok).toBe(true);
+      expect(res.intercepted).toBeUndefined();
+      expect(onClick).toHaveBeenCalledTimes(1);
+    });
+
+    it("a light-DOM overlay covering a shadow target is still intercepted (and failIfIntercepted hard-stops)", () => {
+      const root = openHost("amp-nav", `<button data-bcmcp-uid="e1">Users and Access</button>`);
+      const cover = document.createElement("div");
+      cover.id = "onetrust-banner-sdk";
+      cover.textContent = "cookies";
+      document.body.appendChild(cover);
+      const onClick = jest.fn();
+      root.querySelector("button")!.addEventListener("click", onClick);
+      stubRect();
+      stubDocHit(cover);
+
+      const soft = performInputAction(document, { action: "click", uid: "e1" });
+      expect(soft.ok).toBe(true);
+      expect(soft.intercepted).toMatchObject({ tag: "div", id: "onetrust-banner-sdk" });
+
+      onClick.mockClear();
+      const hard = performInputAction(document, { action: "click", uid: "e1", failIfIntercepted: true });
+      expect(hard.ok).toBe(false);
+      expect(hard.error).toContain("click intercepted by #onetrust-banner-sdk");
+      expect(onClick).not.toHaveBeenCalled();
+    });
+
+    it("an overlay inside ANOTHER component's shadow root is reported by that component's host", () => {
+      document.body.innerHTML = `<button data-bcmcp-uid="e1">Buy</button>`;
+      const banner = openHost("cookie-banner", `<div class="scrim">We use cookies</div>`);
+      banner.host.id = "cb";
+      stubRect();
+      stubDocHit(banner.host);
+      stubRootHit(banner, banner.querySelector(".scrim"));
+
+      const res = performInputAction(document, { action: "classify-intercept", uid: "e1" });
+
+      expect(res.intercepted).toMatchObject({ tag: "cookie-banner", id: "cb" });
+    });
+
+    it("a scrim inside the SAME shadow root as the target is reported as itself", () => {
+      const root = openHost(
+        "app-shell",
+        `<button data-bcmcp-uid="e1">Save</button><div class="scrim">Loading</div>`
+      );
+      stubRect();
+      stubDocHit(hostOf(root));
+      stubRootHit(root, root.querySelector(".scrim"));
+
+      const res = performInputAction(document, { action: "classify-intercept", uid: "e1" });
+
+      expect(res.intercepted).toMatchObject({ tag: "div", classes: "scrim" });
+    });
+
+    it("ignores a ShadowRoot.elementFromPoint hit that lies OUTSIDE that root (Chrome off-root quirk)", () => {
+      document.body.innerHTML = `<p id="elsewhere">Elsewhere</p>`;
+      const root = openHost("x-card", `<span>chrome</span>`);
+      hostOf(root).setAttribute(UID_ATTR, "e1");
+      stubRect();
+      stubDocHit(hostOf(root));
+      stubRootHit(root, document.getElementById("elsewhere"));
+
+      const res = performInputAction(document, { action: "classify-intercept", uid: "e1" });
+
+      expect(res.intercepted).toBeUndefined();
+    });
+  });
+
+  describe("composed classifyHit", () => {
+    it("shadow target vs its host → 'ancestor' (was 'unrelated')", () => {
+      const root = openHost("amp-nav", `<button>Users and Access</button>`);
+      expect(classifyHit(root.querySelector("button"), hostOf(root))).toBe("ancestor");
+    });
+
+    it("host target vs an element inside its shadow root → 'descendant'", () => {
+      const root = openHost("amp-nav", `<button>Users and Access</button>`);
+      expect(classifyHit(hostOf(root), root.querySelector("button"))).toBe("descendant");
+    });
+
+    it("nested: a target two roots deep vs the outer host → 'ancestor'", () => {
+      const outer = openHost("amp-nav", `<div class="acct"></div>`);
+      const inner = openHost("amp-account-menu", `<button>Sign Out</button>`, outer.querySelector(".acct")!);
+      expect(classifyHit(inner.querySelector("button"), hostOf(outer))).toBe("ancestor");
+      expect(classifyHit(hostOf(outer), inner.querySelector("button"))).toBe("descendant");
+    });
+
+    it("slotted (open): light content projected through a <slot> is a 'descendant' of the slot's wrapper", () => {
+      const root = openHost("amp-card", `<div class="frame"><slot></slot></div>`);
+      const span = document.createElement("span");
+      span.textContent = "Slotted";
+      hostOf(root).appendChild(span);
+      expect(classifyHit(root.querySelector(".frame"), span)).toBe("descendant");
+    });
+
+    it("slotted (closed, Firefox property): assignedSlot is null, the root-side slot lookup still finds it", () => {
+      const root = closedHost("amp-card", `<div class="frame"><slot></slot></div>`);
+      const span = document.createElement("span");
+      hostOf(root).appendChild(span);
+      expect(span.assignedSlot).toBeNull();
+      exposeClosedViaProperty();
+      expect(classifyHit(root.querySelector(".frame"), span)).toBe("descendant");
+    });
+
+    it("slotted (closed, chrome.dom): same via the Chrome API shape", () => {
+      const root = closedHost("amp-card", `<div class="frame"><slot name="t"></slot></div>`);
+      const span = document.createElement("span");
+      span.setAttribute("slot", "t");
+      hostOf(root).appendChild(span);
+      exposeClosedViaChromeDom();
+      expect(classifyHit(root.querySelector(".frame"), span)).toBe("descendant");
+    });
+
+    it("an element in a DIFFERENT component's shadow root is still 'unrelated'", () => {
+      const a = openHost("amp-nav", `<button>Users and Access</button>`);
+      const b = openHost("cookie-banner", `<div class="scrim">cookies</div>`);
+      expect(classifyHit(a.querySelector("button"), b.querySelector(".scrim"))).toBe("unrelated");
+    });
+  });
+
+  describe("role-wrapper click retargeting", () => {
+    function mountMenu(): { li: HTMLElement; btn: HTMLElement; p: HTMLElement } {
+      document.body.innerHTML = `
+        <ul role="menu">
+          <li role="menuitem" data-bcmcp-uid="e2"><button tabindex="0">Draft macOS Submission (1)<p>Started by Jane Today at 11:21 AM</p></button></li>
+        </ul>`;
+      return {
+        li: document.querySelector("li") as HTMLElement,
+        btn: document.querySelector("button") as HTMLElement,
+        p: document.querySelector("p") as HTMLElement,
+      };
+    }
+
+    it("li[role=menuitem] > button > p: dispatches on the button and reports dispatchedTo", () => {
+      const { li, btn, p } = mountMenu();
+      const onBtn = jest.fn();
+      const onLi = jest.fn();
+      btn.addEventListener("click", onBtn);
+      li.addEventListener("click", onLi);
+      stubRect();
+      stubDocHit(p);
+
+      const res = performInputAction(document, { action: "click", uid: "e2" });
+
+      expect(res.ok).toBe(true);
+      expect(onBtn).toHaveBeenCalledTimes(1);
+      expect(onLi).toHaveBeenCalledTimes(1); // bubbled from the button, like a real click
+      expect(onLi.mock.calls[0][0].target).toBe(btn);
+      expect(res.intercepted).toBeUndefined();
+      expect((res as { dispatchedTo?: unknown }).dispatchedTo).toEqual({
+        tag: "button",
+        name: "Draft macOS Submission (1)Started by Jane Today at 11:21 AM",
+      });
+      expect(document.activeElement).toBe(btn); // focus follows the real activation target
+    });
+
+    it("the whole pointer/mouse sequence goes to the retarget, carrying the hit point", () => {
+      const { li, btn, p } = mountMenu();
+      jest.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (this: Element) {
+        const r = this === li ? { left: 0, top: 0, width: 200, height: 40 } : { left: 10, top: 5, width: 60, height: 10 };
+        return { ...r, right: r.left + r.width, bottom: r.top + r.height, x: r.left, y: r.top, toJSON: () => ({}) } as DOMRect;
+      });
+      stubDocHit(p);
+      const seen: string[] = [];
+      let down: MouseEvent | null = null;
+      ["pointerdown", "mousedown", "pointerup", "mouseup", "click"].forEach((t) =>
+        btn.addEventListener(t, (e) => {
+          if (e.target === btn) {
+            seen.push(t);
+          }
+          if (t === "mousedown") {
+            down = e as MouseEvent;
+          }
+        })
+      );
+
+      performInputAction(document, { action: "click", uid: "e2" });
+
+      expect(seen).toEqual(["pointerdown", "mousedown", "pointerup", "mouseup", "click"]);
+      expect(down!.clientX).toBe(100); // the li's centre = where the hit-test landed
+      expect(down!.clientY).toBe(20);
+    });
+
+    it("dblclick is retargeted too (one click + one dblclick on the button)", () => {
+      const { li, btn, p } = mountMenu();
+      const onClick = jest.fn();
+      const onDbl = jest.fn();
+      const onLiDbl = jest.fn();
+      btn.addEventListener("click", onClick);
+      btn.addEventListener("dblclick", onDbl);
+      li.addEventListener("dblclick", onLiDbl);
+      stubRect();
+      stubDocHit(p);
+
+      const res = performInputAction(document, { action: "click", uid: "e2", doubleClick: true });
+
+      expect(res.ok).toBe(true);
+      expect(onClick).toHaveBeenCalledTimes(1);
+      expect(onDbl).toHaveBeenCalledTimes(1);
+      expect(onLiDbl).toHaveBeenCalledTimes(1);
+    });
+
+    it("button > span: stays on the button (no dispatchedTo)", () => {
+      document.body.innerHTML = `<button data-bcmcp-uid="e1"><span>Save</span></button>`;
+      const btn = document.querySelector("button")!;
+      const onClick = jest.fn();
+      btn.addEventListener("click", onClick);
+      stubRect();
+      stubDocHit(document.querySelector("span"));
+
+      const res = performInputAction(document, { action: "click", uid: "e1" });
+
+      expect(res.ok).toBe(true);
+      expect(onClick).toHaveBeenCalledTimes(1);
+      expect(onClick.mock.calls[0][0].target).toBe(btn);
+      expect((res as { dispatchedTo?: unknown }).dispatchedTo).toBeUndefined();
+    });
+
+    it("a[href] > span: stays on the link (no dispatchedTo)", () => {
+      document.body.innerHTML = `<a href="#anchored" data-bcmcp-uid="e1"><span>Anchor</span></a>`;
+      const a = document.querySelector("a")!;
+      const onClick = jest.fn();
+      a.addEventListener("click", onClick);
+      stubRect();
+      stubDocHit(document.querySelector("span"));
+
+      const res = performInputAction(document, { action: "click", uid: "e1" });
+
+      expect(onClick).toHaveBeenCalledTimes(1);
+      expect(onClick.mock.calls[0][0].target).toBe(a);
+      expect((res as { dispatchedTo?: unknown }).dispatchedTo).toBeUndefined();
+    });
+
+    it("li with its own handler > span: stays on the li", () => {
+      document.body.innerHTML = `<ul role="menu"><li role="menuitem" data-bcmcp-uid="e1"><span>Delete draft</span></li></ul>`;
+      const li = document.querySelector("li")!;
+      const onLi = jest.fn();
+      li.addEventListener("click", onLi);
+      stubRect();
+      stubDocHit(document.querySelector("span"));
+
+      const res = performInputAction(document, { action: "click", uid: "e1" });
+
+      expect(onLi).toHaveBeenCalledTimes(1);
+      expect(onLi.mock.calls[0][0].target).toBe(li);
+      expect((res as { dispatchedTo?: unknown }).dispatchedTo).toBeUndefined();
+    });
+
+    it("label uid with the hit on its painted span: stays on the label, checkbox toggles exactly once", () => {
+      document.body.innerHTML = `
+        <label class="ant-checkbox-wrapper" data-bcmcp-uid="e1">
+          <span class="ant-checkbox"><input type="checkbox" /><span class="ant-checkbox-inner"></span></span>
+          <span>I accept the terms</span>
+        </label>`;
+      const input = document.querySelector("input") as HTMLInputElement;
+      let changes = 0;
+      input.addEventListener("change", () => changes++);
+      stubRect();
+      stubDocHit(document.querySelector(".ant-checkbox-inner"));
+
+      const res = performInputAction(document, { action: "click", uid: "e1" });
+
+      expect(input.checked).toBe(true);
+      expect(changes).toBe(1);
+      expect((res as { dispatchedTo?: unknown }).dispatchedTo).toBeUndefined();
+    });
+
+    it("an option wrapper around a label: retargets to the label, checkbox toggles exactly once", () => {
+      document.body.innerHTML = `
+        <div role="option" data-bcmcp-uid="e1">
+          <label><input type="checkbox" /><span class="txt">Pick me</span></label>
+        </div>`;
+      const input = document.querySelector("input") as HTMLInputElement;
+      let changes = 0;
+      input.addEventListener("change", () => changes++);
+      stubRect();
+      stubDocHit(document.querySelector(".txt"));
+
+      const res = performInputAction(document, { action: "click", uid: "e1" });
+
+      expect(input.checked).toBe(true);
+      expect(changes).toBe(1);
+      expect((res as { dispatchedTo?: { tag: string } }).dispatchedTo).toMatchObject({ tag: "label" });
+    });
+
+    it("skips a control with no click() (svg role=button) and a hidden one, falling back to the uid element", () => {
+      document.body.innerHTML = `
+        <ul role="menu">
+          <li role="menuitem" data-bcmcp-uid="e1"><svg role="button" tabindex="0"><rect></rect></svg></li>
+          <li role="menuitem" data-bcmcp-uid="e2"><button aria-hidden="true"><span id="h">x</span></button></li>
+        </ul>`;
+      const lis = document.querySelectorAll("li");
+      const onLi1 = jest.fn();
+      const onLi2 = jest.fn();
+      lis[0].addEventListener("click", onLi1);
+      lis[1].addEventListener("click", onLi2);
+      stubRect();
+
+      stubDocHit(document.querySelector("rect"));
+      const r1 = performInputAction(document, { action: "click", uid: "e1" });
+      stubDocHit(document.getElementById("h"));
+      const r2 = performInputAction(document, { action: "click", uid: "e2" });
+
+      expect(onLi1).toHaveBeenCalledTimes(1);
+      expect(onLi1.mock.calls[0][0].target).toBe(lis[0]);
+      expect(onLi2).toHaveBeenCalledTimes(1);
+      expect(onLi2.mock.calls[0][0].target).toBe(lis[1]);
+      expect((r1 as { dispatchedTo?: unknown }).dispatchedTo).toBeUndefined();
+      expect((r2 as { dispatchedTo?: unknown }).dispatchedTo).toBeUndefined();
+    });
+
+    it("a shadow-DOM menuitem host: the hit inside its shadow button retargets to that button", () => {
+      const root = openHost("amp-menu-item", `<button><span>Sign Out</span></button>`);
+      const host = hostOf(root);
+      host.setAttribute("role", "menuitem");
+      host.setAttribute(UID_ATTR, "e1");
+      const btn = root.querySelector("button")!;
+      const onBtn = jest.fn();
+      const onHost = jest.fn();
+      btn.addEventListener("click", onBtn);
+      host.addEventListener("click", onHost);
+      stubRect();
+      stubDocHit(host);
+      stubRootHit(root, root.querySelector("span"));
+
+      const res = performInputAction(document, { action: "click", uid: "e1" });
+
+      expect(onBtn).toHaveBeenCalledTimes(1);
+      expect(onHost).toHaveBeenCalledTimes(1);
+      expect((res as { dispatchedTo?: unknown }).dispatchedTo).toEqual({ tag: "button", name: "Sign Out" });
+    });
+
+    it("an overlay hit never retargets (interception rules unchanged)", () => {
+      const { btn } = mountMenu();
+      const cover = document.createElement("div");
+      cover.id = "cover";
+      document.body.appendChild(cover);
+      const onBtn = jest.fn();
+      btn.addEventListener("click", onBtn);
+      stubRect();
+      stubDocHit(cover);
+
+      const res = performInputAction(document, { action: "click", uid: "e2" });
+
+      expect(res.intercepted).toMatchObject({ id: "cover" });
+      expect(onBtn).not.toHaveBeenCalled(); // dispatched on the li, as before
+      expect((res as { dispatchedTo?: unknown }).dispatchedTo).toBeUndefined();
+    });
+  });
+
+  describe("focused-element paths pierce shadow roots", () => {
+    it("type appends into an input focused inside an OPEN shadow root", () => {
+      const root = openHost("amp-search", `<input id="q" type="search" value="i" />`);
+      const q = root.getElementById("q") as HTMLInputElement;
+      q.focus();
+      expect(document.activeElement).toBe(hostOf(root)); // what the old code read
+
+      const res = performInputAction(document, { action: "type", text: "os" });
+
+      expect(res.ok).toBe(true);
+      expect(q.value).toBe("ios");
+    });
+
+    it("press-key dispatches on the input inside the shadow root, not on its host", () => {
+      const root = openHost("amp-search", `<input id="q" type="search" />`);
+      const q = root.getElementById("q") as HTMLInputElement;
+      q.focus();
+      // Read target DURING dispatch: the DOM clears/retargets a shadow target
+      // once dispatch finishes.
+      const targets: EventTarget[] = [];
+      q.addEventListener("keydown", (e) => targets.push(e.target as EventTarget));
+
+      performInputAction(document, { action: "press-key", key: "Enter" });
+
+      expect(targets).toEqual([q]);
+    });
+
+    it("type reaches an input focused inside a CLOSED root (Firefox property)", () => {
+      const root = closedHost("amp-search", `<input id="q" />`);
+      const q = root.getElementById("q") as HTMLInputElement;
+      q.focus();
+      exposeClosedViaProperty();
+
+      expect(performInputAction(document, { action: "type", text: "tv" }).ok).toBe(true);
+      expect(q.value).toBe("tv");
+    });
+
+    it("type reaches an input focused inside a CLOSED root (chrome.dom)", () => {
+      const root = closedHost("amp-search", `<input id="q" />`);
+      const q = root.getElementById("q") as HTMLInputElement;
+      q.focus();
+      exposeClosedViaChromeDom();
+
+      expect(performInputAction(document, { action: "type", text: "tv" }).ok).toBe(true);
+      expect(q.value).toBe("tv");
+    });
+  });
+
+  describe("fill on a non-fillable element", () => {
+    it("returns a clear ok:false instead of a TypeError from the native value setter", () => {
+      const root = openHost("amp-nav", `<button>Users and Access</button>`);
+      hostOf(root).setAttribute(UID_ATTR, "e1");
+
+      const res = performInputAction(document, { action: "fill", uid: "e1", value: "x" });
+
+      expect(res.ok).toBe(false);
+      expect(res.error).toMatch(/not a fillable field/);
+      expect(res.error).toContain("<amp-nav>");
+      expect(res.error).not.toMatch(/TypeError|Illegal invocation|set value/);
+    });
+
+    it("fill-form stops at the non-fillable field with the same message", () => {
+      document.body.innerHTML = `<input id="a" data-bcmcp-uid="e1" /><div data-bcmcp-uid="e2">Not a field</div>`;
+      const res = performInputAction(document, {
+        action: "fill-form",
+        fields: [
+          { uid: "e1", value: "alpha" },
+          { uid: "e2", value: "beta" },
+        ],
+      });
+      expect(res.ok).toBe(false);
+      expect(res.error).toMatch(/not a fillable field/);
+      expect((document.getElementById("a") as HTMLInputElement).value).toBe("alpha");
+    });
+  });
+});

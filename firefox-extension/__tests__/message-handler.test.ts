@@ -842,6 +842,41 @@ describe("MessageHandler", () => {
       });
     });
 
+    it("click-element forwards the injected dispatchedTo on the action-result", async () => {
+      (browser.tabs.executeScript as jest.Mock).mockResolvedValue([
+        { ok: true, dispatchedTo: { tag: "button", name: "Draft macOS Submission (1)" } },
+      ]);
+
+      await messageHandler.handleDecodedMessage({
+        cmd: "click-element",
+        tabId: 123,
+        uid: "e2",
+        correlationId: "dispatched-to",
+      } as ServerMessageRequest);
+
+      const call = (mockClient.sendResourceToServer as jest.Mock).mock.calls.find(
+        (c: any[]) => c[0].correlationId === "dispatched-to"
+      );
+      expect(call[0].dispatchedTo).toEqual({ tag: "button", name: "Draft macOS Submission (1)" });
+    });
+
+    it("click-element leaves dispatchedTo off the frame entirely when it is not set", async () => {
+      (browser.tabs.executeScript as jest.Mock).mockResolvedValue([{ ok: true }]);
+
+      await messageHandler.handleDecodedMessage({
+        cmd: "click-element",
+        tabId: 123,
+        uid: "e1",
+        correlationId: "no-dispatched-to",
+      } as ServerMessageRequest);
+
+      const call = (mockClient.sendResourceToServer as jest.Mock).mock.calls.find(
+        (c: any[]) => c[0].correlationId === "no-dispatched-to"
+      );
+      expect(call[0].ok).toBe(true);
+      expect("dispatchedTo" in call[0]).toBe(false);
+    });
+
     it("click-element replies action-result ok:false with the error when the uid is not found", async () => {
       (browser.tabs.executeScript as jest.Mock).mockResolvedValue([
         {

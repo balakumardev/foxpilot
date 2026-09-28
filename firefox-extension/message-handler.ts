@@ -949,6 +949,7 @@ export class MessageHandler {
         role?: string;
         name?: string;
       };
+      dispatchedTo?: { tag: string; name?: string };
     }>;
     if (mode === "off") {
       dispatchPromise = browser.tabs
@@ -974,6 +975,7 @@ export class MessageHandler {
         role?: string;
         name?: string;
       };
+      dispatchedTo?: { tag: string; name?: string };
     } = await raceInputAgainstNavigation(tabId, dispatchPromise);
 
     await this.client.sendResourceToServer({
@@ -986,6 +988,9 @@ export class MessageHandler {
         : {}),
       ...(result.intercepted !== undefined
         ? { intercepted: result.intercepted }
+        : {}),
+      ...(result.dispatchedTo !== undefined
+        ? { dispatchedTo: result.dispatchedTo }
         : {}),
     });
   }
