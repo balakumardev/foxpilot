@@ -59,18 +59,17 @@ export function extractPageContent(
     if (open) return open;
     const tag = el.localName;
     if (tag.indexOf("-") < 0 && !SHADOW_HOST_TAGS[tag]) return null;
-    const cached = closedRootCache.get(el);
-    if (cached !== undefined) return cached;
-    let closed: ShadowRoot | null = null;
-    try { const ff = (el as any).openOrClosedShadowRoot; if (ff) closed = ff as ShadowRoot; } catch (_) {}
-    if (!closed) {
+    if (closedRootCache.has(el)) return closedRootCache.get(el) as ShadowRoot | null;
+    let found: ShadowRoot | null = null;
+    try { const ff = (el as any).openOrClosedShadowRoot; if (ff) found = ff as ShadowRoot; } catch (_) {}
+    if (!found) {
       try {
         const dom = (globalThis as any).chrome && (globalThis as any).chrome.dom;
-        if (dom && typeof dom.openOrClosedShadowRoot === "function") closed = (dom.openOrClosedShadowRoot(el) as ShadowRoot) || null;
+        if (dom && typeof dom.openOrClosedShadowRoot === "function") found = (dom.openOrClosedShadowRoot(el) as ShadowRoot) || null;
       } catch (_) {}
     }
-    closedRootCache.set(el, closed);
-    return closed;
+    closedRootCache.set(el, found);
+    return found;
   }
   function isInShadowTree(n: Node): boolean {
     const r = n.getRootNode ? n.getRootNode() : null;
@@ -79,12 +78,12 @@ export function extractPageContent(
   // FLAT-TREE children: a host renders its shadow root's children (its light children only via slots);
   // a <slot> inside a shadow tree renders assignedElements({flatten:true}) (fallback content when nothing
   // is assigned). This is what guarantees nothing is listed twice and unassigned light children are skipped.
-  // An SVG-namespace <slot> (`<svg><slot>`) is a plain element without assignedElements: not a slot.
   function composedChildren(node: Document | ShadowRoot | Element): Element[] {
     if (node.nodeType === 1) {
       const el = node as Element;
       const sr = shadowRootOf(el);
       if (sr) return Array.from(sr.children);
+      // An <svg><slot> is an SVG element named "slot" with no assignedElements — only real HTML slots.
       if (el.localName === "slot" && typeof (el as any).assignedElements === "function" && isInShadowTree(el)) return Array.from((el as HTMLSlotElement).assignedElements({ flatten: true }));
     }
     return Array.from(node.children);
