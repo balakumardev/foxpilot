@@ -284,6 +284,50 @@ test.describe("get-tab-web-content extractor on the shadow-dom fixture", () => {
   });
 });
 
+test.describe("get-tab-web-content extractor on SVG links", () => {
+  test("lists SVG links where the old extractor threw, resolving hrefs against the base URL", async ({
+    page,
+  }) => {
+    await page.setContent(
+      '<!doctype html><html><head><base href="https://example.com/dir/"></head><body>' +
+        '<a href="https://example.com/html">HTML link</a>' +
+        '<svg width="80" height="20">' +
+        '<a href="https://example.com/svg"><text x="0" y="15">SVG\n   link</text></a>' +
+        '<a href="page"><text x="0" y="15">Relative</text></a>' +
+        '<a href="https://example.com/tip"><title>Tooltip</title><rect width="5" height="5"></rect></a>' +
+        // a[href] has never matched an xlink:href-only anchor: still not listed.
+        '<a xlink:href="https://example.com/xlink-only"><text x="0" y="15">XL</text></a>' +
+        "</svg></body></html>"
+    );
+    // SVG elements have no innerText: the pre-shadow extractor threw here.
+    await expect(legacy(page)).rejects.toThrow(/trim/);
+    const r = await extract(page);
+    expect(r.links).toEqual([
+      { url: "https://example.com/html", text: "HTML link" },
+      { url: "https://example.com/svg", text: "SVG link" },
+      { url: "https://example.com/dir/page", text: "Relative" },
+      { url: "https://example.com/tip", text: "Tooltip" },
+    ]);
+    expect(r.fullText).toBe(await page.evaluate(() => document.body.innerText));
+  });
+
+  test("an SVG-namespace <slot> inside a shadow root is a plain element, not a slot", async ({
+    page,
+  }) => {
+    await page.setContent(
+      '<!doctype html><html><body><amp-chart><span slot="icon">Unrendered icon</span></amp-chart></body></html>'
+    );
+    await page.evaluate(() => {
+      (document.querySelector("amp-chart") as Element).attachShadow({ mode: "open" }).innerHTML =
+        '<p>Revenue</p><svg width="80" height="20"><slot name="icon"></slot>' +
+        '<a href="https://example.com/q3"><text x="0" y="15">Q3</text></a></svg><p>Total</p>';
+    });
+    const r = await extract(page);
+    expect(r.links).toEqual([{ url: "https://example.com/q3", text: "Q3" }]);
+    expect(r.fullText).toBe("Revenue\n\nQ3\n\nTotal");
+  });
+});
+
 test.describe("get-tab-web-content extractor on pages without shadow roots", () => {
   test("the spa-widgets fixture is byte-identical to the pre-shadow extractor", async ({ page }) => {
     await page.goto("/");

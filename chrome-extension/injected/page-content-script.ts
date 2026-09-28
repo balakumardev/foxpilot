@@ -24,6 +24,8 @@
  *     filters, so shadow and slotted links appear where they render, once each.
  * Open roots are always reachable; closed ones only through the extension-only
  * APIs, which exist in the content-script world and not in the page world.
+ * SVG <a href> links are listed on both paths (text from textContent); the
+ * original extraction threw on any page containing one.
  */
 export function extractPageContent(
   doc: Document,
@@ -77,12 +79,13 @@ export function extractPageContent(
   // FLAT-TREE children: a host renders its shadow root's children (its light children only via slots);
   // a <slot> inside a shadow tree renders assignedElements({flatten:true}) (fallback content when nothing
   // is assigned). This is what guarantees nothing is listed twice and unassigned light children are skipped.
+  // An SVG-namespace <slot> (`<svg><slot>`) is a plain element without assignedElements: not a slot.
   function composedChildren(node: Document | ShadowRoot | Element): Element[] {
     if (node.nodeType === 1) {
       const el = node as Element;
       const sr = shadowRootOf(el);
       if (sr) return Array.from(sr.children);
-      if (el.localName === "slot" && isInShadowTree(el)) return Array.from((el as HTMLSlotElement).assignedElements({ flatten: true }));
+      if (el.localName === "slot" && typeof (el as any).assignedElements === "function" && isInShadowTree(el)) return Array.from((el as HTMLSlotElement).assignedElements({ flatten: true }));
     }
     return Array.from(node.children);
   }
@@ -124,7 +127,11 @@ export function extractPageContent(
       if (sr) {
         markMixed(all[i]);
         scan(sr);
-      } else if (root.nodeType === 11 && all[i].localName === "slot") {
+      } else if (
+        root.nodeType === 11 &&
+        all[i].localName === "slot" &&
+        typeof (all[i] as any).assignedNodes === "function"
+      ) {
         markMixed(all[i]);
       }
     }
@@ -160,7 +167,7 @@ export function extractPageContent(
   function composedChildNodes(el: Element): Node[] {
     const sr = shadowRootOf(el);
     if (sr) return Array.from(sr.childNodes);
-    if (el.localName === "slot" && isInShadowTree(el)) {
+    if (el.localName === "slot" && typeof (el as any).assignedNodes === "function" && isInShadowTree(el)) {
       return Array.from((el as HTMLSlotElement).assignedNodes({ flatten: true }));
     }
     return Array.from(el.childNodes);
@@ -288,6 +295,24 @@ export function extractPageContent(
     walkChildren(el, styleOf(el), items);
     return joinItems(items);
   }
+  // An SVG <a href> matches a[href] too, but it is no HTMLElement: it has no
+  // innerText, and its `href` is an SVGAnimatedString, not a URL string. The
+  // a[href] match guarantees a plain href attribute (the value baseVal
+  // reflects), so resolve that against the document base URL instead. For an
+  // HTML link both helpers return exactly what they always did.
+  function linkUrl(el: Element): string {
+    const href = (el as any).href;
+    if (typeof href === "string") return href;
+    try {
+      return new URL(el.getAttribute("href") || "", doc.baseURI).href;
+    } catch (e) {
+      return "";
+    }
+  }
+  function linkText(el: Element): string {
+    if (typeof (el as any).innerText === "string") return textOf(el).trim();
+    return (el.textContent || "").replace(/\s+/g, " ").trim();
+  }
 
   scan(doc);
   const hasShadow = mixed.size > 0;
@@ -316,9 +341,9 @@ export function extractPageContent(
     : Array.from(doc.querySelectorAll("a[href]"));
   const links = linkElements
     .map((el) => ({
-      url: (el as HTMLAnchorElement).href,
+      url: linkUrl(el),
       text:
-        textOf(el).trim() ||
+        linkText(el) ||
         el.getAttribute("aria-label") ||
         el.getAttribute("title") ||
         "",

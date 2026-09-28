@@ -25,7 +25,9 @@ function assignedIfHosted(n: Node): boolean {
   if (!root) return true;
   const slots = root.querySelectorAll("slot");
   for (let i = 0; i < slots.length; i++) {
-    if ((slots[i] as HTMLSlotElement).assignedNodes().indexOf(n as ChildNode) >= 0) {
+    const s = slots[i] as HTMLSlotElement;
+    // An SVG-namespace <slot> is a plain element, not a slot.
+    if (typeof s.assignedNodes === "function" && s.assignedNodes().indexOf(n as ChildNode) >= 0) {
       return true;
     }
   }
@@ -52,7 +54,10 @@ function collect(node: Node, out: Array<string | number>): void {
   const el = node as Element;
   const cs = getComputedStyle(el);
   if (cs.display === "none" || el.localName === "noscript" || !assignedIfHosted(el)) return;
-  const shadowSlot = el.localName === "slot" && el.getRootNode() instanceof ShadowRoot;
+  const shadowSlot =
+    el.localName === "slot" &&
+    typeof (el as HTMLSlotElement).assignedNodes === "function" &&
+    el.getRootNode() instanceof ShadowRoot;
   const kids =
     shadowSlot && (el as HTMLSlotElement).assignedNodes().length > 0
       ? []
@@ -526,5 +531,72 @@ describe("extractPageContent — shadow DOM text and links, in reading order", (
     expect(last.isTruncated).toBe(false);
     expect(last.fullText).toBe(full.substring(59990));
     expect(last.fullText.endsWith("x\n\nOutro")).toBe(true);
+  });
+});
+
+// An SVG <a href> matches a[href] but is not an HTMLElement: it has no
+// innerText, and its `href` is an SVGAnimatedString rather than a URL string.
+// The pre-shadow extractor threw on any page containing one (both engines).
+describe("extractPageContent — SVG links and SVG elements never throw", () => {
+  const SVG_LINKS =
+    '<p>Chart</p><a href="https://example.com/html">HTML link</a>' +
+    '<svg><a href="https://example.com/svg"><text>SVG\n   link</text></a>' +
+    '<a href="https://example.com/labelled" aria-label="Labelled bar"><rect></rect></a>' +
+    '<a href="https://example.com/titled" title="Titled bar"><rect></rect></a>' +
+    '<a href="https://example.com/tip"><title>Tooltip</title><rect></rect></a>' +
+    '<a href="http://example.com/insecure"><text>Insecure</text></a>' +
+    '<a href="https://example.com/p#frag"><text>Hash</text></a>' +
+    '<a href="https://example.com/blank"></a></svg>';
+
+  it("lists SVG links (text from textContent, then aria-label, then title) where the old extractor threw", () => {
+    document.body.innerHTML = SVG_LINKS;
+    expect(() => legacyExtract(document, 0)).toThrow(TypeError);
+    const r = extractPageContent(document, { offset: 0 });
+    expect(r.links).toEqual([
+      { url: "https://example.com/html", text: "HTML link" },
+      { url: "https://example.com/svg", text: "SVG link" },
+      { url: "https://example.com/labelled", text: "Labelled bar" },
+      { url: "https://example.com/titled", text: "Titled bar" },
+      { url: "https://example.com/tip", text: "Tooltip" },
+    ]);
+    // The text is still exactly body.innerText.
+    expect(r.fullText).toBe(document.body.innerText);
+  });
+
+  it("resolves a relative SVG href against the document base URL", () => {
+    const base = document.createElement("base");
+    base.href = "https://example.com/dir/";
+    document.head.appendChild(base);
+    try {
+      document.body.innerHTML =
+        '<a href="sibling">HTML relative</a><svg><a href="page"><text>SVG relative</text></a></svg>';
+      expect(extractPageContent(document, { offset: 0 }).links).toEqual([
+        { url: "https://example.com/dir/sibling", text: "HTML relative" },
+        { url: "https://example.com/dir/page", text: "SVG relative" },
+      ]);
+    } finally {
+      base.remove();
+    }
+  });
+
+  it("leaves a page byte-identical when its only SVG anchors use xlink:href (a[href] never matched them)", () => {
+    document.body.innerHTML =
+      '<a href="https://example.com/a">A</a>' +
+      '<svg><a xlink:href="https://example.com/xl"><text>XL</text></a></svg>';
+    expect(extractPageContent(document, { offset: 0 })).toEqual(legacyExtract(document, 0));
+  });
+
+  it("reads SVG links inside shadow roots and treats an SVG-namespace <slot> as a plain element", () => {
+    // <svg><slot> parses as an SVG element named "slot": no assignedNodes, no
+    // assignment. The light child aimed at it is therefore never rendered.
+    document.body.innerHTML = '<amp-chart><span slot="icon">Unrendered icon</span></amp-chart>';
+    openRoot(
+      q("amp-chart"),
+      '<p>Revenue</p><svg><slot name="icon"></slot>' +
+        '<a href="https://example.com/q3"><text>Q3</text></a></svg><p>Total</p>'
+    );
+    const r = extractPageContent(document, { offset: 0 });
+    expect(r.links).toEqual([{ url: "https://example.com/q3", text: "Q3" }]);
+    expect(r.fullText).toBe("Revenue\n\nQ3\n\nTotal");
   });
 });
