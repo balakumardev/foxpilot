@@ -16,12 +16,15 @@
  *   - No reachable shadow root: the original extraction, unchanged (same output
  *     byte for byte).
  *   - Otherwise the text is assembled over the FLAT tree (what renders): native
- *     innerText for every subtree that holds no shadow host and no slot, and an
+ *     innerText for every subtree that holds no shadow host and no slot, with
+ *     the line breaks it drops at that subtree's edges put back, and an
  *     explicit walk through hosts, slots and their ancestors that follows
- *     innerText's rules (block boundaries, <p> and <br> as newlines;
- *     display:none, visibility:hidden, script/style/template skipped; CSS
- *     whitespace collapsing). Links are listed in flat-tree order with the same
- *     filters, so shadow and slotted links appear where they render, once each.
+ *     innerText's rules (block boundaries, <p> and <br> as newlines, table
+ *     cells and rows; display:none, visibility:hidden, script/style/template,
+ *     a closed <details> and content-visibility:hidden skipped; CSS white-space
+ *     collapsing around atomic inline boxes; text-transform). Links are listed
+ *     in flat-tree order with the same filters, so shadow and slotted links
+ *     appear where they render, once each.
  * Open roots are always reachable; closed ones only through the extension-only
  * APIs, which exist in the content-script world and not in the page world.
  * SVG <a href> links are listed on both paths (text from textContent); the
@@ -136,18 +139,31 @@ export function extractPageContent(
     }
   }
 
-  // innerText's intermediate list: a string, a required line-break count, or
-  // raw text from a text node the walk renders itself ({ c }), whose spaces
-  // still collapse against its neighbours.
-  type TextItem = string | number | { c: string };
+  // innerText's intermediate list: a string as rendered, a required line-break
+  // count (a line boundary here), raw text from a text node the walk renders
+  // itself ({ c }), whose spaces still collapse against its neighbours, or an
+  // atomic inline box ({ a, l, t }: an input, an image, an inline-block...)
+  // with its rendered text and the line breaks innerText puts at its inside
+  // edges. The box is line content even when it renders no text, so the spaces
+  // on either side of it stay, and its inside breaks are not line boundaries
+  // for those spaces.
+  type TextItem = string | number | { c: string } | { a: string; l: number; t: number };
   // Skipped even when a page overrides their display (jsdom also reports
   // display "" for noscript, which never renders with scripting enabled).
   const SKIP_TAGS: Record<string, true> = { script: true, style: true, template: true, noscript: true };
-  // Block-level displays get a line break before and after. table-row is not
-  // block-level, but innerText ends every row but the last with "\n", which a
-  // line-break count reproduces.
+  // Block-level displays get a line break before and after.
   const BREAK_DISPLAYS: Record<string, true> = { block: true, "flow-root": true, "list-item": true,
-    table: true, flex: true, grid: true, "-webkit-box": true, "table-caption": true, "table-row": true };
+    table: true, flex: true, grid: true, "-webkit-box": true, "table-caption": true };
+  // Elements whose children never render as page text (a <textarea>'s value, a
+  // <canvas> or <video> fallback, a <select>'s options, which Chrome's
+  // innerText lists and Firefox's does not): innerText alone says what they add.
+  const OPAQUE_TAGS: Record<string, true> = { select: true, textarea: true, canvas: true, video: true,
+    audio: true, iframe: true, object: true, embed: true };
+  // Atomic inline boxes other than those and the inline-block family.
+  const ATOMIC_TAGS: Record<string, true> = { img: true, input: true, button: true, svg: true,
+    math: true, meter: true, progress: true };
+  const HTML_NS = "http://www.w3.org/1999/xhtml";
+  const SVG_NS = "http://www.w3.org/2000/svg";
 
   const win = doc.defaultView as (Window & typeof globalThis) | null;
   function styleOf(el: Element): CSSStyleDeclaration | null {
@@ -171,8 +187,72 @@ export function extractPageContent(
     }
     return Array.from(el.childNodes);
   }
+  // Has a box whose contents render. False for a display:none subtree, an
+  // unslotted light child or an SVG <title> (no box), and — checkVisibility —
+  // for anything inside a closed <details> or a content-visibility:hidden
+  // (hidden=until-found) box, which keeps its box but renders nothing: innerText
+  // skips it. Never asked of display:contents, which has no box of its own.
+  function isRendered(el: Element): boolean {
+    const check = (el as any).checkVisibility;
+    if (typeof check === "function") {
+      try {
+        return !!check.call(el);
+      } catch (e) {
+        /* fall back to the box test */
+      }
+    }
+    return !layoutActive || el.getClientRects().length > 0;
+  }
+  // A content-visibility:hidden box renders, but none of its contents.
+  function rendersContents(cs: CSSStyleDeclaration | null): boolean {
+    return !cs || cs.display === "contents" || cs.contentVisibility !== "hidden";
+  }
+  // Flat-tree child nodes that can render. A closed <details> shows only its
+  // first <summary>; checkVisibility cannot rule out the loose text beside it.
+  function renderedChildNodes(el: Element): Node[] {
+    const kids = composedChildNodes(el);
+    if (el.localName !== "details" || el.namespaceURI !== HTML_NS || el.hasAttribute("open")) return kids;
+    for (let i = 0; i < kids.length; i++) {
+      if (kids[i].nodeType === 1 && (kids[i] as Element).localName === "summary") return [kids[i]];
+    }
+    return [];
+  }
+  // innerText's required line break count for an element's own box.
+  function breaksOf(el: Element, display: string, shown: boolean): number {
+    if (!shown || display === "contents") return 0;
+    if (el.localName === "p") return 2;
+    return BREAK_DISPLAYS[display] || display.indexOf("block ") === 0 ? 1 : 0;
+  }
   function pushText(data: string, cs: CSSStyleDeclaration | null, items: TextItem[]): void {
     if (!isShown(cs)) return;
+    const tt = cs ? cs.textTransform : "";
+    if (tt === "uppercase") data = data.toUpperCase();
+    else if (tt === "lowercase") data = data.toLowerCase();
+    else if (tt === "capitalize") {
+      // A word starts after anything but a letter, digit or apostrophe (both
+      // engines: "Cap It-All O'neil"), and a text node can continue the
+      // previous one's word.
+      let prev = "";
+      for (let i = items.length - 1; i >= 0; i--) {
+        const p = items[i];
+        if (typeof p === "number") {
+          if (p > 0) break;
+        } else if (typeof p === "string") {
+          if (p !== "") {
+            prev = p.charAt(p.length - 1);
+            break;
+          }
+        } else if ("a" in p) {
+          break;
+        } else if (p.c !== "") {
+          prev = p.c.charAt(p.c.length - 1);
+          break;
+        }
+      }
+      data = (prev + data)
+        .replace(/(^|[^\p{L}\p{N}\p{M}'’])(\p{Ll})/gu, (_m: string, b: string, c: string) => b + c.toUpperCase())
+        .slice(prev.length);
+    }
     const ws = cs ? cs.whiteSpace : "";
     if (ws === "pre" || ws === "pre-wrap" || ws === "break-spaces") {
       items.push(data);
@@ -182,16 +262,62 @@ export function extractPageContent(
       items.push({ c: data.replace(/[ \t\n\r\f]+/g, " ") });
     }
   }
+  // Whether a text node renders a string at all. Collapsible white space alone
+  // does not where it matters here, next to a line break.
+  function rendersText(data: string, cs: CSSStyleDeclaration | null): boolean {
+    if (!isShown(cs)) return false;
+    const ws = cs ? cs.whiteSpace : "";
+    if (ws === "pre" || ws === "pre-wrap" || ws === "break-spaces") return data !== "";
+    return (ws === "pre-line" ? /[^ \t\r\f]/ : /[^ \t\n\r\f]/).test(data);
+  }
   function walkChildren(el: Element, cs: CSSStyleDeclaration | null, items: TextItem[]): void {
-    const kids = composedChildNodes(el);
+    if (!rendersContents(cs)) return;
+    // SVG renders text only inside its text content elements.
+    const svgText =
+      el.namespaceURI !== SVG_NS ||
+      /^(text|tspan|textPath)$/.test(el.localName) ||
+      (el.localName === "a" && !!el.parentNode && /^(text|tspan|textPath)$/.test((el.parentNode as Element).localName));
+    const kids = renderedChildNodes(el);
     for (let i = 0; i < kids.length; i++) {
       const k = kids[i];
       if (k.nodeType === 3) {
-        pushText((k as Text).data, cs, items);
+        if (svgText) pushText((k as Text).data, cs, items);
       } else if (k.nodeType === 1) {
         walkElement(k as Element, items);
       }
     }
+  }
+  // An atomic inline box: the inline-block family, inline math (Chrome's
+  // "math"), or a replaced or form element laid out inline (an <img>, an
+  // <input>, an <svg>...). jsdom reports display "" for elements it has no
+  // style for.
+  function isAtomic(tag: string, display: string): boolean {
+    if (display === "inline" || display === "") return !!(OPAQUE_TAGS[tag] || ATOMIC_TAGS[tag]);
+    return display === "math" || display.indexOf("inline-") === 0 || display.indexOf("inline ") === 0;
+  }
+  // innerText ends a table row with "\n" unless no row follows it in its table —
+  // in tree order, whatever the layout order of a <tfoot>.
+  function isLastRow(row: Element): boolean {
+    const displayOf = (e: Element): string => {
+      const s = styleOf(e);
+      return s ? s.display : "";
+    };
+    const isGroup = (d: string): boolean =>
+      d === "table-row-group" || d === "table-header-group" || d === "table-footer-group";
+    for (let s = row.nextElementSibling; s; s = s.nextElementSibling) {
+      if (displayOf(s) === "table-row") return false;
+    }
+    const group = row.parentElement;
+    if (!group || !isGroup(displayOf(group))) return true;
+    for (let g = group.nextElementSibling; g; g = g.nextElementSibling) {
+      const d = displayOf(g);
+      if (d === "table-row") return false;
+      if (!isGroup(d)) continue;
+      for (let r = g.firstElementChild; r; r = r.nextElementSibling) {
+        if (displayOf(r) === "table-row") return false;
+      }
+    }
+    return true;
   }
   function walkElement(el: Element, items: TextItem[]): void {
     const tag = el.localName;
@@ -205,23 +331,20 @@ export function extractPageContent(
       return;
     }
     const contents = display === "contents";
-    // No layout box and not display:contents (e.g. an unassigned light child
-    // of a closed host, an SVG <title>): none of it renders, and innerText on
-    // it would return its raw textContent. Needs a real layout engine.
-    if (!contents && layoutActive && el.getClientRects().length === 0) return;
-    const breaks =
-      !shown || contents
-        ? 0
-        : tag === "p"
-          ? 2
-          : BREAK_DISPLAYS[display] || display.indexOf("block ") === 0
-            ? 1
-            : 0;
+    if (!contents && !isRendered(el)) return;
+    const breaks = breaksOf(el, display, shown);
     if (breaks) items.push(breaks);
-    if (mixed.has(el) || contents || typeof (el as any).innerText !== "string") {
-      walkChildren(el, cs, items);
+    if (!mixed.has(el) && !contents && typeof (el as any).innerText === "string") {
+      if (rendersContents(cs)) pushNative(el, display, breaks, items);
+    } else if (!contents && isAtomic(tag, display)) {
+      // An atomic box (a button holding a host, an <svg>) lays out its content
+      // on lines of its own: join it on its own, then place it as one box.
+      const sub: TextItem[] = [];
+      walkChildren(el, cs, sub);
+      const a = joinItems(sub);
+      items.push({ a, l: runOf(sub, false), t: a === "" ? 0 : runOf(sub, true) });
     } else {
-      items.push((el as HTMLElement).innerText);
+      walkChildren(el, cs, items);
     }
     if (shown && display === "table-cell") {
       for (let s = el.nextElementSibling; s; s = s.nextElementSibling) {
@@ -232,64 +355,214 @@ export function extractPageContent(
         }
       }
     }
+    if (shown && display === "table-row" && !isLastRow(el)) items.push("\n");
     if (breaks) items.push(breaks);
   }
-  // innerText's last step: drop empty strings and leading/trailing line
-  // breaks, and turn each run of required line breaks into "\n" repeated the
+  // A box that renders no text but still counts as line content.
+  const EMPTY_BOX: TextItem = { a: "", l: 0, t: 0 };
+  // An element with no host and no slot under it: native innerText renders it
+  // exactly, except that it drops the line breaks at its own inside edges —
+  // "read" for <label style="display:inline-flex"><span>read</span></label>,
+  // whose flex item puts a line break on either side — so put those back.
+  function pushNative(el: Element, display: string, own: number, items: TextItem[]): void {
+    const tag = el.localName;
+    const a = (el as HTMLElement).innerText;
+    if (OPAQUE_TAGS[tag]) {
+      // innerText lists a <select>'s options as block-level boxes.
+      const edge = tag === "select" && a !== "" ? 1 : 0;
+      items.push({ a, l: edge, t: edge });
+      return;
+    }
+    // A <p>'s own count of 2 already bounds its edges: nothing to put back.
+    if (own >= 2) {
+      items.push(a);
+      return;
+    }
+    const head = edgeOf(el, false);
+    if (isAtomic(tag, display)) {
+      items.push({ a, l: head.breaks, t: a === "" ? 0 : edgeOf(el, true).breaks });
+      return;
+    }
+    const tail = edgeOf(el, true);
+    // An atomic box right at an edge of an inline keeps the space beside it.
+    if (own === 0 && head.atom) items.push(EMPTY_BOX);
+    items.push(head.breaks, a);
+    if (a !== "") items.push(tail.breaks);
+    if (own === 0 && tail.atom) items.push(EMPTY_BOX);
+  }
+  // What innerText drops at an inside edge of an element it is called on: the
+  // largest required line break count before its first rendered string (fromEnd:
+  // after its last one), found by walking in from that edge until a string would
+  // be produced — with no string at all, the whole list is one run — and whether
+  // an atomic box sits at that edge ahead of any line break.
+  function edgeOf(root: Element, fromEnd: boolean): { breaks: number; atom: boolean } {
+    let breaks = 0;
+    let atom = false;
+    const nodes: Node[] = [];
+    const styles: Array<CSSStyleDeclaration | null> = [];
+    const enter = (el: Element, cs: CSSStyleDeclaration | null): void => {
+      const kids = renderedChildNodes(el);
+      for (let i = 0; i < kids.length; i++) {
+        nodes.push(kids[fromEnd ? i : kids.length - 1 - i]);
+        styles.push(cs);
+      }
+    };
+    enter(root, styleOf(root));
+    while (nodes.length) {
+      const n = nodes.pop() as Node;
+      const parentCs = styles.pop() as CSSStyleDeclaration | null;
+      if (n.nodeType === 3) {
+        if (rendersText((n as Text).data, parentCs)) break;
+        continue;
+      }
+      if (n.nodeType !== 1) continue;
+      const el = n as Element;
+      const tag = el.localName;
+      if (SKIP_TAGS[tag]) continue;
+      const cs = styleOf(el);
+      const display = cs ? cs.display : "";
+      if (display === "none") continue;
+      const shown = isShown(cs);
+      if (tag === "br") {
+        if (shown) break;
+        continue;
+      }
+      if (display !== "contents" && !isRendered(el)) continue;
+      if (breaks === 0 && isAtomic(tag, display)) atom = true;
+      if (OPAQUE_TAGS[tag]) {
+        if ((el as HTMLElement).innerText === "") continue;
+        if (tag === "select" && breaks < 1) breaks = 1;
+        break;
+      }
+      const b = breaksOf(el, display, shown);
+      if (b > breaks) breaks = b;
+      if (rendersContents(cs)) enter(el, cs);
+    }
+    return { breaks, atom };
+  }
+  // The same for a list the walk built: the largest line break count before its
+  // first string (fromEnd: after its last), an empty box's breaks included.
+  function runOf(items: TextItem[], fromEnd: boolean): number {
+    let best = 0;
+    for (let k = 0; k < items.length; k++) {
+      const it = items[fromEnd ? items.length - 1 - k : k];
+      if (typeof it === "number") {
+        if (it > best) best = it;
+      } else if (typeof it === "string") {
+        if (it !== "") return best;
+      } else if ("a" in it) {
+        const near = fromEnd ? it.t : it.l;
+        const far = fromEnd ? it.l : it.t;
+        if (near > best) best = near;
+        if (it.a !== "") return best;
+        if (far > best) best = far;
+      } else if (/[^ ]/.test(it.c)) {
+        return best;
+      }
+    }
+    return best;
+  }
+  // innerText's last step: drop empty strings and the line breaks at the start
+  // and end, and turn each run of required line breaks into "\n" repeated the
   // run's largest count. Raw text ({ c }) also collapses the way CSS does: its
-  // edge spaces are held back and written only between two runs on one line,
-  // never at a line start or end or next to other whitespace. Linear: the
-  // output is only appended to, and its last character is tracked separately.
+  // edge spaces are held back and written only between two things on one line,
+  // never at a line start or end or next to other white space. An atomic box is
+  // such a thing even when it renders no text; its inside breaks are written
+  // but end no line for the spaces around it, and an empty box does not split a
+  // run of line breaks. Linear: the output is only appended to.
   function joinItems(items: TextItem[]): string {
     let out = "";
-    let last = "";
-    let pending = 0;
-    let space = false;
+    let pending = 0; // line breaks not written yet
+    let boundary = false; // a line ends here, not only a box's inside edge
+    let space = false; // a collapsible space held back
+    let lastWs = true; // the output ends in white space or a line start
+    let afterBox = false; // the last content on this line is an atomic box
+    const flush = (): void => {
+      if (pending > 0 && out !== "") {
+        out += "\n".repeat(pending);
+        lastWs = true;
+      }
+      pending = 0;
+      boundary = false;
+    };
     for (let i = 0; i < items.length; i++) {
       const it = items[i];
       if (typeof it === "number") {
-        if (it > pending) pending = it;
+        if (it > 0) {
+          if (it > pending) pending = it;
+          boundary = true;
+        }
         continue;
       }
-      let s: string;
-      let trailing = false;
-      if (typeof it === "string") {
-        s = it;
-      } else {
-        s = it.c;
+      if (typeof it !== "string" && "a" in it) {
+        if (space && !boundary && (afterBox || !lastWs)) {
+          flush();
+          out += " ";
+          lastWs = true;
+        }
+        space = false;
+        if (it.l > pending) pending = it.l;
+        if (it.a !== "") {
+          flush();
+          out += it.a;
+          lastWs = /[ \n\t]$/.test(it.a);
+          pending = it.t;
+        } else if (it.t > pending) {
+          pending = it.t;
+        }
+        boundary = false;
+        afterBox = true;
+        continue;
+      }
+      let s = typeof it === "string" ? it : it.c;
+      let lead = false;
+      let trail = false;
+      if (typeof it !== "string") {
         if (s.charAt(0) === " ") {
-          space = true;
+          lead = true;
           s = s.slice(1);
         }
         if (s.charAt(s.length - 1) === " ") {
-          trailing = true;
+          trail = true;
           s = s.slice(0, -1);
         }
       }
       if (s === "") {
-        if (trailing) space = true;
+        if (lead || trail) space = true;
         continue;
       }
-      if (pending > 0) {
-        if (out !== "") {
-          out += "\n".repeat(pending);
-          last = "\n";
-        }
-        pending = 0;
-      } else if (space && out !== "") {
-        const first = s.charAt(0);
-        if (last !== " " && last !== "\n" && last !== "\t" && first !== " " && first !== "\n" && first !== "\t") {
-          out += " ";
-        }
-      }
+      const spaced = (space || lead) && !boundary && (afterBox || !lastWs) && !/^[ \n\t]/.test(s);
+      flush();
+      if (spaced) out += " ";
       out += s;
-      last = s.charAt(s.length - 1);
-      space = trailing;
+      lastWs = /[ \n\t]$/.test(s);
+      afterBox = false;
+      space = trail;
+    }
+    return out;
+  }
+  // Descendant text content over the flat tree: what innerText returns for an
+  // element that is not being rendered. Without script/style/template text,
+  // since every component root carries a <style>.
+  function flatText(root: Element): string {
+    let out = "";
+    const stack: Node[] = composedChildNodes(root).slice().reverse();
+    while (stack.length) {
+      const n = stack.pop() as Node;
+      if (n.nodeType === 3) {
+        out += (n as Text).data;
+      } else if (n.nodeType === 1 && !SKIP_TAGS[(n as Element).localName]) {
+        const kids = composedChildNodes(n as Element);
+        for (let i = kids.length - 1; i >= 0; i--) stack.push(kids[i]);
+      }
     }
     return out;
   }
   function textOf(el: Element): string {
     if (!mixed.has(el)) return (el as HTMLElement).innerText;
+    // Like innerText, an element that is not being rendered reads as its text.
+    if (layoutActive && el.getClientRects().length === 0) return flatText(el);
+    if (!isRendered(el)) return "";
     const items: TextItem[] = [];
     walkChildren(el, styleOf(el), items);
     return joinItems(items);
@@ -315,17 +588,16 @@ export function extractPageContent(
 
   scan(doc);
   const hasShadow = mixed.size > 0;
-  // Is a real layout engine active? jsdom has none (every rect is 0x0), so the
-  // no-layout-box check must be off there. Only the shadow path needs it.
+  // Is a real layout engine active? jsdom has none (it reports no boxes), so the
+  // box tests must be off there. Asks for <html>'s box rather than its height:
+  // an app shell with body{margin:0} and a fixed-position root has a <html> of
+  // height 0. Only the shadow path needs it.
   const layoutActive =
     hasShadow &&
     (function (): boolean {
       try {
         const de = doc.documentElement as Element | null;
-        if (de && typeof de.getBoundingClientRect === "function") {
-          const r = de.getBoundingClientRect();
-          return !!(r && r.height > 0);
-        }
+        return !!de && typeof de.getClientRects === "function" && de.getClientRects().length > 0;
       } catch (e) {
         /* no layout — treat as inactive */
       }

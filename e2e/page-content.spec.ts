@@ -133,9 +133,11 @@ test.describe("get-tab-web-content extractor on shadow DOM (inline page)", () =>
     expect(before.fullText).not.toContain("Users and Access");
     expect(before.links.map((l) => l.text)).toEqual(["Main link", "Slotted link"]);
 
-    // After: the same composition the jsdom suites pin, in both engines.
+    // After: the same composition the jsdom suites pin, in both engines — and
+    // what their own innerText gives for the flattened page, down to the space
+    // the icon-only button keeps after "Users and Access".
     expect(r.fullText).toBe(
-      "Apps Business Users and Access\nAccount\nSign Out\n" +
+      "Apps Business Users and Access \nAccount\nSign Out\n" +
         "Apps\n\nMain content paragraph\n\nMain link Light Button\n" +
         "Slotted Title\nSlotted link\nFallback button Card action\n" +
         "Privacy Terms"
@@ -326,6 +328,127 @@ test.describe("get-tab-web-content extractor on SVG links", () => {
     expect(r.links).toEqual([{ url: "https://example.com/q3", text: "Q3" }]);
     expect(r.fullText).toBe("Revenue\n\nQ3\n\nTotal");
   });
+});
+
+// Beside a shadow host the extractor reads every subtree without a host or slot
+// with native innerText and composes the rest itself, so it has to reproduce
+// what innerText renders around each piece. Each case pairs a page that uses
+// shadow roots with a light-DOM form that renders the same, and the old
+// extractor's output on that form is the truth. An EMPTY root renders nothing,
+// so without `roots` the truth is the same page before its <x-e> roots are
+// attached; with `roots`, `flat` is the flattened markup.
+type RenderCase = { name: string; html: string; roots?: [string, string][]; flat?: string };
+const RENDER_CASES: RenderCase[] = [
+  {
+    name: "inline-flex labels whose flex items are block-level (an antd checkbox group)",
+    html:
+      '<div><x-e></x-e><label style="display:inline-flex"><span>read</span></label>' +
+      '<label style="display:inline-flex"><span>write</span></label>' +
+      '<label style="display:inline-flex"><span>admin</span></label></div>',
+  },
+  {
+    name: "inline-flex nav links made of an icon and a label",
+    html:
+      '<nav><x-e></x-e><a href="https://example.com/h" style="display:inline-flex"><svg width="8" height="8"></svg><span>Home</span></a>' +
+      '<a href="https://example.com/d" style="display:inline-flex"><svg width="8" height="8"></svg><span>Docs</span></a></nav>',
+  },
+  {
+    name: "buttons whose label is a block",
+    html: "<p><x-e></x-e><button><div>Save</div></button><button><div>Cancel</div></button></p>",
+  },
+  {
+    name: "paragraphs at the edges of a block and of an inline wrapper",
+    html: "<div><x-e></x-e><div><p>Para</p></div><div>next</div><span><p>wrapped para</p></span>tail</div>",
+  },
+  { name: "an empty block inside an inline wrapper", html: "<div><x-e></x-e>a<span><div></div></span>b</div>" },
+  {
+    name: "an input, a button and a textarea between spaces",
+    html: "<p><x-e></x-e>Search <input> <button>Go</button> tail</p><p><x-e></x-e><textarea>Draft</textarea> after</p>",
+  },
+  {
+    name: "uppercase, lowercase and capitalize text-transform",
+    html:
+      '<p style="text-transform:uppercase"><x-e></x-e>apps</p>' +
+      '<p style="text-transform:lowercase"><x-e></x-e>MiXeD Case</p>' +
+      "<p style=\"text-transform:capitalize\"><x-e></x-e>cap it-all o'neil hel<x-e></x-e>lo 3rd</p>",
+  },
+  {
+    name: "an SVG <title> in an app shell whose <html> has no height",
+    html:
+      "<style>body{margin:0}#app{position:fixed;inset:0}</style>" +
+      '<div id="app"><x-e></x-e><svg width="10" height="10"><title>Close icon</title></svg> Body text</div>',
+  },
+  {
+    name: "a closed <details> around a host",
+    html: "<details><summary>FAQ</summary><p>Answer <x-price></x-price> per month</p>loose</details><p>After</p>",
+    roots: [["x-price", "$10"]],
+    flat: "<details><summary>FAQ</summary><p>Answer $10 per month</p>loose</details><p>After</p>",
+  },
+  {
+    name: "an open <details> around a host",
+    html: "<details open><summary>FAQ</summary><p>Answer <x-price></x-price> per month</p></details><p>After</p>",
+    roots: [["x-price", "$10"]],
+    flat: "<details open><summary>FAQ</summary><p>Answer $10 per month</p></details><p>After</p>",
+  },
+  {
+    name: "a content-visibility:hidden panel around a host",
+    html: '<div style="content-visibility:hidden">Loose <p>Panel <x-w></x-w></p></div><p>Visible</p>',
+    roots: [["x-w", "text"]],
+    flat: '<div style="content-visibility:hidden">Loose <p>Panel text</p></div><p>Visible</p>',
+  },
+  {
+    name: "a hidden=until-found panel around a host",
+    html: '<div hidden="until-found">Loose <p>Panel <x-w></x-w></p></div><p>Visible</p>',
+    roots: [["x-w", "text"]],
+    flat: '<div hidden="until-found">Loose <p>Panel text</p></div><p>Visible</p>',
+  },
+  {
+    name: "a display:none link whose icon is a host",
+    html:
+      '<div style="display:none"><a href="https://example.com/s"><x-icon></x-icon><span>Settings</span></a></div><p>Body</p>',
+    roots: [["x-icon", "<style>b{color:red}</style><b>*</b>"]],
+    flat: '<div style="display:none"><a href="https://example.com/s"><b>*</b><span>Settings</span></a></div><p>Body</p>',
+  },
+  {
+    name: "a display:none link holding an empty host",
+    html:
+      '<div style="display:none"><a href="https://example.com/s"><x-e></x-e><span>Settings</span></a></div><p>Body</p>',
+  },
+];
+
+async function truthAndResult(page: Page, c: RenderCase): Promise<{ truth: Content; got: Content }> {
+  await page.setContent("<!doctype html><html><body>" + c.html + "</body></html>");
+  return page.evaluate(
+    ({ src, legacySrc, roots, flat }) => {
+      // eslint-disable-next-line no-eval
+      const extract = (0, eval)("(" + src + ")");
+      // eslint-disable-next-line no-eval
+      const legacyFn = (0, eval)("(" + legacySrc + ")");
+      if (!roots) {
+        const truth = legacyFn(document, 0);
+        document.querySelectorAll("x-e").forEach((h) => h.attachShadow({ mode: "open" }));
+        return { truth, got: extract(document, { offset: 0 }) };
+      }
+      for (const [sel, html] of roots) {
+        document.querySelectorAll(sel).forEach((h) => {
+          h.attachShadow({ mode: "open" }).innerHTML = html;
+        });
+      }
+      const got = extract(document, { offset: 0 });
+      document.body.innerHTML = flat as string;
+      return { truth: legacyFn(document, 0), got };
+    },
+    { src: SRC, legacySrc: LEGACY_SRC, roots: c.roots || null, flat: c.flat || null }
+  );
+}
+
+test.describe("get-tab-web-content extractor beside a shadow host renders like innerText", () => {
+  for (const c of RENDER_CASES) {
+    test(c.name, async ({ page }) => {
+      const { truth, got } = await truthAndResult(page, c);
+      expect(got).toEqual(truth);
+    });
+  }
 });
 
 test.describe("get-tab-web-content extractor on pages without shadow roots", () => {

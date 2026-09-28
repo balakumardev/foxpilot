@@ -43,6 +43,10 @@ function isRendered(el: Element): boolean {
   return true;
 }
 
+// Replaced elements whose children never render as page text: both engines
+// give "" for a <textarea>'s innerText and leave a <canvas> fallback out.
+const REPLACED = /^(textarea|select|canvas|video|audio|iframe|object|embed)$/;
+
 function collect(node: Node, out: Array<string | number>): void {
   if (node.nodeType === 3) {
     if (!assignedIfHosted(node)) return;
@@ -59,7 +63,7 @@ function collect(node: Node, out: Array<string | number>): void {
     typeof (el as HTMLSlotElement).assignedNodes === "function" &&
     el.getRootNode() instanceof ShadowRoot;
   const kids =
-    shadowSlot && (el as HTMLSlotElement).assignedNodes().length > 0
+    (shadowSlot && (el as HTMLSlotElement).assignedNodes().length > 0) || REPLACED.test(el.localName)
       ? []
       : Array.from(el.childNodes);
   const shown = cs.visibility !== "hidden";
@@ -79,6 +83,7 @@ function collect(node: Node, out: Array<string | number>): void {
 
 function stubInnerText(this: HTMLElement): string {
   if (!this.isConnected || !isRendered(this)) return this.textContent || "";
+  if (REPLACED.test(this.localName)) return "";
   const items: Array<string | number> = [];
   this.childNodes.forEach((k) => collect(k, items));
   let s = "";
@@ -302,8 +307,10 @@ describe("extractPageContent — shadow DOM text and links, in reading order", (
     );
   }
 
+  // The space after "Users and Access" is real: the icon-only button after it is
+  // line content, and both engines render the flattened page exactly this way.
   const OPEN_TEXT =
-    "Apps Business Users and Access\nAccount\nSign Out\n" +
+    "Apps Business Users and Access \nAccount\nSign Out\n" +
     "Apps\n\nMain content paragraph\n\nMain link Light Button\n" +
     "Slotted Title\nSlotted link\nFallback button Card action\n" +
     "Privacy Terms";
@@ -598,5 +605,82 @@ describe("extractPageContent — SVG links and SVG elements never throw", () => 
     const r = extractPageContent(document, { offset: 0 });
     expect(r.links).toEqual([{ url: "https://example.com/q3", text: "Q3" }]);
     expect(r.fullText).toBe("Revenue\n\nQ3\n\nTotal");
+  });
+});
+
+// Once a page has a shadow host, every subtree without a host or slot is read
+// with native innerText, which drops the line breaks at the edges of whatever
+// it is called on ("read" for a label whose flex item puts a break on either
+// side). The walk has to put back what the browser renders around each one, or
+// words run together. An EMPTY open root renders nothing, so innerText of the
+// same page before the root is attached is the exact truth.
+describe("extractPageContent — text beside a shadow host reads like innerText", () => {
+  function beforeAndAfterEmptyRoots(html: string): { truth: string; got: string } {
+    document.body.innerHTML = html;
+    const truth = document.body.innerText;
+    document.querySelectorAll("x-e").forEach((h) => h.attachShadow({ mode: "open" }));
+    return { truth, got: extractPageContent(document, { offset: 0 }).fullText };
+  }
+
+  it.each([
+    [
+      "an inline wrapper's block-level children (a flex item, a button's <div>)",
+      '<div><x-e></x-e><label><span style="display:block">read</span></label><label><span style="display:block">write</span></label></div>' +
+        "<div><x-e></x-e><button><div>Save</div></button><button><div>Cancel</div></button></div>",
+      "read\nwrite\nSave\nCancel",
+    ],
+    [
+      "a paragraph at the edge of a block or inline wrapper",
+      '<div><x-e></x-e><div><p>Para</p></div><div>next</div><span><p>wrapped para</p></span>tail</div>',
+      "Para\n\nnext\n\nwrapped para\n\ntail",
+    ],
+    ["an empty block inside an inline wrapper", "<div><x-e></x-e>a<span><div></div></span>b</div>", "a\nb"],
+    ["a <br> opening an inline wrapper", "<div><x-e></x-e><span><br><div>y</div></span>z</div>", "\n\ny\nz"],
+  ])("keeps the line breaks around %s", (_label, html, expected) => {
+    const { truth, got } = beforeAndAfterEmptyRoots(html);
+    expect(truth).toBe(expected);
+    expect(got).toBe(truth);
+  });
+
+  it("keeps the spaces on both sides of an input, button or textarea, which are line content", () => {
+    document.body.innerHTML =
+      "<p><x-e></x-e>Search <input> <button>Go</button> tail</p>" +
+      "<p><x-e></x-e><textarea>Draft</textarea> after</p>";
+    document.querySelectorAll("x-e").forEach((h) => h.attachShadow({ mode: "open" }));
+    expect(extractPageContent(document, { offset: 0 }).fullText).toBe("Search  Go tail\n\n after");
+  });
+
+  it("reads only the summary of a closed <details>, and all of an open one", () => {
+    document.body.innerHTML =
+      "<details><summary>FAQ</summary><p>Answer <x-price></x-price> per month</p>loose text</details>" +
+      "<details open><summary>Open</summary><p>Shown <x-price></x-price></p></details><p>After</p>";
+    document.querySelectorAll("x-price").forEach((h) => openRoot(h, "$10"));
+    expect(extractPageContent(document, { offset: 0 }).fullText).toBe(
+      "FAQ\nOpen\n\nShown $10\n\nAfter"
+    );
+  });
+
+  it("reads nothing inside a content-visibility:hidden box", () => {
+    document.body.innerHTML =
+      '<div style="content-visibility:hidden">Loose <p>Panel <x-w></x-w></p></div><p>Visible</p>';
+    openRoot(q("x-w"), "text");
+    expect(extractPageContent(document, { offset: 0 }).fullText).toBe("Visible");
+  });
+
+  it("applies uppercase and lowercase text-transform to the text it reads itself", () => {
+    document.body.innerHTML =
+      '<p style="text-transform:uppercase"><x-e></x-e>apps</p>' +
+      '<p style="text-transform:lowercase"><x-e></x-e>MiXeD Case</p>';
+    document.querySelectorAll("x-e").forEach((h) => h.attachShadow({ mode: "open" }));
+    expect(extractPageContent(document, { offset: 0 }).fullText).toBe("APPS\n\nmixed case");
+  });
+
+  it("capitalizes words like the engines: after a hyphen, not after an apostrophe or inside a word", () => {
+    // Both engines give "Cap It-All O'neil" for "cap it-all o'neil"; a text
+    // node that continues a word ("hel" + "lo") does not start a new one.
+    document.body.innerHTML =
+      '<p style="text-transform:capitalize"><x-e></x-e>cap it-all o\'neil hel<x-e></x-e>lo 3rd</p>';
+    document.querySelectorAll("x-e").forEach((h) => h.attachShadow({ mode: "open" }));
+    expect(extractPageContent(document, { offset: 0 }).fullText).toBe("Cap It-All O'neil Hello 3rd");
   });
 });
