@@ -1055,7 +1055,7 @@ describe("shadow DOM: the snapshot walks the flat tree", () => {
     document.getElementById("xb")!.attachShadow({ mode: "open" }).innerHTML = `<style>button { color: red }</style><button><slot></slot></button>`;
     document.getElementById("xi")!.attachShadow({ mode: "open" }).innerHTML = `<style>:host { display: block }</style><slot></slot>`;
     expect(snap().tree).toBe(
-      ['menu "" |  |  [uid=e1]', 'menuitem "Rename" |  |  [uid=e2] → inner button', 'menuitem "Delete" |  |  [uid=e3]'].join("\n")
+      ['menu "" |  |  [uid=e1]', 'menuitem "Rename" |  |  [uid=e2] (via inner button)', 'menuitem "Delete" |  |  [uid=e3]'].join("\n")
     );
     expect(snap({ textContains: "color" }).total).toBe(0);
   });
@@ -1118,8 +1118,8 @@ describe("role-wrapper collapse", () => {
     expect(tree).toBe(
       [
         'menu "" |  |  [uid=e1]',
-        'menuitem "Draft macOS Submission (1)Started by Jane Today at 11:21 AM" |  |  [uid=e2] → inner button',
-        'menuitem "Draft iOS Submission (2)Started by Bob Yesterday" |  |  [uid=e3] → inner button',
+        'menuitem "Draft macOS Submission (1)Started by Jane Today at 11:21 AM" |  |  [uid=e2] (via inner button)',
+        'menuitem "Draft iOS Submission (2)Started by Bob Yesterday" |  |  [uid=e3] (via inner button)',
         'menuitem "Delete draft" |  |  [uid=e4]',
       ].join("\n")
     );
@@ -1138,8 +1138,8 @@ describe("role-wrapper collapse", () => {
     expect(snap().tree).toBe(
       [
         'listbox "" |  |  [uid=e1]',
-        'option "US" |  |  [uid=e2] (selected) → inner button',
-        'option "UK" |  |  [uid=e3] → inner button',
+        'option "US" |  |  [uid=e2] (selected, via inner button)',
+        'option "UK" |  |  [uid=e3] (via inner button)',
       ].join("\n")
     );
   });
@@ -1165,10 +1165,10 @@ describe("role-wrapper collapse", () => {
     );
   });
 
-  it("keeps only the innermost wrapper when nested wrappers collapse onto the same control", () => {
+  it("lists nested list/grid wrappers that collapse onto one control as that control's own row", () => {
     document.body.innerHTML = `<div role="listitem" aria-label="Open file"><div role="gridcell"><a href="/f">Open file</a></div></div>`;
     const { tree } = snap();
-    expect(tree).toBe('gridcell "Open file" |  |  [uid=e1] → inner link');
+    expect(tree).toBe('link "Open file" |  |  [uid=e1]');
     expect(document.querySelector("a")!.getAttribute("data-bcmcp-uid")).toBe("e1");
   });
 
@@ -1179,27 +1179,27 @@ describe("role-wrapper collapse", () => {
     expect(snap().tree).toBe(
       [
         'menu "" |  |  [uid=e1]',
-        'menuitem "sign OUT" |  |  [uid=e2] → inner button',
-        'menuitem "Profile" |  |  [uid=e3] → inner link',
+        'menuitem "sign OUT" |  |  [uid=e2] (via inner button)',
+        'menuitem "Profile" |  |  [uid=e3] (via inner link)',
       ].join("\n")
     );
   });
 
   it("ignores hidden interactive descendants when counting", () => {
     document.body.innerHTML = `<div role="menuitem" aria-label="Archive"><button>Archive</button><button style="display:none">Archive</button></div>`;
-    expect(snap().tree).toBe('menuitem "Archive" |  |  [uid=e1] → inner button');
+    expect(snap().tree).toBe('menuitem "Archive" |  |  [uid=e1] (via inner button)');
   });
 
   it("does not re-list a collapsed cursor:pointer wrapper in the pointer pass", () => {
     document.body.innerHTML = `<div role="menuitem" style="cursor: pointer"><button>Rename</button></div>`;
-    expect(snap().tree).toBe('menuitem "Rename" |  |  [uid=e1] → inner button');
+    expect(snap().tree).toBe('menuitem "Rename" |  |  [uid=e1] (via inner button)');
   });
 
   it("collapses onto a control inside a shadow root", () => {
     document.body.innerHTML = `<div role="tab" aria-label="Apps"><x-tab id="t"></x-tab></div>`;
     const root = document.getElementById("t")!.attachShadow({ mode: "open" });
     root.innerHTML = `<button>Apps</button>`;
-    expect(snap().tree).toBe('tab "Apps" |  |  [uid=e1] → inner button');
+    expect(snap().tree).toBe('tab "Apps" |  |  [uid=e1] (via inner button)');
     expect(root.querySelector("button")!.getAttribute("data-bcmcp-uid")).toBe("e1");
   });
 
@@ -1207,7 +1207,7 @@ describe("role-wrapper collapse", () => {
     document.body.innerHTML = MENU;
     const { tree } = snap({ textContains: "draft macos" });
     expect(tree).toBe(
-      'menuitem "Draft macOS Submission (1)Started by Jane Today at 11:21 AM" |  |  [uid=e1] → inner button'
+      'menuitem "Draft macOS Submission (1)Started by Jane Today at 11:21 AM" |  |  [uid=e1] (via inner button)'
     );
     expect(document.querySelector("li button")!.getAttribute("data-bcmcp-uid")).toBe("e1");
   });
@@ -1217,10 +1217,8 @@ describe("role-wrapper collapse", () => {
     const res = snap({ selector: 'li[role="menuitem"]' });
     expect(res.tree).toBe(
       [
-        'menuitem "Draft macOS Submission (1)Started by Jane Today at 11:21 AM" |  |  [uid=e1]',
-        '  ↳ e1 wraps one interactive button "Draft macOS Submission (1)Started by Jane Today at 11:21 AM" [uid=e2]',
-        'menuitem "Draft iOS Submission (2)Started by Bob Yesterday" |  |  [uid=e3]',
-        '  ↳ e3 wraps one interactive button "Draft iOS Submission (2)Started by Bob Yesterday" [uid=e4]',
+        'menuitem "Draft macOS Submission (1)Started by Jane Today at 11:21 AM" |  |  [uid=e1] (wraps button [uid=e2])',
+        'menuitem "Draft iOS Submission (2)Started by Bob Yesterday" |  |  [uid=e3] (wraps button [uid=e4])',
         'menuitem "Delete draft" |  |  [uid=e5]',
       ].join("\n")
     );
@@ -1535,6 +1533,78 @@ describe("label[for] names are looked up once per tree", () => {
     });
     expect(snap().tree).toBe(
       ['textbox "First" |  |  [uid=e1]', 'textbox "Shadow label" |  |  [uid=e2]'].join("\n")
+    );
+  });
+});
+
+/**
+ * A collapsed menu item / option / tab / tree item row also carries its inner
+ * control's states and value — the wrapper's own win — and says, inside the
+ * (flags) group, that its uid targets that control. A list or grid wrapper
+ * (listitem, row, gridcell) is only structure: its single same-named control is
+ * listed as its own row instead. The same rule holds in textContains mode.
+ */
+describe("collapsed rows: merged states and structural wrappers", () => {
+  afterEach(() => {
+    document.body.innerHTML = "";
+    document.head.innerHTML = "";
+  });
+
+  it("merges the control's disabled and aria-expanded states; the wrapper's own expansion wins", () => {
+    document.body.innerHTML = `<ul role="menu"><li role="menuitem"><button disabled>Paste</button></li><li role="menuitem"><button aria-expanded="false">More</button></li><li role="menuitem" aria-expanded="true"><button aria-expanded="false">Tools</button></li></ul>`;
+    expect(snap().tree).toBe(
+      [
+        'menu "" |  |  [uid=e1]',
+        'menuitem "Paste" |  |  [uid=e2] (disabled, via inner button)',
+        'menuitem "More" |  |  [uid=e3] (collapsed, via inner button)',
+        'menuitem "Tools" |  |  [uid=e4] (expanded, via inner button)',
+      ].join("\n")
+    );
+  });
+
+  it("merges a checked checkbox, and a textbox's value and required state", () => {
+    document.body.innerHTML = `<div role="listbox"><div role="option" aria-label="Notify me"><input type="checkbox" aria-label="Notify me" checked></div><div role="option" aria-label="Quantity"><input aria-label="Quantity" value="3" required></div></div>`;
+    expect(snap().tree).toBe(
+      [
+        'listbox "" |  |  [uid=e1]',
+        'option "Notify me" |  |  [uid=e2] (checked, via inner checkbox)',
+        'option "Quantity" | "3" |  [uid=e3] (required, via inner textbox)',
+      ].join("\n")
+    );
+  });
+
+  it("lists a list or grid wrapper's single control as that control's own row", () => {
+    document.body.innerHTML = `<ul><li role="listitem"><a href="/apps">Apps</a></li></ul><div role="grid" aria-label="Cart"><div role="row" aria-label="Remove"><button>Remove</button></div><div role="row" aria-label="Line 1"><div role="gridcell" aria-label="Quantity"><input aria-label="Quantity" value="3" required></div></div></div>`;
+    expect(snap().tree).toBe(
+      [
+        'link "Apps" |  |  [uid=e1]',
+        'grid "Cart" |  |  [uid=e2]',
+        'button "Remove" |  |  [uid=e3]',
+        'row "Line 1" |  |  [uid=e4]',
+        'textbox "Quantity" | "3" |  [uid=e5] (required)',
+      ].join("\n")
+    );
+  });
+
+  it("applies the same rule in textContains mode", () => {
+    document.body.innerHTML = `<ul role="menu"><li role="menuitem"><button disabled>Paste</button></li></ul><ul><li role="listitem"><a href="/apps">Apps</a></li></ul><div role="grid"><div role="row" aria-label="Line 1"><div role="gridcell" aria-label="Quantity"><input aria-label="Quantity" value="3" required></div></div></div>`;
+    expect(snap({ textContains: "paste" }).tree).toBe('menuitem "Paste" |  |  [uid=e1] (disabled, via inner button)');
+    expect(snap({ textContains: "apps" }).tree).toBe('link "Apps" |  |  [uid=e1]');
+    expect(snap({ textContains: "quantity" }).tree).toBe('textbox "Quantity" | "3" |  [uid=e1] (required)');
+  });
+
+  it("keeps every row, collapsed or hinted, to one line ending in [uid=eN] (flags)", () => {
+    document.body.innerHTML = `<ul role="menu"><li role="menuitem" aria-selected="true"><button>Rename</button></li><li role="menuitem"><button>Delete</button></li></ul>`;
+    for (const extra of [{}, { selector: "li" }, { textContains: "rename" }]) {
+      for (const line of snap(extra).tree.split("\n")) {
+        expect(line).toMatch(/^\S+ "[^"]*" \| [^|]* \| [^[]*\[uid=e\d+\](?: \([^)]*\))?$/);
+      }
+    }
+    expect(snap({ selector: "li" }).tree).toBe(
+      [
+        'menuitem "Rename" |  |  [uid=e1] (selected, wraps button [uid=e2])',
+        'menuitem "Delete" |  |  [uid=e3] (wraps button [uid=e4])',
+      ].join("\n")
     );
   });
 });

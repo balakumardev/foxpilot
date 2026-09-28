@@ -57,7 +57,6 @@ export function buildSnapshot(
   const UID_ATTR = "data-bcmcp-uid";
   const SIG_ATTR = "data-bcmcp-sig";
   const NAME_MAX = 120;
-  const HINT_NAME_MAX = 60;
 
   // --- inner helpers (must stay inside this function body) ---
 
@@ -1058,6 +1057,32 @@ export function buildSnapshot(
     }
   }
 
+  // A list or grid wrapper is only structure: when it collapses onto a control,
+  // that control's own row stands for it. The other wrapper roles (menu item,
+  // option, tab, tree item) are targets in their own right and keep their row.
+  function isStructuralRole(role: string): boolean {
+    return role === "row" || role === "gridcell" || role === "listitem";
+  }
+
+  // A collapsed wrapper's row also carries its control's states. The wrapper's
+  // own aria-expanded wins over the control's; order stays canonical.
+  const FLAG_ORDER = ["disabled", "checked", "required", "expanded", "collapsed", "selected"];
+  function mergeFlags(own: string[], inner: string[]): string[] {
+    const has: Record<string, boolean> = {};
+    for (let i = 0; i < own.length; i++) {
+      has[own[i]] = true;
+    }
+    const ownExpansion = has.expanded || has.collapsed;
+    for (let i = 0; i < inner.length; i++) {
+      if (!(ownExpansion && (inner[i] === "expanded" || inner[i] === "collapsed"))) {
+        has[inner[i]] = true;
+      }
+    }
+    return FLAG_ORDER.filter(function (f) {
+      return has[f];
+    });
+  }
+
   function firstRoleToken(el: Element): string {
     return (el.getAttribute("role") || "").trim().split(/\s+/)[0].toLowerCase();
   }
@@ -1232,26 +1257,38 @@ export function buildSnapshot(
 
   let candidates: Element[] = [];
   if (selectorHits) {
-    // In root's own tree querySelectorAll already decided (it also honours
-    // :scope); inside shadow trees the selector is matched per element, so
-    // combinators apply within a tree, never across a boundary.
+    // Membership is decided per tree by that tree's own querySelectorAll —
+    // root's (above, which also gives :scope its meaning) and each other tree
+    // the walk enters, once. Combinators apply within a tree, never across a
+    // boundary, and :scope matches nothing inside a shadow root (el.matches
+    // would call every shadow element its own :scope).
     const hitSet = new Set<Element>();
     for (let i = 0; i < selectorHits.length; i++) {
       hitSet.add(selectorHits[i]);
     }
-    const rootTree = root.nodeType === 9 ? root : root.getRootNode();
+    const queried = new Set<Node>();
+    queried.add(root.nodeType === 9 ? root : root.getRootNode());
     for (let i = 0; i < all.length; i++) {
-      const el = all[i];
-      let hit = hitSet.has(el);
-      if (!hit && el.getRootNode() !== rootTree) {
-        try {
-          hit = el.matches(options.selector as string);
-        } catch (e) {
-          hit = false;
+      const tree = all[i].getRootNode();
+      if (queried.has(tree)) {
+        continue;
+      }
+      queried.add(tree);
+      let more: NodeListOf<Element> | null = null;
+      try {
+        more = (tree as Document | ShadowRoot).querySelectorAll(options.selector as string);
+      } catch (e) {
+        more = null;
+      }
+      if (more) {
+        for (let j = 0; j < more.length; j++) {
+          hitSet.add(more[j]);
         }
       }
-      if (hit) {
-        candidates.push(el);
+    }
+    for (let i = 0; i < all.length; i++) {
+      if (hitSet.has(all[i])) {
+        candidates.push(all[i]);
       }
     }
   } else if (textMode) {
@@ -1519,8 +1556,10 @@ export function buildSnapshot(
       continue;
     }
 
-    // rowEl supplies the row's role, name and states; uidEl carries the uid.
-    // They differ only for a collapsed role wrapper.
+    // rowEl supplies the row's role and name; uidEl carries the uid. They
+    // differ only for a collapsed menu item / option / tab / tree item, whose
+    // row also shows its control's states and value. A list or grid wrapper
+    // that collapses is dropped: the control's own row stands for it.
     let rowEl = el;
     let uidEl = el;
     if (!selectorMode && !textMode) {
@@ -1529,18 +1568,27 @@ export function buildSnapshot(
         if (wrapperOf.get(inner) !== el) {
           continue; // a nested wrapper owns this control's row
         }
+        if (isStructuralRole(firstRoleToken(el))) {
+          continue; // the control's own row stands for it
+        }
         uidEl = inner;
-      } else if (wrapperOf.has(el)) {
-        continue; // listed through its wrapper's row
+      } else {
+        const wrapper = wrapperOf.get(el);
+        if (wrapper && !isStructuralRole(firstRoleToken(wrapper))) {
+          continue; // listed through its wrapper's row
+        }
       }
     } else if (!selectorMode) {
-      // Text mode: a match is shown as its collapsing wrapper's row either way.
+      // Text mode, same rule: a match is shown through its collapsing wrapper.
       const inner = collapseTargetOf(el);
       if (inner) {
         uidEl = inner;
+        if (isStructuralRole(firstRoleToken(el))) {
+          rowEl = inner;
+        }
       } else {
         const wrapper = collapsingWrapperOf(el);
-        if (wrapper) {
+        if (wrapper && !isStructuralRole(firstRoleToken(wrapper))) {
           rowEl = wrapper;
         }
       }
@@ -1562,40 +1610,30 @@ export function buildSnapshot(
       // base / pointer / selector passes are unaffected.
       name = clip(textOf(rowEl));
     }
-    const flags = getStateFlags(rowEl, role);
+    let flags = getStateFlags(rowEl, role);
+    let value = getCurrentValue(rowEl, role);
     const uid = stampUid(uidEl);
-
-    let line = makeRow(
-      rowEl,
-      role,
-      name,
-      getCurrentValue(rowEl, role),
-      getSection(rowEl),
-      flags,
-      uid
-    );
+    // Every note rides in the row's (flags) group, so each row keeps the one-line
+    // `... [uid=eN] (flags)` shape agents parse.
     if (uidEl !== rowEl) {
-      // The [uid=eN] token stays intact; the marker says whom it targets.
-      line += " → inner " + getRole(uidEl);
+      // The wrapper's own states and value win; the control fills the gaps. The
+      // last flag says whom the uid targets.
+      const innerRole = getRole(uidEl);
+      flags = mergeFlags(flags, getStateFlags(uidEl, innerRole));
+      if (!collapseWhitespace(value)) {
+        value = getCurrentValue(uidEl, innerRole);
+      }
+      flags.push("via inner " + innerRole);
     } else if (selectorMode) {
       // Selector mode lists exactly what matched, but points at the control a
-      // matched wrapper stands for.
+      // matched wrapper stands for (same name, by the collapse rule).
       const inner = collapseTargetOf(el);
       if (inner) {
-        const innerRole = getRole(inner);
-        line +=
-          "\n  ↳ " +
-          uid +
-          " wraps one interactive " +
-          innerRole +
-          ' "' +
-          formatSlot(getAccessibleName(inner, innerRole), HINT_NAME_MAX) +
-          '" [uid=' +
-          stampUid(inner) +
-          "]";
+        flags.push("wraps " + getRole(inner) + " [uid=" + stampUid(inner) + "]");
       }
     }
-    lines.push(line);
+
+    lines.push(makeRow(rowEl, role, name, value, getSection(rowEl), flags, uid));
   }
 
   // --- 6b. (default via includePointer) second pass: visually-clickable non-semantic

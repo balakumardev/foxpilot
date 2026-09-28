@@ -242,3 +242,18 @@ test.describe("snapshot → click through a real hostile form", () => {
     });
   }
 });
+
+// Selector mode decides membership per tree with that tree's own
+// querySelectorAll. el.matches() would call every element inside a shadow root
+// its own :scope (jsdom does not, so this lives here).
+test.describe("selector mode matches each tree with its own querySelectorAll", () => {
+  test(":scope stays root's own; real selectors still reach into shadow roots", async ({ page }) => {
+    await page.setContent(
+      `<button>Light</button><x-panel></x-panel>` +
+        `<script>document.querySelector("x-panel").attachShadow({ mode: "open" }).innerHTML = "<div><button>Shadow A</button><button>Shadow B</button></div>";</script>`
+    );
+    expect((await snapshot(page, { selector: ":scope" })).total).toBe(1);
+    expect((await snapshot(page, { selector: "button" })).total).toBe(3);
+    expect((await snapshot(page, { selector: "div > button" })).total).toBe(2);
+  });
+});
