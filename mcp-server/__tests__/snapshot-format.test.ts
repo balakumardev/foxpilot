@@ -156,8 +156,12 @@ describe("formatSnapshotResult: empty-tree disambiguation via docState", () => {
     expect(noControls).toContain("nothing interactive matched");
     expect(noControls).not.toContain("NO DOCUMENT CONTENT");
     expect(noControls).not.toContain("NAVIGATING");
-    // Points at the real candidate causes.
-    expect(noControls).toContain("shadow root");
+    // Points at the real candidate causes: iframes are still not walked, but
+    // open and closed shadow roots now are, so they are no longer blamed.
+    expect(noControls).toContain("iframe");
+    expect(noControls).toContain("not walked");
+    expect(noControls).toContain("open and closed shadow roots are");
+    expect(noControls).not.toContain("may live in a shadow root");
   });
 
   it("treats an unreadable readyState as navigating rather than settled", () => {

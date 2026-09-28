@@ -66,7 +66,8 @@ function explainDocState(
     ` — document loaded, nothing interactive matched (readyState="${rs}")`,
     "The page has content but no interactive elements were collected. If you passed " +
       "selector/textContains/rootSelector, it filtered everything out; otherwise the " +
-      "controls may live in a shadow root or an iframe.",
+      "controls may live in an iframe, which is not walked (open and closed shadow " +
+      "roots are), or be drawn on a canvas.",
   ];
 }
 
