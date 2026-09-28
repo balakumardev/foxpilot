@@ -8,6 +8,7 @@ import { formatPointResult } from "./point-format";
 import { formatNetworkHeaders } from "./network-format";
 import { formatSnapshotResult } from "./snapshot-format";
 import { formatEvalResult } from "./eval-format";
+import { formatClickResult } from "./click-format";
 import { allowedNavUrl, NAV_URL_MESSAGE } from "./url-policy";
 import dayjs from "dayjs";
 import relativeTime from "dayjs/plugin/relativeTime";
@@ -486,7 +487,7 @@ mcpServer.tool(
     ...activateTabField,
   },
   async ({ tabId, uid, doubleClick, failIfIntercepted, engine, activateTab }) => {
-    const { navigated, intercepted } = await browserApi.clickElement(
+    const result = await browserApi.clickElement(
       tabId,
       uid,
       doubleClick,
@@ -494,19 +495,8 @@ mcpServer.tool(
       activateTab,
       engine
     );
-    const verb = doubleClick ? "Double-clicked" : "Clicked";
-    let text = navigated
-      ? `${verb} element ${uid} (page navigated)`
-      : `${verb} element ${uid}`;
-    if (intercepted) {
-      // Selector rule mirrors the injected selectorFor(): #id → tag.firstClass → tag.
-      const sel = intercepted.id
-        ? `#${intercepted.id}`
-        : intercepted.classes
-          ? `${intercepted.tag}.${intercepted.classes.split(" ")[0]}`
-          : intercepted.tag;
-      text += `\n⚠ click may be intercepted by ${sel} — consider dismiss-overlays`;
-    }
+    // click-format.ts (extracted so the reply text is unit-testable).
+    const text = formatClickResult(uid, doubleClick, result);
     return { content: [{ type: "text", text }] };
   }
 );

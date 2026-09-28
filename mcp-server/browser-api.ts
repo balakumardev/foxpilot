@@ -617,6 +617,7 @@ export class BrowserAPI {
       role?: string;
       name?: string;
     };
+    dispatchedTo?: { tag: string; name?: string };
   }> {
     const message = await this.sendTool<ActionResultExtensionMessage>({
       cmd: "click-element",
@@ -633,7 +634,11 @@ export class BrowserAPI {
       // the overlay. A stale-uid failure throws its own message as before.
       throw new Error(message.error ?? "Action failed");
     }
-    return { navigated: message.navigated, intercepted: message.intercepted };
+    return {
+      navigated: message.navigated,
+      intercepted: message.intercepted,
+      dispatchedTo: message.dispatchedTo,
+    };
   }
 
   async clickAt(

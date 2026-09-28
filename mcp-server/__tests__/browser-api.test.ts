@@ -151,6 +151,12 @@ describe("BrowserAPI over the broker", () => {
               // whose handler tore down the page (the nav-race path). A normal
               // click omits navigated.
               navigated: (req as { uid?: string }).uid === "nav" ? true : undefined,
+              // Echo dispatchedTo only for the uid that simulates a role wrapper
+              // whose click was retargeted onto its inner button.
+              dispatchedTo:
+                (req as { uid?: string }).uid === "wrap"
+                  ? { tag: "button", name: "Draft macOS Submission (1)" }
+                  : undefined,
             },
           };
         case "find-highlight":
@@ -216,6 +222,12 @@ describe("BrowserAPI over the broker", () => {
   it("clickElement returns a falsy navigated for a non-navigating click", async () => {
     const result = await api.clickElement(3, "e1");
     expect(result.navigated).toBeFalsy();
+  });
+
+  it("clickElement surfaces dispatchedTo when the click was retargeted onto a descendant", async () => {
+    const result = await api.clickElement(3, "wrap");
+    expect(result.dispatchedTo).toEqual({ tag: "button", name: "Draft macOS Submission (1)" });
+    expect((await api.clickElement(3, "e1")).dispatchedTo).toBeUndefined();
   });
 });
 
