@@ -84,3 +84,63 @@ describe("performFileUpload", () => {
     expect(input.files?.length).toBe(1);
   });
 });
+
+/**
+ * upload-file through shadow roots: the uid resolves inside a shadow root, a
+ * drop-zone host's file input may live in its own shadow root, and the
+ * drop-zone ancestor walk climbs out of a shadow root to its host. Identical
+ * block in the Firefox and Chrome suites.
+ */
+describe("performFileUpload pierces shadow roots", () => {
+  beforeEach(() => {
+    document.body.innerHTML = "";
+    (global as unknown as { DataTransfer: unknown }).DataTransfer = MockDataTransfer;
+  });
+
+  function openHost(tag: string, html: string, parent: Element = document.body): ShadowRoot {
+    const host = document.createElement(tag);
+    parent.appendChild(host);
+    const root = host.attachShadow({ mode: "open" });
+    root.innerHTML = html;
+    return root;
+  }
+
+  it("uploads when the uid points at a file input inside a shadow root", () => {
+    const root = openHost("amp-upload", `<input type="file" data-bcmcp-uid="e1">`);
+    const input = root.querySelector("input") as HTMLInputElement;
+    makeFilesSettable(input);
+    const changed = jest.fn();
+    input.addEventListener("change", changed);
+
+    const r = performFileUpload(document, args("e1"));
+
+    expect(r.ok).toBe(true);
+    expect(input.files?.length).toBe(1);
+    expect(changed).toHaveBeenCalledTimes(1);
+  });
+
+  it("finds the file input inside a drop-zone host's own shadow root", () => {
+    const root = openHost("file-drop", `<div class="zone">Drop here<input type="file" hidden></div>`);
+    root.host.setAttribute("data-bcmcp-uid", "e2");
+    const input = root.querySelector("input") as HTMLInputElement;
+    makeFilesSettable(input);
+
+    const r = performFileUpload(document, args("e2"));
+
+    expect(r.ok).toBe(true);
+    expect(input.files?.length).toBe(1);
+  });
+
+  it("climbs from a shadow button to the light-DOM drop zone that holds the input", () => {
+    document.body.innerHTML = `<div class="dropzone"><input type="file" style="display:none"></div>`;
+    const zone = document.querySelector(".dropzone")!;
+    openHost("x-button", `<button data-bcmcp-uid="e3">Choose file</button>`, zone);
+    const input = zone.querySelector("input") as HTMLInputElement;
+    makeFilesSettable(input);
+
+    const r = performFileUpload(document, args("e3"));
+
+    expect(r.ok).toBe(true);
+    expect(input.files?.length).toBe(1);
+  });
+});

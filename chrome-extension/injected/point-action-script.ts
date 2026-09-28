@@ -43,6 +43,71 @@ export function performPointAction(
   try {
     const win = doc.defaultView as (Window & typeof globalThis) | null;
 
+    // --- shadow-DOM helpers. The same bodies are inlined in every injected
+    //     module that walks shadow roots; keep the copies identical. ---
+
+    // Elements allowed to host a shadow root (attachShadow's list) plus autonomous custom elements —
+    // the closed-root APIs are only worth calling for these.
+    const SHADOW_HOST_TAGS: Record<string, true> = { article: true, aside: true, blockquote: true, body: true,
+      div: true, footer: true, h1: true, h2: true, h3: true, h4: true, h5: true, h6: true, header: true,
+      main: true, nav: true, p: true, section: true, span: true };
+
+    // Open root, else a closed root via the extension-only APIs (content-script world only):
+    // Firefox exposes a read-only `openOrClosedShadowRoot` PROPERTY (Fx 63+); Chrome exposes
+    // `chrome.dom.openOrClosedShadowRoot(el)` (Chrome 88+, no permission). Neither exists in the page world.
+    function shadowRootOf(el: Element): ShadowRoot | null {
+      const open = (el as any).shadowRoot as ShadowRoot | null | undefined;
+      if (open) return open;
+      const tag = el.localName;
+      if (tag.indexOf("-") < 0 && !SHADOW_HOST_TAGS[tag]) return null;
+      try { const ff = (el as any).openOrClosedShadowRoot; if (ff) return ff as ShadowRoot; } catch (_) {}
+      try {
+        const dom = (globalThis as any).chrome && (globalThis as any).chrome.dom;
+        if (dom && typeof dom.openOrClosedShadowRoot === "function") return (dom.openOrClosedShadowRoot(el) as ShadowRoot) || null;
+      } catch (_) {}
+      return null;
+    }
+    // document.elementFromPoint retargets to the outermost host; ShadowRoot.elementFromPoint drills one level
+    // only, so loop. Stops when a root has no elementFromPoint or returns the host itself.
+    function deepElementFromPoint(doc: Document, x: number, y: number): Element | null {
+      let hit = doc.elementFromPoint(x, y);
+      for (let depth = 0; hit && depth < 32; depth++) {
+        const sr = shadowRootOf(hit);
+        const efp = sr ? (sr as any).elementFromPoint : null;
+        if (typeof efp !== "function") break;
+        const inner = efp.call(sr, x, y) as Element | null;
+        // Engines disagree off-root: Chrome can return an element OUTSIDE the root (a slotted child or an
+        // unrelated page element), Firefox returns null. Only accept a hit that lives in this root.
+        if (!inner || inner === hit || inner.getRootNode() !== sr) break;
+        hit = inner;
+      }
+      return hit;
+    }
+    // Flat-tree parent: slotted node → its slot, top-level node of a shadow tree → host, else parentNode.
+    // assignedSlot is ALWAYS null when the host's root is closed (even for extensions), so for a child of a
+    // closed host we find the slot from the root side (root.querySelectorAll("slot") + assignedNodes()).
+    function composedParent(n: Node): Node | null {
+      const slot = (n as any).assignedSlot as Element | null | undefined;
+      if (slot) return slot;
+      const p = n.parentNode;
+      if (!p) return null;
+      if (p.nodeType === 11 && (p as any).host) return (p as any).host as Element;
+      if (p.nodeType === 1 && !(p as any).shadowRoot) {
+        const sr = shadowRootOf(p as Element); // non-null here only for a closed root
+        if (sr) {
+          const slots = sr.querySelectorAll("slot");
+          for (let i = 0; i < slots.length; i++) {
+            const assigned = (slots[i] as HTMLSlotElement).assignedNodes();
+            for (let j = 0; j < assigned.length; j++) if (assigned[j] === n) return slots[i];
+          }
+        }
+      }
+      return p;
+    }
+
+    // The element under the point, drilled through shadow roots (open, and
+    // closed via the extension APIs): document.elementFromPoint alone stops at
+    // the outermost host, so the -at tools acted on — and described — the host.
     function elementAt(x: number, y: number): Element | null {
       const efp = (doc as {
         elementFromPoint?: (x: number, y: number) => Element | null;
@@ -50,7 +115,7 @@ export function performPointAction(
       if (typeof efp !== "function") {
         return null;
       }
-      return efp.call(doc, x, y);
+      return deepElementFromPoint(doc, x, y);
     }
 
     function offPoint(x: number, y: number): { ok: boolean; error?: string } {
@@ -548,9 +613,13 @@ export function performPointAction(
           node.scrollWidth > node.clientWidth;
         return canY || canX;
       }
+      // Walk the COMPOSED ancestors: out of a shadow root to its host, and from
+      // slotted content into the shadow container it renders in. parentElement
+      // stops dead at a shadow root's top level.
       let container: Element | null = el;
       while (container && !isScrollable(container)) {
-        container = container.parentElement;
+        const up: Node | null = composedParent(container);
+        container = up && up.nodeType === 1 ? (up as Element) : null;
       }
       const dx = typeof args.dx === "number" ? args.dx : 0;
       const viewportH = win ? win.innerHeight || 0 : 0;
@@ -635,7 +704,41 @@ export function scrollElementIntoView(
       }
       return (h >>> 0).toString(36);
     }
-    const el = doc.querySelector('[data-bcmcp-uid="' + uid + '"]');
+    // --- shadow-DOM helpers (same bodies as in performPointAction above) ---
+    // Elements allowed to host a shadow root (attachShadow's list) plus autonomous custom elements —
+    // the closed-root APIs are only worth calling for these.
+    const SHADOW_HOST_TAGS: Record<string, true> = { article: true, aside: true, blockquote: true, body: true,
+      div: true, footer: true, h1: true, h2: true, h3: true, h4: true, h5: true, h6: true, header: true,
+      main: true, nav: true, p: true, section: true, span: true };
+
+    // Open root, else a closed root via the extension-only APIs (content-script world only):
+    // Firefox exposes a read-only `openOrClosedShadowRoot` PROPERTY (Fx 63+); Chrome exposes
+    // `chrome.dom.openOrClosedShadowRoot(el)` (Chrome 88+, no permission). Neither exists in the page world.
+    function shadowRootOf(el: Element): ShadowRoot | null {
+      const open = (el as any).shadowRoot as ShadowRoot | null | undefined;
+      if (open) return open;
+      const tag = el.localName;
+      if (tag.indexOf("-") < 0 && !SHADOW_HOST_TAGS[tag]) return null;
+      try { const ff = (el as any).openOrClosedShadowRoot; if (ff) return ff as ShadowRoot; } catch (_) {}
+      try {
+        const dom = (globalThis as any).chrome && (globalThis as any).chrome.dom;
+        if (dom && typeof dom.openOrClosedShadowRoot === "function") return (dom.openOrClosedShadowRoot(el) as ShadowRoot) || null;
+      } catch (_) {}
+      return null;
+    }
+    // Tree-of-trees search (document tree + every reachable shadow tree, incl. unassigned light nodes'
+    // roots). Use for uid resolution and for clearing stale uids — NOT for listing (listing is flat-tree).
+    function deepQuery(root: Document | ShadowRoot, sel: string): Element | null {
+      const hit = root.querySelector(sel);
+      if (hit) return hit;
+      const all = root.querySelectorAll("*");
+      for (let i = 0; i < all.length; i++) {
+        const sr = shadowRootOf(all[i]);
+        if (sr) { const h = deepQuery(sr, sel); if (h) return h; }
+      }
+      return null;
+    }
+    const el = deepQuery(doc, '[data-bcmcp-uid="' + uid + '"]');
     if (!el) {
       return {
         ok: false,

@@ -84,7 +84,11 @@ if ((window as any).__bcmcpContentScriptLoaded) {
     });
   }
 
-  // Read element rect for screenshot cropping.
+  // Read element rect for screenshot cropping; also the humanized cursor path's
+  // target and the CDP engine's resolveUidCenter. The uid may be stamped inside
+  // a shadow root (open, or closed via chrome.dom) — the same deep lookup the
+  // injected actions use, and the same body as firefox-extension's
+  // (stringified) readElementRect.
   function readElementRect(
     doc: Document,
     uid: string
@@ -95,7 +99,41 @@ if ((window as any).__bcmcpContentScriptLoaded) {
     height: number;
     dpr: number;
   } | null {
-    const el = doc.querySelector('[data-bcmcp-uid="' + uid + '"]');
+    // Elements allowed to host a shadow root (attachShadow's list) plus autonomous custom elements —
+    // the closed-root APIs are only worth calling for these.
+    const SHADOW_HOST_TAGS: Record<string, true> = { article: true, aside: true, blockquote: true, body: true,
+      div: true, footer: true, h1: true, h2: true, h3: true, h4: true, h5: true, h6: true, header: true,
+      main: true, nav: true, p: true, section: true, span: true };
+
+    // Open root, else a closed root via the extension-only APIs (content-script world only):
+    // Firefox exposes a read-only `openOrClosedShadowRoot` PROPERTY (Fx 63+); Chrome exposes
+    // `chrome.dom.openOrClosedShadowRoot(el)` (Chrome 88+, no permission). Neither exists in the page world.
+    function shadowRootOf(el: Element): ShadowRoot | null {
+      const open = (el as any).shadowRoot as ShadowRoot | null | undefined;
+      if (open) return open;
+      const tag = el.localName;
+      if (tag.indexOf("-") < 0 && !SHADOW_HOST_TAGS[tag]) return null;
+      try { const ff = (el as any).openOrClosedShadowRoot; if (ff) return ff as ShadowRoot; } catch (_) {}
+      try {
+        const dom = (globalThis as any).chrome && (globalThis as any).chrome.dom;
+        if (dom && typeof dom.openOrClosedShadowRoot === "function") return (dom.openOrClosedShadowRoot(el) as ShadowRoot) || null;
+      } catch (_) {}
+      return null;
+    }
+    // Tree-of-trees search (document tree + every reachable shadow tree, incl. unassigned light nodes'
+    // roots). Use for uid resolution and for clearing stale uids — NOT for listing (listing is flat-tree).
+    function deepQuery(root: Document | ShadowRoot, sel: string): Element | null {
+      const hit = root.querySelector(sel);
+      if (hit) return hit;
+      const all = root.querySelectorAll("*");
+      for (let i = 0; i < all.length; i++) {
+        const sr = shadowRootOf(all[i]);
+        if (sr) { const h = deepQuery(sr, sel); if (h) return h; }
+      }
+      return null;
+    }
+
+    const el = deepQuery(doc, '[data-bcmcp-uid="' + uid + '"]');
     if (!el) {
       return null;
     }

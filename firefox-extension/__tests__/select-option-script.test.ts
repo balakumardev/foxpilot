@@ -257,3 +257,164 @@ describe("antd 4 / rc-select shape", () => {
     expect(r.selected).toBe("India");
   });
 });
+
+/**
+ * select-option through shadow roots: the uid, the aria-controls popup lookup
+ * (IDs are scoped per tree) and the option-row search all pierce shadow roots
+ * (open, and closed via BOTH extension API shapes). Identical block in the
+ * Firefox and Chrome suites.
+ */
+describe("select-option pierces shadow roots", () => {
+  const closedRoots = new Map<Element, ShadowRoot>();
+  let restoreClosed: (() => void) | null = null;
+
+  beforeEach(() => {
+    document.body.innerHTML = "";
+  });
+  afterEach(() => {
+    if (restoreClosed) {
+      restoreClosed();
+      restoreClosed = null;
+    }
+    closedRoots.clear();
+    document.body.innerHTML = "";
+  });
+
+  function openHost(tag: string, html: string): ShadowRoot {
+    const host = document.createElement(tag);
+    document.body.appendChild(host);
+    const root = host.attachShadow({ mode: "open" });
+    root.innerHTML = html;
+    return root;
+  }
+  function closedHost(tag: string, html: string): ShadowRoot {
+    const host = document.createElement(tag);
+    document.body.appendChild(host);
+    const root = host.attachShadow({ mode: "closed" });
+    root.innerHTML = html;
+    closedRoots.set(host, root);
+    return root;
+  }
+  function exposeClosedViaProperty(): void {
+    Object.defineProperty(Element.prototype, "openOrClosedShadowRoot", {
+      configurable: true,
+      get(this: Element) {
+        return closedRoots.get(this) || this.shadowRoot || null;
+      },
+    });
+    restoreClosed = () => {
+      delete (Element.prototype as any).openOrClosedShadowRoot;
+    };
+  }
+  function exposeClosedViaChromeDom(): void {
+    const g = globalThis as any;
+    const hadChrome = typeof g.chrome !== "undefined";
+    if (!hadChrome) {
+      g.chrome = {};
+    }
+    g.chrome.dom = {
+      openOrClosedShadowRoot: (el: Element) => closedRoots.get(el) || el.shadowRoot || null,
+    };
+    restoreClosed = () => {
+      delete g.chrome.dom;
+      if (!hadChrome) {
+        delete g.chrome;
+      }
+    };
+  }
+  const PLATFORM_SELECT = `<select data-bcmcp-uid="e1"><option value="ios">iOS</option><option value="macos">macOS</option><option value="tvos">tvOS</option></select>`;
+
+  it("picks an option in a native <select> inside an open shadow root", async () => {
+    const root = openHost("amp-search", PLATFORM_SELECT);
+    const sel = root.querySelector("select") as HTMLSelectElement;
+    let changed = 0;
+    sel.addEventListener("change", () => changed++);
+
+    const r = await selectOption(document, { uid: "e1", option: "tvOS" });
+
+    expect(r.ok).toBe(true);
+    expect(sel.value).toBe("tvos");
+    expect(r.selected).toBe("tvOS");
+    expect(changed).toBe(1);
+  });
+
+  it("picks an option in a native <select> inside a CLOSED root via the Firefox property", async () => {
+    const root = closedHost("amp-search", PLATFORM_SELECT);
+    exposeClosedViaProperty();
+    const r = await selectOption(document, { uid: "e1", option: "macOS" });
+    expect(r.ok).toBe(true);
+    expect((root.querySelector("select") as HTMLSelectElement).value).toBe("macos");
+  });
+
+  it("picks an option in a native <select> inside a CLOSED root via chrome.dom", async () => {
+    const root = closedHost("amp-search", PLATFORM_SELECT);
+    exposeClosedViaChromeDom();
+    const r = await selectOption(document, { uid: "e1", option: "macOS" });
+    expect(r.ok).toBe(true);
+    expect((root.querySelector("select") as HTMLSelectElement).value).toBe("macos");
+  });
+
+  it("drives a custom combobox whose aria-controls popup and options live in the same shadow root", async () => {
+    const root = openHost(
+      "amp-picker",
+      `<div role="combobox" data-bcmcp-uid="e1" aria-controls="lb"><span class="select__singleValue"></span></div>
+       <div id="lb" role="listbox">
+         <input type="text" class="filter" />
+         <div role="option">United States</div>
+         <div role="option">India</div>
+       </div>`
+    );
+    const filter = root.querySelector(".filter") as HTMLInputElement;
+    const india = Array.from(root.querySelectorAll('[role="option"]')).find(
+      (o) => o.textContent === "India"
+    )!;
+    let clicked = 0;
+    india.addEventListener("click", () => {
+      clicked++;
+      (root.querySelector(".select__singleValue") as HTMLElement).textContent = "India";
+    });
+
+    const r = await selectOption(document, { uid: "e1", option: "India" });
+
+    expect(r.ok).toBe(true);
+    expect(clicked).toBe(1);
+    expect(r.selected).toBe("India");
+    expect(filter.value).toBe("India"); // the root-aware aria-controls lookup found the filter
+  });
+
+  it("still resolves an aria-controls popup portaled to the document from a shadow-root control", async () => {
+    const root = openHost(
+      "amp-picker",
+      `<div role="combobox" data-bcmcp-uid="e1" aria-controls="portal"><span class="select__singleValue"></span></div>`
+    );
+    const portal = document.createElement("div");
+    portal.id = "portal";
+    portal.setAttribute("role", "listbox");
+    portal.innerHTML = `<input type="text" class="filter" /><div role="option">Japan</div>`;
+    document.body.appendChild(portal);
+    portal.querySelector('[role="option"]')!.addEventListener("click", () => {
+      (root.querySelector(".select__singleValue") as HTMLElement).textContent = "Japan";
+    });
+
+    const r = await selectOption(document, { uid: "e1", option: "Japan" });
+
+    expect(r.ok).toBe(true);
+    expect(r.selected).toBe("Japan");
+    expect((portal.querySelector(".filter") as HTMLInputElement).value).toBe("Japan");
+  });
+
+  it("B10: a recycled <select> inside a shadow root is rejected as stale", async () => {
+    document.body.innerHTML = `<select aria-label="Platform"><option value="ios">iOS</option><option value="tvos">tvOS</option></select>`;
+    const sel = document.querySelector("select") as HTMLSelectElement;
+    buildSnapshot(document, { verbose: false, maxLength: 25000 });
+    const uid = sel.getAttribute("data-bcmcp-uid")!;
+    const root = openHost("amp-search", "");
+    root.appendChild(sel);
+
+    expect((await selectOption(document, { uid, option: "tvOS" })).ok).toBe(true);
+    sel.setAttribute("aria-label", "Region");
+    const stale = await selectOption(document, { uid, option: "iOS" });
+    expect(stale.ok).toBe(false);
+    expect(stale.error).toMatch(/fresh snapshot/);
+  });
+});

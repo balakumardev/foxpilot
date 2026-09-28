@@ -415,3 +415,254 @@ describe("synthetic covert parity (point tools)", () => {
     });
   });
 });
+
+/**
+ * Shadow DOM for the coordinate tools + scroll-into-view. document.elementFromPoint
+ * stops at the outermost host, so click-at/type-at/hover-at/scroll-at/describe-at
+ * (incl. Chrome's CDP describe-before-dispatch) used to act on — and describe —
+ * the host. jsdom has no elementFromPoint on the Document or on a ShadowRoot:
+ * both are stubbed by assignment. Closed roots via BOTH extension API shapes.
+ * Identical block in the Firefox and Chrome suites.
+ */
+describe("point tools pierce shadow roots", () => {
+  const closedRoots = new Map<Element, ShadowRoot>();
+  let restoreClosed: (() => void) | null = null;
+
+  beforeEach(() => {
+    document.body.innerHTML = "";
+  });
+  afterEach(() => {
+    jest.restoreAllMocks();
+    (document as any).elementFromPoint = undefined;
+    if (restoreClosed) {
+      restoreClosed();
+      restoreClosed = null;
+    }
+    closedRoots.clear();
+    document.body.innerHTML = "";
+  });
+
+  function openHost(tag: string, html: string, parent: Element = document.body): ShadowRoot {
+    const host = document.createElement(tag);
+    parent.appendChild(host);
+    const root = host.attachShadow({ mode: "open" });
+    root.innerHTML = html;
+    return root;
+  }
+  function closedHost(tag: string, html: string, parent: Element = document.body): ShadowRoot {
+    const host = document.createElement(tag);
+    parent.appendChild(host);
+    const root = host.attachShadow({ mode: "closed" });
+    root.innerHTML = html;
+    closedRoots.set(host, root);
+    return root;
+  }
+  function exposeClosedViaProperty(): void {
+    Object.defineProperty(Element.prototype, "openOrClosedShadowRoot", {
+      configurable: true,
+      get(this: Element) {
+        return closedRoots.get(this) || this.shadowRoot || null;
+      },
+    });
+    restoreClosed = () => {
+      delete (Element.prototype as any).openOrClosedShadowRoot;
+    };
+  }
+  function exposeClosedViaChromeDom(): void {
+    const g = globalThis as any;
+    const hadChrome = typeof g.chrome !== "undefined";
+    if (!hadChrome) {
+      g.chrome = {};
+    }
+    g.chrome.dom = {
+      openOrClosedShadowRoot: (el: Element) => closedRoots.get(el) || el.shadowRoot || null,
+    };
+    restoreClosed = () => {
+      delete g.chrome.dom;
+      if (!hadChrome) {
+        delete g.chrome;
+      }
+    };
+  }
+  function stubDocHit(el: Element | null): void {
+    (document as any).elementFromPoint = jest.fn(() => el);
+  }
+  function stubRootHit(root: ShadowRoot, el: Element | null): void {
+    (root as any).elementFromPoint = jest.fn(() => el);
+  }
+
+  it("click-at clicks (and describes) the button inside an open root, not its host", () => {
+    const root = openHost("amp-nav", `<button id="ua">Users and Access</button>`);
+    const btn = root.getElementById("ua")!;
+    const onClick = jest.fn();
+    btn.addEventListener("click", onClick);
+    stubDocHit(root.host);
+    stubRootHit(root, btn);
+
+    const res = performPointAction(document, { action: "click-at", x: 10, y: 20 });
+
+    expect(res.ok).toBe(true);
+    expect(onClick).toHaveBeenCalledTimes(1);
+    expect(res.element).toMatchObject({ tag: "button", id: "ua", name: "Users and Access" });
+    expect((root as any).elementFromPoint).toHaveBeenCalledWith(10, 20);
+  });
+
+  it("drills through NESTED roots", () => {
+    const outer = openHost("amp-nav", `<div class="acct"></div>`);
+    const inner = openHost("amp-account-menu", `<button>Sign Out</button>`, outer.querySelector(".acct")!);
+    const btn = inner.querySelector("button")!;
+    const onClick = jest.fn();
+    btn.addEventListener("click", onClick);
+    stubDocHit(outer.host);
+    stubRootHit(outer, inner.host);
+    stubRootHit(inner, btn);
+
+    const res = performPointAction(document, { action: "click-at", x: 1, y: 1 });
+
+    expect(onClick).toHaveBeenCalledTimes(1);
+    expect(res.element).toMatchObject({ tag: "button", name: "Sign Out" });
+  });
+
+  it("stops at the host when ShadowRoot.elementFromPoint answers with a node outside that root", () => {
+    document.body.innerHTML = `<p id="elsewhere">Elsewhere</p>`;
+    const root = openHost("x-card", `<span>chrome</span>`);
+    root.host.id = "card";
+    stubDocHit(root.host);
+    stubRootHit(root, document.getElementById("elsewhere"));
+
+    const res = performPointAction(document, { action: "describe-at", x: 1, y: 1 });
+
+    expect(res.element).toMatchObject({ tag: "x-card", id: "card" });
+  });
+
+  it("pierces a CLOSED root via the Firefox openOrClosedShadowRoot property", () => {
+    const root = closedHost("amp-secret", `<button>Closed Button</button>`);
+    exposeClosedViaProperty();
+    const onClick = jest.fn();
+    root.querySelector("button")!.addEventListener("click", onClick);
+    stubDocHit(root.host);
+    stubRootHit(root, root.querySelector("button"));
+
+    const res = performPointAction(document, { action: "click-at", x: 1, y: 1 });
+
+    expect(onClick).toHaveBeenCalledTimes(1);
+    expect(res.element!.tag).toBe("button");
+  });
+
+  it("pierces a CLOSED root via chrome.dom.openOrClosedShadowRoot", () => {
+    const root = closedHost("amp-secret", `<button>Closed Button</button>`);
+    exposeClosedViaChromeDom();
+    const onClick = jest.fn();
+    root.querySelector("button")!.addEventListener("click", onClick);
+    stubDocHit(root.host);
+    stubRootHit(root, root.querySelector("button"));
+
+    const res = performPointAction(document, { action: "click-at", x: 1, y: 1 });
+
+    expect(onClick).toHaveBeenCalledTimes(1);
+    expect(res.element!.tag).toBe("button");
+  });
+
+  it("type-at types into an input inside a shadow root (was 'not typable' on the host)", () => {
+    const root = openHost("amp-search", `<input id="q" type="search" />`);
+    const q = root.getElementById("q") as HTMLInputElement;
+    stubDocHit(root.host);
+    stubRootHit(root, q);
+
+    const res = performPointAction(document, { action: "type-at", x: 3, y: 4, text: "ios" });
+
+    expect(res.ok).toBe(true);
+    expect(q.value).toBe("ios");
+    expect(res.element!.editable).toBe(true);
+  });
+
+  it("hover-at dispatches on the inner element", () => {
+    const root = openHost("amp-nav", `<a id="apps" href="#apps">Apps</a>`);
+    const a = root.getElementById("apps")!;
+    const onOver = jest.fn();
+    a.addEventListener("mouseover", onOver);
+    stubDocHit(root.host);
+    stubRootHit(root, a);
+
+    const res = performPointAction(document, { action: "hover-at", x: 1, y: 1 });
+
+    expect(onOver).toHaveBeenCalledTimes(1);
+    expect(res.element!.tag).toBe("a");
+  });
+
+  it("describe-at (the CDP describe-before-dispatch) describes the inner element", () => {
+    const root = openHost("amp-nav", `<button id="ua">Users and Access</button>`);
+    stubDocHit(root.host);
+    stubRootHit(root, root.getElementById("ua"));
+
+    const res = performPointAction(document, { action: "describe-at", x: 5, y: 6 });
+
+    expect(res.ok).toBe(true);
+    expect(res.element).toMatchObject({ tag: "button", id: "ua" });
+  });
+
+  it("scroll-at climbs out of the shadow root to a scrollable light ancestor", () => {
+    document.body.innerHTML = `<div id="panel" style="overflow-y: scroll"></div>`;
+    const panel = document.getElementById("panel")!;
+    const root = openHost("amp-list", `<div><span id="leaf">row</span></div>`, panel);
+    Object.defineProperty(panel, "scrollHeight", { value: 500, configurable: true });
+    Object.defineProperty(panel, "clientHeight", { value: 200, configurable: true });
+    (panel as any).scrollBy = jest.fn();
+    (window as any).scrollBy = jest.fn();
+    stubDocHit(root.host);
+    stubRootHit(root, root.getElementById("leaf"));
+
+    const res = performPointAction(document, { action: "scroll-at", x: 5, y: 5, dy: 120 });
+
+    expect((panel as any).scrollBy).toHaveBeenCalledWith(0, 120);
+    expect((window as any).scrollBy).not.toHaveBeenCalled();
+    expect(res.element!.id).toBe("panel");
+  });
+
+  it("scroll-at from slotted light content scrolls the shadow container it is rendered in", () => {
+    const root = openHost(
+      "amp-search",
+      `<div id="scroller" style="overflow-y: auto"><slot></slot></div>`
+    );
+    const leaf = document.createElement("button");
+    leaf.textContent = "Last item";
+    root.host.appendChild(leaf);
+    const scroller = root.getElementById("scroller")!;
+    Object.defineProperty(scroller, "scrollHeight", { value: 900, configurable: true });
+    Object.defineProperty(scroller, "clientHeight", { value: 300, configurable: true });
+    (scroller as any).scrollBy = jest.fn();
+    (window as any).scrollBy = jest.fn();
+    stubDocHit(leaf); // slotted content is in the document tree
+
+    const res = performPointAction(document, { action: "scroll-at", x: 1, y: 1, dy: 50 });
+
+    expect((scroller as any).scrollBy).toHaveBeenCalledWith(0, 50);
+    expect((window as any).scrollBy).not.toHaveBeenCalled();
+    expect(res.element!.id).toBe("scroller");
+  });
+
+  it("scrollElementIntoView resolves a uid inside a shadow root", () => {
+    const root = openHost("amp-search", `<button data-bcmcp-uid="e7">Far below</button>`);
+    const btn = root.querySelector("button")!;
+    (btn as any).scrollIntoView = jest.fn();
+
+    const res = scrollElementIntoView(document, "e7");
+
+    expect(res.ok).toBe(true);
+    expect((btn as any).scrollIntoView).toHaveBeenCalledWith({ block: "center", inline: "center" });
+  });
+
+  it("scrollElementIntoView resolves a uid inside a CLOSED root (both API shapes)", () => {
+    const root = closedHost("amp-secret", `<button data-bcmcp-uid="e8">Closed</button>`);
+    const btn = root.querySelector("button")!;
+    (btn as any).scrollIntoView = jest.fn();
+
+    expect(scrollElementIntoView(document, "e8").ok).toBe(false); // page world: unreachable
+    exposeClosedViaProperty();
+    expect(scrollElementIntoView(document, "e8").ok).toBe(true);
+    restoreClosed!();
+    exposeClosedViaChromeDom();
+    expect(scrollElementIntoView(document, "e8").ok).toBe(true);
+    expect((btn as any).scrollIntoView).toHaveBeenCalledTimes(2);
+  });
+});
