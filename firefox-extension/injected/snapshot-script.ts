@@ -4,8 +4,8 @@
  * CRITICAL: `buildSnapshot` is used in TWO ways:
  *   (a) Imported and unit-tested directly in jsdom.
  *   (b) Stringified via `buildSnapshot.toString()` and injected into the page
- *       with `browser.tabs.executeScript`, where it runs in the page's own
- *       JS world with no access to this module.
+ *       with `browser.tabs.executeScript`, where it runs in the extension's
+ *       content-script world with no access to this module.
  *
  * Because of (b) the function MUST be fully self-contained: it may NOT
  * reference any imports, module-scope variables, or sibling functions. Every
@@ -16,6 +16,10 @@
  * `getComputedStyle`) because jsdom has no layout engine — relying on those
  * would filter out every element. Visibility is judged purely from explicit
  * markup signals.
+ *
+ * Shadow DOM: every pass enumerates the FLAT tree (what actually renders), so
+ * controls inside open shadow roots — and closed ones, through the
+ * content-script-only APIs — are listed once each, in reading order.
  */
 export function buildSnapshot(
   doc: Document,
@@ -53,6 +57,7 @@ export function buildSnapshot(
   const UID_ATTR = "data-bcmcp-uid";
   const SIG_ATTR = "data-bcmcp-sig";
   const NAME_MAX = 120;
+  const HINT_NAME_MAX = 60;
 
   // --- inner helpers (must stay inside this function body) ---
 
@@ -75,6 +80,244 @@ export function buildSnapshot(
       h = ((h << 5) - h + t.charCodeAt(i)) | 0;
     }
     return (h >>> 0).toString(36);
+  }
+
+  // --- shadow DOM (flat-tree) helpers ---
+  // The same bodies are inlined in every injected module that needs them;
+  // keep them identical so they can be diffed across modules.
+
+  // Elements allowed to host a shadow root (attachShadow's list) plus autonomous custom elements —
+  // the closed-root APIs are only worth calling for these.
+  const SHADOW_HOST_TAGS: Record<string, true> = { article: true, aside: true, blockquote: true, body: true,
+    div: true, footer: true, h1: true, h2: true, h3: true, h4: true, h5: true, h6: true, header: true,
+    main: true, nav: true, p: true, section: true, span: true };
+
+  // Each closed-root probe is an extension-API call (microseconds apiece, several per element per
+  // snapshot without this); scoped to this call, so a cached answer is never stale across snapshots.
+  const closedRootCache = new Map<Element, ShadowRoot | null>();
+
+  // Open root, else a closed root via the extension-only APIs (content-script world only):
+  // Firefox exposes a read-only `openOrClosedShadowRoot` PROPERTY (Fx 63+); Chrome exposes
+  // `chrome.dom.openOrClosedShadowRoot(el)` (Chrome 88+, no permission). Neither exists in the page world.
+  function shadowRootOf(el: Element): ShadowRoot | null {
+    const open = (el as any).shadowRoot as ShadowRoot | null | undefined;
+    if (open) return open;
+    const tag = el.localName;
+    if (tag.indexOf("-") < 0 && !SHADOW_HOST_TAGS[tag]) return null;
+    if (closedRootCache.has(el)) return closedRootCache.get(el) as ShadowRoot | null;
+    let found: ShadowRoot | null = null;
+    try { const ff = (el as any).openOrClosedShadowRoot; if (ff) found = ff as ShadowRoot; } catch (_) {}
+    if (!found) {
+      try {
+        const dom = (globalThis as any).chrome && (globalThis as any).chrome.dom;
+        if (dom && typeof dom.openOrClosedShadowRoot === "function") found = (dom.openOrClosedShadowRoot(el) as ShadowRoot) || null;
+      } catch (_) {}
+    }
+    closedRootCache.set(el, found);
+    return found;
+  }
+  function isInShadowTree(n: Node): boolean {
+    const r = n.getRootNode ? n.getRootNode() : null;
+    return !!r && r.nodeType === 11 && !!(r as any).host;
+  }
+  // FLAT-TREE children: a host renders its shadow root's children (its light children only via slots);
+  // a <slot> inside a shadow tree renders assignedElements({flatten:true}) (fallback content when nothing
+  // is assigned). This is what guarantees nothing is listed twice and unassigned light children are skipped.
+  function composedChildren(node: Document | ShadowRoot | Element): Element[] {
+    if (node.nodeType === 1) {
+      const el = node as Element;
+      const sr = shadowRootOf(el);
+      if (sr) return Array.from(sr.children);
+      if (el.localName === "slot" && isInShadowTree(el)) return Array.from((el as HTMLSlotElement).assignedElements({ flatten: true }));
+    }
+    return Array.from(node.children);
+  }
+  // All elements under `root` (exclusive) in flat-tree pre-order. For a tree with no shadow roots this is
+  // exactly document order, i.e. the same order root.querySelectorAll("*") gives. Iterative (no recursion).
+  function collectComposed(root: Document | ShadowRoot | Element): Element[] {
+    const out: Element[] = [];
+    const stack = composedChildren(root).reverse();
+    while (stack.length) {
+      const el = stack.pop() as Element;
+      out.push(el);
+      const kids = composedChildren(el);
+      for (let i = kids.length - 1; i >= 0; i--) stack.push(kids[i]);
+    }
+    return out;
+  }
+  // Tree-of-trees search (document tree + every reachable shadow tree, incl. unassigned light nodes'
+  // roots). Use for uid resolution and for clearing stale uids — NOT for listing (listing is flat-tree).
+  function deepQuery(root: Document | ShadowRoot, sel: string): Element | null {
+    const hit = root.querySelector(sel);
+    if (hit) return hit;
+    const all = root.querySelectorAll("*");
+    for (let i = 0; i < all.length; i++) {
+      const sr = shadowRootOf(all[i]);
+      if (sr) { const h = deepQuery(sr, sel); if (h) return h; }
+    }
+    return null;
+  }
+  function deepQueryAll(root: Document | ShadowRoot, sel: string, out: Element[] = []): Element[] {
+    const hits = root.querySelectorAll(sel);
+    for (let i = 0; i < hits.length; i++) out.push(hits[i]);
+    const all = root.querySelectorAll("*");
+    for (let i = 0; i < all.length; i++) { const sr = shadowRootOf(all[i]); if (sr) deepQueryAll(sr, sel, out); }
+    return out;
+  }
+  // Flat-tree parent: slotted node → its slot, top-level node of a shadow tree → host, else parentNode.
+  // assignedSlot is ALWAYS null when the host's root is closed (even for extensions), so for a child of a
+  // closed host we find the slot from the root side (root.querySelectorAll("slot") + assignedNodes()).
+  function composedParent(n: Node): Node | null {
+    const slot = (n as any).assignedSlot as Element | null | undefined;
+    if (slot) return slot;
+    const p = n.parentNode;
+    if (!p) return null;
+    if (p.nodeType === 11 && (p as any).host) return (p as any).host as Element;
+    if (p.nodeType === 1 && !(p as any).shadowRoot) {
+      const sr = shadowRootOf(p as Element); // non-null here only for a closed root
+      if (sr) {
+        const slots = sr.querySelectorAll("slot");
+        for (let i = 0; i < slots.length; i++) {
+          const assigned = (slots[i] as HTMLSlotElement).assignedNodes();
+          for (let j = 0; j < assigned.length; j++) if (assigned[j] === n) return slots[i];
+        }
+      }
+    }
+    return p;
+  }
+
+  // composedParent, memoized: the hidden-ancestor walk and the descendant
+  // marking passes below all climb the same chains.
+  const parentMemo = new Map<Node, Node | null>();
+  function flatParent(n: Node): Node | null {
+    const known = parentMemo.get(n);
+    if (known !== undefined) {
+      return known;
+    }
+    const p = composedParent(n);
+    parentMemo.set(n, p);
+    return p;
+  }
+
+  // Flat-tree child NODES (text included) — the text-bearing counterpart of
+  // composedChildren, with the same host / slot rules.
+  function composedChildNodes(el: Element): ArrayLike<Node> {
+    const sr = shadowRootOf(el);
+    if (sr) {
+      return sr.childNodes;
+    }
+    if (el.localName === "slot" && isInShadowTree(el)) {
+      return (el as HTMLSlotElement).assignedNodes({ flatten: true });
+    }
+    return el.childNodes;
+  }
+
+  function isLabelControlTag(tag: string): boolean {
+    return (
+      tag === "input" || tag === "select" || tag === "textarea" || tag === "button"
+    );
+  }
+
+  // <style>/<script> render no text. textContent counts them anyway, and so
+  // does the light-DOM path here (unchanged output); but nearly every shadow
+  // root carries a <style>, and its CSS must not leak into names or matches.
+  function isUnrenderedShadowText(el: Element): boolean {
+    const tag = el.localName;
+    return (tag === "style" || tag === "script") && isInShadowTree(el);
+  }
+
+  // Text query mode reads the composed text of EVERY element, so it is indexed
+  // in one flat-tree walk instead of walking each subtree again: textRaw is all
+  // text under the snapshot root in flat-tree order and textIndex maps each
+  // element to [start, end) in it, plus the same span in textLower (lowercasing
+  // can change the length, so the lowercased copy keeps its own offsets).
+  let textIndex: Map<Element, number[]> | null = null;
+  let textRaw = "";
+  let textLower = "";
+  function indexComposedText(from: Document | Element): void {
+    const index = new Map<Element, number[]>();
+    const raw: string[] = [];
+    const low: string[] = [];
+    let rawPos = 0;
+    let lowPos = 0;
+    // Entries: a node to visit, or the span of an element whose subtree has
+    // just been emitted (closed at the current positions).
+    const stack: Array<Node | number[]> = [];
+    const top: ArrayLike<Node> =
+      from.nodeType === 1 ? composedChildNodes(from as Element) : from.childNodes;
+    for (let i = top.length - 1; i >= 0; i--) {
+      stack.push(top[i]);
+    }
+    while (stack.length) {
+      const item = stack.pop() as Node | number[];
+      if (Array.isArray(item)) {
+        item[1] = rawPos;
+        item[3] = lowPos;
+        continue;
+      }
+      const n = item as Node;
+      if (n.nodeType === 3 || n.nodeType === 4) {
+        const s = (n as CharacterData).data;
+        const l = s.toLowerCase();
+        raw.push(s);
+        low.push(l);
+        rawPos += s.length;
+        lowPos += l.length;
+      } else if (n.nodeType === 1) {
+        const span = [rawPos, rawPos, lowPos, lowPos];
+        index.set(n as Element, span);
+        if (isUnrenderedShadowText(n as Element)) {
+          continue; // an empty span, as textOf reports
+        }
+        stack.push(span);
+        const kids = composedChildNodes(n as Element);
+        for (let i = kids.length - 1; i >= 0; i--) {
+          stack.push(kids[i]);
+        }
+      }
+    }
+    textRaw = raw.join("");
+    textLower = low.join("");
+    textIndex = index;
+  }
+
+  // The element's text content read through the FLAT tree: a host contributes
+  // its shadow tree's text (and its light children only where slotted), a slot
+  // its assigned nodes (else its fallback). With no shadow roots involved this
+  // is exactly el.textContent. skipControls leaves out the text of embedded
+  // form controls (a <label>'s own name).
+  function textOf(el: Element, skipControls?: boolean): string {
+    if (!skipControls && textIndex) {
+      const span = textIndex.get(el);
+      if (span) {
+        return textRaw.slice(span[0], span[1]);
+      }
+    }
+    if (isUnrenderedShadowText(el)) {
+      return "";
+    }
+    const parts: string[] = [];
+    const stack: Node[] = [];
+    let kids = composedChildNodes(el);
+    for (let i = kids.length - 1; i >= 0; i--) {
+      stack.push(kids[i]);
+    }
+    while (stack.length) {
+      const n = stack.pop() as Node;
+      if (n.nodeType === 3 || n.nodeType === 4) {
+        parts.push((n as CharacterData).data);
+      } else if (
+        n.nodeType === 1 &&
+        !isUnrenderedShadowText(n as Element) &&
+        !(skipControls && isLabelControlTag((n as Element).localName))
+      ) {
+        kids = composedChildNodes(n as Element);
+        for (let i = kids.length - 1; i >= 0; i--) {
+          stack.push(kids[i]);
+        }
+      }
+    }
+    return parts.join("");
   }
 
   // Is a real layout engine active? In jsdom every getBoundingClientRect() is
@@ -110,7 +353,54 @@ export function buildSnapshot(
     return (el.getAttribute("style") || "").toLowerCase();
   }
 
+  // Per-snapshot memo: the DOM does not change while the snapshot runs, and the
+  // collapse checks re-ask about elements the main passes also visit.
+  const hiddenMemo = new Map<Element, boolean>();
   function isHidden(el: Element): boolean {
+    const known = hiddenMemo.get(el);
+    if (known !== undefined) {
+      return known;
+    }
+    const hidden = computeHidden(el);
+    hiddenMemo.set(el, hidden);
+    return hidden;
+  }
+
+  // Whether a flat-tree ANCESTOR of el has computed display:none. The walk
+  // crosses shadow boundaries (slotted node → slot, shadow tree → host), since a
+  // host under display:none renders none of its shadow tree. Memoized per
+  // ancestor, inclusive: every node on a walked chain shares the result.
+  const displayNoneMemo = new Map<Node, boolean>();
+  function displayNoneAbove(el: Element, dv: Window): boolean {
+    const chain: Node[] = [];
+    let result = false;
+    let n: Node | null = flatParent(el);
+    while (n && n.nodeType === 1) {
+      const known = displayNoneMemo.get(n);
+      if (known !== undefined) {
+        result = known;
+        break;
+      }
+      chain.push(n);
+      let pcs: CSSStyleDeclaration | null = null;
+      try {
+        pcs = dv.getComputedStyle(n as Element);
+      } catch (e) {
+        pcs = null;
+      }
+      if (pcs && pcs.display === "none") {
+        result = true;
+        break;
+      }
+      n = flatParent(n);
+    }
+    for (let i = 0; i < chain.length; i++) {
+      displayNoneMemo.set(chain[i], result);
+    }
+    return result;
+  }
+
+  function computeHidden(el: Element): boolean {
     if (el.hasAttribute("hidden")) {
       return true;
     }
@@ -168,18 +458,8 @@ export function buildSnapshot(
       }
       // A display:none ancestor hides the element even when its own computed
       // display is not none.
-      let p: Element | null = el.parentElement;
-      while (p) {
-        let pcs: CSSStyleDeclaration | null = null;
-        try {
-          pcs = dv.getComputedStyle(p);
-        } catch (e) {
-          pcs = null;
-        }
-        if (pcs && pcs.display === "none") {
-          return true;
-        }
-        p = p.parentElement;
+      if (displayNoneAbove(el, dv)) {
+        return true;
       }
     }
     return false;
@@ -235,6 +515,16 @@ export function buildSnapshot(
     return "clickable";
   }
 
+  // IDs are scoped per tree: an element inside a shadow root resolves
+  // aria-labelledby / label[for] against that root, never the document.
+  function treeOf(el: Element): Document | ShadowRoot {
+    const r = el.getRootNode ? el.getRootNode() : null;
+    if (r && (r.nodeType === 9 || r.nodeType === 11)) {
+      return r as Document | ShadowRoot;
+    }
+    return el.ownerDocument || doc;
+  }
+
   function labelFromFor(el: Element): string {
     const id = el.getAttribute("id");
     if (!id) {
@@ -254,12 +544,15 @@ export function buildSnapshot(
     }
     let labelEl: Element | null = null;
     try {
-      labelEl = doc.querySelector('label[for="' + selectorId + '"]');
+      labelEl = treeOf(el).querySelector('label[for="' + selectorId + '"]');
     } catch (e) {
       labelEl = null;
     }
-    if (labelEl && labelEl.textContent) {
-      return labelEl.textContent;
+    if (labelEl) {
+      const text = textOf(labelEl);
+      if (text) {
+        return text;
+      }
     }
     return "";
   }
@@ -269,16 +562,8 @@ export function buildSnapshot(
     while (node) {
       if (node.tagName.toLowerCase() === "label") {
         // The label's accessible name is its OWN text, excluding any embedded
-        // form controls (the wrapped input/select/etc. and its value). Clone the
-        // label, strip descendant controls, then read the remaining text.
-        const clone = node.cloneNode(true) as Element;
-        const controls = clone.querySelectorAll(
-          "input, select, textarea, button"
-        );
-        for (let i = 0; i < controls.length; i++) {
-          controls[i].remove();
-        }
-        return clone.textContent || "";
+        // form controls (the wrapped input/select/etc. and its value).
+        return textOf(node, true);
       }
       node = node.parentElement;
     }
@@ -299,12 +584,15 @@ export function buildSnapshot(
       }
       let target: Element | null = null;
       try {
-        target = doc.getElementById(id);
+        target = treeOf(el).getElementById(id);
       } catch (e) {
         target = null;
       }
-      if (target && target.textContent) {
-        parts.push(target.textContent);
+      if (target) {
+        const text = textOf(target);
+        if (text) {
+          parts.push(text);
+        }
       }
     }
     return parts.join(" ");
@@ -399,7 +687,7 @@ export function buildSnapshot(
       isNameFromContentsRole(role) ||
       ((role === "combobox" || role === "textbox") && hasExplicitRole)
     ) {
-      const text = el.textContent || "";
+      const text = textOf(el);
       if (collapseWhitespace(text)) {
         return clip(text);
       }
@@ -595,13 +883,13 @@ export function buildSnapshot(
     return el.getAttribute("role") === "heading";
   }
 
-  function getSection(el: Element): string {
+  function getSectionInTree(el: Element): string {
     // 1. fieldset > legend
     const fs = el.closest("fieldset");
     if (fs) {
       const legend = fs.querySelector("legend");
-      if (legend && collapseWhitespace(legend.textContent || "")) {
-        return legend.textContent || "";
+      if (legend && collapseWhitespace(textOf(legend))) {
+        return textOf(legend);
       }
     }
     // 2. nearest titled container: section / role=group / *card* / labelledby.
@@ -616,8 +904,8 @@ export function buildSnapshot(
       const heading = container.querySelector(
         'h1,h2,h3,h4,h5,h6,[role="heading"]'
       );
-      if (heading && collapseWhitespace(heading.textContent || "")) {
-        return heading.textContent || "";
+      if (heading && collapseWhitespace(textOf(heading))) {
+        return textOf(heading);
       }
     }
     // 3. ancestor + previousElementSibling walk for the nearest heading.
@@ -625,8 +913,8 @@ export function buildSnapshot(
     while (node) {
       let sib: Element | null = node.previousElementSibling;
       while (sib) {
-        if (isHeading(sib) && collapseWhitespace(sib.textContent || "")) {
-          return sib.textContent || "";
+        if (isHeading(sib) && collapseWhitespace(textOf(sib))) {
+          return textOf(sib);
         }
         sib = sib.previousElementSibling;
       }
@@ -635,8 +923,140 @@ export function buildSnapshot(
     return "";
   }
 
-  // --- 1. clear stale uids (and their signatures) from prior runs ---
-  const stale = doc.querySelectorAll("[" + UID_ATTR + "]");
+  function getSection(el: Element): string {
+    // A control with no titled context inside its own shadow tree takes its
+    // host's breadcrumb (repeated outward through nested hosts).
+    let cur: Element | null = el;
+    for (let depth = 0; cur && depth < 32; depth++) {
+      const section = getSectionInTree(cur);
+      if (section) {
+        return section;
+      }
+      const r: Node | null = cur.getRootNode ? cur.getRootNode() : null;
+      cur = r && r.nodeType === 11 && (r as any).host ? ((r as any).host as Element) : null;
+    }
+    return "";
+  }
+
+  // --- role-wrapper collapse ---
+  // A menu/list/grid row whose ONE visible interactive descendant has the same
+  // name (`<li role=menuitem><button>Draft…</button></li>`) is a single target.
+  // Listing both invites a click on the wrapper, which lands on the inner
+  // control's text rather than the control; so the wrapper's row is kept (its
+  // role, name and states) while its uid goes on the inner control.
+  function isWrapperRole(role: string): boolean {
+    switch (role) {
+      case "menuitem":
+      case "menuitemcheckbox":
+      case "menuitemradio":
+      case "option":
+      case "tab":
+      case "treeitem":
+      case "row":
+      case "gridcell":
+      case "listitem":
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  function isInteractiveRole(role: string): boolean {
+    switch (role) {
+      case "button":
+      case "link":
+      case "checkbox":
+      case "radio":
+      case "switch":
+      case "menuitem":
+      case "menuitemcheckbox":
+      case "menuitemradio":
+      case "option":
+      case "tab":
+      case "treeitem":
+      case "textbox":
+      case "searchbox":
+      case "combobox":
+      case "slider":
+      case "spinbutton":
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  function firstRoleToken(el: Element): string {
+    return (el.getAttribute("role") || "").trim().split(/\s+/)[0].toLowerCase();
+  }
+
+  // Something a user operates (the predicate click retargeting shares).
+  function isInteractiveControl(el: Element): boolean {
+    const tag = el.tagName.toLowerCase();
+    if (tag === "button" || tag === "select" || tag === "textarea" || tag === "summary") {
+      return true;
+    }
+    if ((tag === "a" || tag === "area") && el.hasAttribute("href")) {
+      return true;
+    }
+    if (tag === "input") {
+      return (el.getAttribute("type") || "").toLowerCase() !== "hidden";
+    }
+    if (
+      el.hasAttribute("contenteditable") &&
+      (el.getAttribute("contenteditable") || "").toLowerCase() !== "false"
+    ) {
+      return true;
+    }
+    const tabindex = el.getAttribute("tabindex");
+    if (tabindex !== null && parseInt(tabindex, 10) >= 0) {
+      return true;
+    }
+    return isInteractiveRole(firstRoleToken(el));
+  }
+
+  // The single visible interactive flat-tree descendant of w, or null when it
+  // has none or several. Stops at the second one, so a tree item holding a
+  // whole nested tree costs no more than a leaf.
+  function soleInteractiveDescendant(w: Element): Element | null {
+    let found: Element | null = null;
+    const stack = composedChildren(w).reverse();
+    while (stack.length) {
+      const el = stack.pop() as Element;
+      if (isInteractiveControl(el) && !isHidden(el)) {
+        if (found) {
+          return null;
+        }
+        found = el;
+      }
+      const kids = composedChildren(el);
+      for (let i = kids.length - 1; i >= 0; i--) {
+        stack.push(kids[i]);
+      }
+    }
+    return found;
+  }
+
+  function sameName(a: Element, b: Element): boolean {
+    const x = collapseWhitespace(getAccessibleName(a, getRole(a))).toLowerCase();
+    return (
+      x !== "" &&
+      x === collapseWhitespace(getAccessibleName(b, getRole(b))).toLowerCase()
+    );
+  }
+
+  // The inner control a wrapper row carries the uid of, or null.
+  function collapseTargetOf(w: Element): Element | null {
+    if (!isWrapperRole(firstRoleToken(w))) {
+      return null;
+    }
+    const inner = soleInteractiveDescendant(w);
+    return inner && sameName(w, inner) ? inner : null;
+  }
+
+  // --- 1. clear stale uids (and their signatures) from prior runs, in the
+  // document AND every reachable shadow tree (a uid left inside a shadow root
+  // would otherwise be issued twice) ---
+  const stale = deepQueryAll(doc, "[" + UID_ATTR + "]");
   for (let i = 0; i < stale.length; i++) {
     stale[i].removeAttribute(UID_ATTR);
     stale[i].removeAttribute(SIG_ATTR);
@@ -671,24 +1091,12 @@ export function buildSnapshot(
   const textNeedle = textMode
     ? (options.textContains as string).toLowerCase()
     : "";
-  function ownTextIncludesNeedle(el: Element): boolean {
-    return (el.textContent || "").toLowerCase().indexOf(textNeedle) !== -1;
-  }
-  function isLeafTextMatch(el: Element): boolean {
-    // Deepest-wins: reject if any DESCENDANT element also contains the needle.
-    const kids = el.querySelectorAll("*");
-    for (let k = 0; k < kids.length; k++) {
-      if (ownTextIncludesNeedle(kids[k])) {
-        return false;
-      }
-    }
-    return true;
-  }
 
   // Region scoping: restrict collection to the subtree of the first element
-  // matching rootSelector. A miss is an explicit, recoverable error. Name
-  // resolution (getElementById/querySelector for labels) still uses `doc`.
-  let root: ParentNode = doc;
+  // matching rootSelector — in the document tree first, else inside a shadow
+  // tree (a host root walks its shadow content). A miss is an explicit,
+  // recoverable error. Name resolution still reads each element's own tree.
+  let root: Document | Element = doc;
   if (
     typeof options.rootSelector === "string" &&
     options.rootSelector.length > 0
@@ -706,6 +1114,13 @@ export function buildSnapshot(
       };
     }
     if (!scoped) {
+      try {
+        scoped = deepQuery(doc, options.rootSelector);
+      } catch (e) {
+        scoped = null;
+      }
+    }
+    if (!scoped) {
       return {
         tree: "",
         isTruncated: false,
@@ -717,12 +1132,10 @@ export function buildSnapshot(
     root = scoped;
   }
 
-  let candidates: Element[];
+  let selectorHits: NodeListOf<Element> | null = null;
   if (selectorMode) {
     try {
-      candidates = Array.prototype.slice.call(
-        root.querySelectorAll(options.selector as string)
-      );
+      selectorHits = root.querySelectorAll(options.selector as string);
     } catch (e) {
       return {
         tree: "",
@@ -732,24 +1145,164 @@ export function buildSnapshot(
         error: "Invalid CSS selector: " + options.selector,
       };
     }
+  }
+
+  // Every pass enumerates the flat tree under root, in reading order.
+  const all = collectComposed(root);
+
+  let candidates: Element[] = [];
+  if (selectorHits) {
+    // In root's own tree querySelectorAll already decided (it also honours
+    // :scope); inside shadow trees the selector is matched per element, so
+    // combinators apply within a tree, never across a boundary.
+    const hitSet = new Set<Element>();
+    for (let i = 0; i < selectorHits.length; i++) {
+      hitSet.add(selectorHits[i]);
+    }
+    const rootTree = root.nodeType === 9 ? root : root.getRootNode();
+    for (let i = 0; i < all.length; i++) {
+      const el = all[i];
+      let hit = hitSet.has(el);
+      if (!hit && el.getRootNode() !== rootTree) {
+        try {
+          hit = el.matches(options.selector as string);
+        } catch (e) {
+          hit = false;
+        }
+      }
+      if (hit) {
+        candidates.push(el);
+      }
+    }
   } else if (textMode) {
     // Text query mode with no selector scans all elements; the text filter and
     // leaf-preference below narrow it down.
-    candidates = Array.prototype.slice.call(root.querySelectorAll("*"));
+    candidates = all.slice();
   } else {
-    candidates = Array.prototype.slice.call(
-      root.querySelectorAll(baseSelectorString)
-    );
+    for (let i = 0; i < all.length; i++) {
+      if (all[i].matches(baseSelectorString)) {
+        candidates.push(all[i]);
+      }
+    }
   }
+
   if (textMode) {
-    candidates = candidates.filter(
-      (el) => ownTextIncludesNeedle(el) && isLeafTextMatch(el)
-    );
+    // Match the composed text (text content, including text hidden with CSS)
+    // OR the accessible name, deepest match wins: an element is dropped when a
+    // flat-tree descendant also matches by either. Linear: index the text once,
+    // then mark the ancestors of every match instead of re-scanning subtrees.
+    indexComposedText(root);
+    const occurrences: number[] = [];
+    for (
+      let at = textLower.indexOf(textNeedle);
+      at !== -1;
+      at = textLower.indexOf(textNeedle, at + 1)
+    ) {
+      occurrences.push(at);
+    }
+    // Only elements that carry a name of their own are name-matched; otherwise
+    // every descendant of a <label> would match through the label's text.
+    const nameCarrier = baseSelectors
+      .concat(["[aria-label]", "[aria-labelledby]", "[alt]", "[title]"])
+      .join(",");
+    const textHasNeedle = function (el: Element): boolean {
+      const span = textIndex ? textIndex.get(el) : undefined;
+      if (!span) {
+        return textOf(el).toLowerCase().indexOf(textNeedle) !== -1;
+      }
+      // First occurrence starting inside the span (binary search).
+      let lo = 0;
+      let hi = occurrences.length;
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (occurrences[mid] < span[2]) {
+          lo = mid + 1;
+        } else {
+          hi = mid;
+        }
+      }
+      return lo < occurrences.length && occurrences[lo] + textNeedle.length <= span[3];
+    };
+    const matched = new Set<Element>();
+    for (let i = 0; i < all.length; i++) {
+      const el = all[i];
+      if (
+        textHasNeedle(el) ||
+        (el.matches(nameCarrier) &&
+          getAccessibleName(el, getRole(el)).toLowerCase().indexOf(textNeedle) !== -1)
+      ) {
+        matched.add(el);
+      }
+    }
+    const matchBelow = new Set<Node>();
+    matched.forEach(function (el) {
+      for (let n = flatParent(el); n && !matchBelow.has(n); n = flatParent(n)) {
+        matchBelow.add(n);
+      }
+    });
+    candidates = candidates.filter(function (el) {
+      return matched.has(el) && !matchBelow.has(el);
+    });
+  }
+
+  // Default mode: settle the role-wrapper collapses up front — a wrapper row
+  // precedes its inner control in reading order, and when nested wrappers
+  // collapse onto one control only the innermost keeps a row.
+  const collapseOf = new Map<Element, Element>(); // wrapper → inner control
+  const wrapperOf = new Map<Element, Element>(); // inner control → innermost wrapper
+  if (!selectorMode && !textMode) {
+    for (let i = 0; i < candidates.length; i++) {
+      const w = candidates[i];
+      if (isHidden(w)) {
+        continue;
+      }
+      const inner = collapseTargetOf(w);
+      if (inner) {
+        collapseOf.set(w, inner);
+        wrapperOf.set(inner, w); // visited later = nested deeper, so it wins
+      }
+    }
+  }
+
+  // Text mode: the innermost wrapper (under root) that collapses onto d.
+  function collapsingWrapperOf(d: Element): Element | null {
+    if (!isInteractiveControl(d)) {
+      return null;
+    }
+    for (let n = flatParent(d); n && n !== root && n.nodeType === 1; n = flatParent(n)) {
+      const w = n as Element;
+      if (!isWrapperRole(firstRoleToken(w)) || isHidden(w)) {
+        continue;
+      }
+      if (soleInteractiveDescendant(w) !== d) {
+        return null; // w holds other controls too, and so does every outer wrapper
+      }
+      if (sameName(w, d)) {
+        return w;
+      }
+    }
+    return null;
   }
 
   // --- 3..6. walk, compute, stamp, and build the output ---
   const lines: string[] = [];
   let uidCounter = 0;
+  const stamped: Element[] = [];
+
+  // Stamp a fresh uid (+ signature), or return the one el already got in this
+  // run — a selector-mode hint can stamp an inner control before its own row.
+  function stampUid(el: Element): string {
+    const have = el.getAttribute(UID_ATTR);
+    if (have) {
+      return have;
+    }
+    uidCounter += 1;
+    const uid = "e" + uidCounter;
+    el.setAttribute(UID_ATTR, uid);
+    el.setAttribute(SIG_ATTR, bcmcpSig(el));
+    stamped.push(el);
+    return uid;
+  }
 
   for (let i = 0; i < candidates.length; i++) {
     const el = candidates[i];
@@ -758,26 +1311,77 @@ export function buildSnapshot(
       continue;
     }
 
-    const role = getRole(el);
-    let name = getAccessibleName(el, role);
+    // rowEl supplies the row's role, name and states; uidEl carries the uid.
+    // They differ only for a collapsed role wrapper.
+    let rowEl = el;
+    let uidEl = el;
+    if (!selectorMode && !textMode) {
+      const inner = collapseOf.get(el);
+      if (inner) {
+        if (wrapperOf.get(inner) !== el) {
+          continue; // a nested wrapper owns this control's row
+        }
+        uidEl = inner;
+      } else if (wrapperOf.has(el)) {
+        continue; // listed through its wrapper's row
+      }
+    } else if (!selectorMode) {
+      // Text mode: a match is shown as its collapsing wrapper's row either way.
+      const inner = collapseTargetOf(el);
+      if (inner) {
+        uidEl = inner;
+      } else {
+        const wrapper = collapsingWrapperOf(el);
+        if (wrapper) {
+          rowEl = wrapper;
+        }
+      }
+    }
+
+    const role = getRole(rowEl);
+    let name = getAccessibleName(rowEl, role);
     if (textMode && !name) {
       // Text query mode targets leaf elements matched purely by their visible
       // text (e.g. a role-less "Open" card), which the accessible-name rules
       // leave unnamed. Fall back to the leaf's own trimmed text (clip respects
       // NAME_MAX) so the match is identifiable. Strictly text-mode-local, so the
       // base / pointer / selector passes are unaffected.
-      name = clip(el.textContent || "");
+      name = clip(textOf(rowEl));
     }
-    const flags = getStateFlags(el, role);
+    const flags = getStateFlags(rowEl, role);
+    const uid = stampUid(uidEl);
 
-    uidCounter += 1;
-    const uid = "e" + uidCounter;
-    el.setAttribute(UID_ATTR, uid);
-    el.setAttribute(SIG_ATTR, bcmcpSig(el));
-
-    lines.push(
-      makeRow(el, role, name, getCurrentValue(el, role), getSection(el), flags, uid)
+    let line = makeRow(
+      rowEl,
+      role,
+      name,
+      getCurrentValue(rowEl, role),
+      getSection(rowEl),
+      flags,
+      uid
     );
+    if (uidEl !== rowEl) {
+      // The [uid=eN] token stays intact; the marker says whom it targets.
+      line += " → inner " + getRole(uidEl);
+    } else if (selectorMode) {
+      // Selector mode lists exactly what matched, but points at the control a
+      // matched wrapper stands for.
+      const inner = collapseTargetOf(el);
+      if (inner) {
+        const innerRole = getRole(inner);
+        line +=
+          "\n  ↳ " +
+          uid +
+          " wraps one interactive " +
+          innerRole +
+          ' "' +
+          formatSlot(getAccessibleName(inner, innerRole), HINT_NAME_MAX) +
+          '" [uid=' +
+          stampUid(inner) +
+          "]";
+      }
+    }
+    lines.push(line);
   }
 
   // --- 6b. (default via includePointer) second pass: visually-clickable non-semantic
@@ -809,9 +1413,17 @@ export function buildSnapshot(
       return parts.join(" ");
     }
 
-    const allEls = root.querySelectorAll("*");
-    for (let i = 0; i < allEls.length && added < MAX_CLICKABLES; i++) {
-      const el = allEls[i];
+    // Flat-tree ancestors of everything the base pass stamped: a pointer
+    // candidate among them wraps a real control (possibly in a shadow root).
+    const wrapsStamped = new Set<Node>();
+    for (let s = 0; s < stamped.length; s++) {
+      for (let n = flatParent(stamped[s]); n && !wrapsStamped.has(n); n = flatParent(n)) {
+        wrapsStamped.add(n);
+      }
+    }
+
+    for (let i = 0; i < all.length && added < MAX_CLICKABLES; i++) {
+      const el = all[i];
 
       // Already captured by the base pass.
       if (el.hasAttribute(UID_ATTR)) {
@@ -834,7 +1446,7 @@ export function buildSnapshot(
       // Prefer leaf-ish clickables: if this element already contains a stamped
       // descendant, it is a wrapper around a real control — skip it to avoid
       // duplicating a bigger target.
-      if (el.querySelector("[" + UID_ATTR + "]")) {
+      if (wrapsStamped.has(el)) {
         continue;
       }
 
@@ -861,10 +1473,7 @@ export function buildSnapshot(
 
       const flags = getStateFlags(el, "clickable");
 
-      uidCounter += 1;
-      const uid = "e" + uidCounter;
-      el.setAttribute(UID_ATTR, uid);
-      el.setAttribute(SIG_ATTR, bcmcpSig(el));
+      const uid = stampUid(el);
       added += 1;
 
       lines.push(
