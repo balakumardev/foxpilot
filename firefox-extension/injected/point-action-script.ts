@@ -156,7 +156,7 @@ export function performPointAction(
     function labeledCheckControl(el: Element): Element | null {
       try {
         const label = (
-          el.tagName === "LABEL"
+          el.localName === "label"
             ? el
             : typeof (el as { closest?: (s: string) => Element | null })
                 .closest === "function"
@@ -175,12 +175,58 @@ export function performPointAction(
         // controls (text inputs, selects) are left untouched — a trusted label
         // click only focuses those, which the press sequence already does.
         const type = (ctl.getAttribute("type") || "").toLowerCase();
-        if (ctl.tagName !== "INPUT" || (type !== "checkbox" && type !== "radio")) {
+        if (ctl.localName !== "input" || (type !== "checkbox" && type !== "radio")) {
           return null;
+        }
+        // A click on interactive content inside the label — a link, a button,
+        // another field — or on anything inside it runs THAT element's
+        // activation and never the label's (the browsers skip label activation
+        // for such targets). So "Terms" in `<label>I agree to the <a
+        // href=#terms>Terms</a> <input type=checkbox></label>` follows the link
+        // and leaves the box alone; forwarding here would do both. The walk
+        // reads the native parentElement getter (a form control named
+        // "parentElement" shadows the form's own) and is capped.
+        const parentOf = Object.getOwnPropertyDescriptor(Node.prototype, "parentElement")!.get!;
+        let n: Element | null = el;
+        for (let steps = 0; n && n !== label && steps < 4096; steps++) {
+          if (n !== ctl && isInteractiveContent(n)) {
+            return null;
+          }
+          n = parentOf.call(n) as Element | null;
         }
         return ctl;
       } catch (e) {
         return null;
+      }
+    }
+
+    // HTML "interactive content" as the browsers apply it to label activation:
+    // element kinds, not ARIA roles or tabindex.
+    function isInteractiveContent(n: Element): boolean {
+      if (n.namespaceURI !== "http://www.w3.org/1999/xhtml") {
+        return false;
+      }
+      switch (n.localName) {
+        case "a":
+          return n.hasAttribute("href");
+        case "audio":
+        case "video":
+          return n.hasAttribute("controls");
+        case "img":
+        case "object":
+          return n.hasAttribute("usemap");
+        case "input":
+          return (n.getAttribute("type") || "").toLowerCase() !== "hidden";
+        case "button":
+        case "details":
+        case "embed":
+        case "iframe":
+        case "label":
+        case "select":
+        case "textarea":
+          return true;
+        default:
+          return false;
       }
     }
 
@@ -436,7 +482,7 @@ export function performPointAction(
             composed: true,
           });
         } else {
-          inputEv = new Event("input", { bubbles: true });
+          inputEv = new Event("input", { bubbles: true, composed: true });
           try {
             Object.defineProperty(inputEv, "inputType", { value: "insertText" });
             Object.defineProperty(inputEv, "data", { value: text });
@@ -540,7 +586,9 @@ export function performPointAction(
         // Framework-safe native-setter append + input (mirrors action-script.ts).
         const current = ((el as { value?: string }).value || "") as string;
         nativeSetValue(el, current + text);
-        el.dispatchEvent(new Event("input", { bubbles: true }));
+        // Composed like the browser's own input event, so listeners outside a
+        // shadow root see it.
+        el.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
       } else if (contentEditableHost(el)) {
         // contenteditable (the SPA chat-input case): insert via a real
         // beforeinput/input pair carrying inputType:"insertText" + data.
@@ -625,9 +673,15 @@ export function performPointAction(
       }
       // Walk the COMPOSED ancestors: out of a shadow root to its host, and from
       // slotted content into the shadow container it renders in. parentElement
-      // stops dead at a shadow root's top level.
+      // stops dead at a shadow root's top level. Capped: a form control named
+      // "parentNode" makes the form's parentNode lie and the walk would cycle —
+      // past the cap, fall back to scrolling the window.
       let container: Element | null = el;
-      while (container && !isScrollable(container)) {
+      for (let steps = 0; container && !isScrollable(container); steps++) {
+        if (steps >= 4096) {
+          container = null;
+          break;
+        }
         const up: Node | null = composedParent(container);
         container = up && up.nodeType === 1 ? (up as Element) : null;
       }
@@ -747,15 +801,20 @@ export function scrollElementIntoView(
     }
     // Tree-of-trees search (document tree + every reachable shadow tree, incl. unassigned light nodes'
     // roots). Use for uid resolution and for clearing stale uids — NOT for listing (listing is flat-tree).
+    // Two passes: OPEN roots first (a plain .shadowRoot read, no extension call), then — only on a miss —
+    // closed roots too, so a light-DOM or open-root match never pays for the closed-root probe.
     function deepQuery(root: Document | ShadowRoot, sel: string): Element | null {
-      const hit = root.querySelector(sel);
-      if (hit) return hit;
-      const all = root.querySelectorAll("*");
-      for (let i = 0; i < all.length; i++) {
-        const sr = shadowRootOf(all[i]);
-        if (sr) { const h = deepQuery(sr, sel); if (h) return h; }
+      function walk(r: Document | ShadowRoot, closed: boolean): Element | null {
+        const hit = r.querySelector(sel);
+        if (hit) return hit;
+        const all = r.querySelectorAll("*");
+        for (let i = 0; i < all.length; i++) {
+          const sr = closed ? shadowRootOf(all[i]) : ((all[i] as any).shadowRoot as ShadowRoot | null);
+          if (sr) { const h = walk(sr, closed); if (h) return h; }
+        }
+        return null;
       }
-      return null;
+      return walk(root, false) || walk(root, true);
     }
     const el = deepQuery(doc, '[data-bcmcp-uid="' + uid + '"]');
     if (!el) {

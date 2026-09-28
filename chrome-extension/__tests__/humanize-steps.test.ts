@@ -165,3 +165,69 @@ describe("humanize steps pierce shadow roots", () => {
     expect(typeof r!.screenX).toBe("number");
   });
 });
+
+/**
+ * Review fix for the humanized steps: the screen-rect uid lookup tries open
+ * shadow roots before probing closed ones, and the fallback input event (no
+ * InputEvent constructor) is composed like the InputEvent one. Identical block
+ * in the Firefox and Chrome suites.
+ */
+describe("humanize steps: lookup cost and composed fallback input", () => {
+  const probe = { calls: 0 };
+  let hadChrome = false;
+
+  beforeEach(() => {
+    document.body.innerHTML = "";
+    probe.calls = 0;
+    const g = globalThis as any;
+    hadChrome = typeof g.chrome !== "undefined";
+    if (!hadChrome) {
+      g.chrome = {};
+    }
+    g.chrome.dom = {
+      openOrClosedShadowRoot: () => {
+        probe.calls++;
+        return null;
+      },
+    };
+  });
+  afterEach(() => {
+    const g = globalThis as any;
+    delete g.chrome.dom;
+    if (!hadChrome) {
+      delete g.chrome;
+    }
+    jest.restoreAllMocks();
+    document.body.innerHTML = "";
+  });
+
+  it("readElementScreenRect resolves an open-root uid without a closed-root probe", () => {
+    document.body.innerHTML = `<div><span>a</span><span>b</span></div>`;
+    const host = document.createElement("x-nav");
+    document.body.appendChild(host);
+    host.attachShadow({ mode: "open" }).innerHTML = `<div><button data-bcmcp-uid="e1">Users</button></div>`;
+
+    expect(readElementScreenRect(document, "e1")).not.toBeNull();
+    expect(probe.calls).toBe(0);
+  });
+
+  it("typeCharStep's fallback input event (no InputEvent) is composed, so a host listener sees it", () => {
+    const host = document.createElement("x-field");
+    document.body.appendChild(host);
+    const root = host.attachShadow({ mode: "open" });
+    root.innerHTML = `<input id="q" />`;
+    (root.getElementById("q") as HTMLInputElement).focus();
+    const seen: string[] = [];
+    host.addEventListener("input", () => seen.push("input"));
+    const saved = (window as any).InputEvent;
+    (window as any).InputEvent = undefined;
+    try {
+      expect(typeCharStep(document, "x").ok).toBe(true);
+    } finally {
+      (window as any).InputEvent = saved;
+    }
+
+    expect((root.getElementById("q") as HTMLInputElement).value).toBe("x");
+    expect(seen).toEqual(["input"]);
+  });
+});

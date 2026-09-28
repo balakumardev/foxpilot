@@ -423,22 +423,31 @@ describe("select-option pierces shadow roots", () => {
  * select-option polls across awaits and opens the menu by running the page's
  * own handlers, either of which can attach a new shadow root mid-call. The
  * closed-root probe cache must therefore never be reused across an await (or
- * across the activation): a listbox whose closed root renders AFTER the
- * trigger was clicked is still found. Identical block in the Firefox and Chrome
- * suites.
+ * across the activation). Option rows are searched in the light DOM first, then
+ * in open shadow roots (a plain .shadowRoot read, no extension call), then in
+ * the closed shadow tree the control itself lives in or hosts — so a page with
+ * no shadow roots pays nothing for the shadow search. Identical block in the
+ * Firefox and Chrome suites.
  */
 describe("select-option never reuses the closed-root cache across an await", () => {
   const closedRoots = new Map<Element, ShadowRoot>();
+  const probe = { calls: 0 };
   let hadChrome = false;
 
   beforeEach(() => {
     document.body.innerHTML = "";
+    probe.calls = 0;
     const g = globalThis as any;
     hadChrome = typeof g.chrome !== "undefined";
     if (!hadChrome) {
       g.chrome = {};
     }
-    g.chrome.dom = { openOrClosedShadowRoot: (el: Element) => closedRoots.get(el) || null };
+    g.chrome.dom = {
+      openOrClosedShadowRoot: (el: Element) => {
+        probe.calls++;
+        return closedRoots.get(el) || null;
+      },
+    };
   });
   afterEach(() => {
     const g = globalThis as any;
@@ -450,24 +459,34 @@ describe("select-option never reuses the closed-root cache across an await", () 
     document.body.innerHTML = "";
   });
 
-  it("finds options in a closed root the widget attaches asynchronously after the trigger click", async () => {
-    // The trigger lives in an open root, so the uid lookup walks (and probes)
-    // every element — including the still-empty <x-listbox> host.
-    const picker = document.createElement("amp-picker");
-    document.body.appendChild(picker);
-    const proot = picker.attachShadow({ mode: "open" });
-    proot.innerHTML = `<div role="combobox" data-bcmcp-uid="e1"><span class="select__singleValue"></span></div>`;
-    const lb = document.createElement("x-listbox");
-    document.body.appendChild(lb);
+  function openRoot(tag: string, html: string): ShadowRoot {
+    const host = document.createElement(tag);
+    document.body.appendChild(host);
+    const root = host.attachShadow({ mode: "open" });
+    root.innerHTML = html;
+    return root;
+  }
+
+  it("finds options in a listbox that attaches its closed root after the click, inside the control's own closed root", async () => {
+    // A closed-root select component: its trigger (the uid) and an <x-listbox>
+    // child live in its closed root, and the listbox attaches ITS closed root
+    // only once the trigger is clicked. The first poll probes <x-listbox> before
+    // that; reusing that cached "no root" after the await would never find it.
+    const select = document.createElement("my-select");
+    document.body.appendChild(select);
+    const sroot = select.attachShadow({ mode: "closed" });
+    closedRoots.set(select, sroot);
+    sroot.innerHTML = `<div role="combobox" data-bcmcp-uid="e1"><span class="select__singleValue"></span></div><x-listbox></x-listbox>`;
+    const lb = sroot.querySelector("x-listbox")!;
     let picked = 0;
-    proot.querySelector('[role="combobox"]')!.addEventListener("click", () => {
+    sroot.querySelector('[role="combobox"]')!.addEventListener("click", () => {
       setTimeout(() => {
         const root = lb.attachShadow({ mode: "closed" });
         root.innerHTML = `<div role="listbox"><div role="option">India</div></div>`;
         closedRoots.set(lb, root);
         root.querySelector('[role="option"]')!.addEventListener("click", () => {
           picked++;
-          (proot.querySelector(".select__singleValue") as HTMLElement).textContent = "India";
+          (sroot.querySelector(".select__singleValue") as HTMLElement).textContent = "India";
         });
       }, 50);
     });
@@ -477,5 +496,72 @@ describe("select-option never reuses the closed-root cache across an await", () 
     expect(r.ok).toBe(true);
     expect(picked).toBe(1);
     expect(r.selected).toBe("India");
+  });
+
+  it("finds a light-DOM option without probing any closed root", async () => {
+    document.body.innerHTML = `<div><span>a</span><span>b</span></div>
+      <div data-bcmcp-uid="e1" role="combobox"><span class="select__singleValue"></span></div>
+      <div role="listbox"><div role="option">United States</div><div role="option">India</div></div>`;
+
+    const r = await selectOption(document, { uid: "e1", option: "India" });
+
+    expect(r.ok).toBe(true);
+    expect(probe.calls).toBe(0);
+  });
+
+  it("finds an option in an open shadow root without probing any closed root", async () => {
+    document.body.innerHTML = `<div><span>a</span></div><div data-bcmcp-uid="e1" role="combobox"><span class="select__singleValue"></span></div>`;
+    openRoot("x-listbox", `<div role="listbox"><div role="option">India</div></div>`);
+
+    const r = await selectOption(document, { uid: "e1", option: "India" });
+
+    expect(r.ok).toBe(true);
+    expect(probe.calls).toBe(0);
+  });
+
+  it("an option that never renders, on a page without shadow roots, probes at most the control itself per poll", async () => {
+    jest.useFakeTimers();
+    try {
+      document.body.innerHTML = `<div><span>a</span><span>b</span><section><p>c</p></section></div><div data-bcmcp-uid="e1" role="combobox">Pick</div>`;
+
+      const pending = selectOption(document, { uid: "e1", option: "Nope" });
+      await jest.advanceTimersByTimeAsync(10000);
+      const r = await pending;
+
+      expect(r.ok).toBe(false);
+      expect(r.error).toMatch(/No option matching "Nope"/);
+      expect(probe.calls).toBeLessThanOrEqual(15);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it("a native <select> inside a shadow root fires a composed input (the host sees it) and a non-composed change", async () => {
+    const root = openRoot(
+      "x-field",
+      `<select data-bcmcp-uid="e1"><option value="ios">iOS</option><option value="tvos">tvOS</option></select>`
+    );
+    const seen: string[] = [];
+    root.host.addEventListener("input", () => seen.push("input"));
+    root.host.addEventListener("change", () => seen.push("change"));
+
+    const r = await selectOption(document, { uid: "e1", option: "tvOS" });
+
+    expect(r.ok).toBe(true);
+    expect((root.querySelector("select") as HTMLSelectElement).value).toBe("tvos");
+    expect(seen).toEqual(["input"]);
+  });
+
+  it("typing into a combobox's own filter input inside a shadow root fires a composed input", async () => {
+    const root = openRoot(
+      "x-picker",
+      `<div role="combobox" data-bcmcp-uid="e1"><input class="filter" /><span class="select__singleValue"></span></div><div role="listbox"><div role="option">India</div></div>`
+    );
+    const seen: string[] = [];
+    root.host.addEventListener("input", () => seen.push("input"));
+
+    await selectOption(document, { uid: "e1", option: "India" });
+
+    expect(seen).toContain("input");
   });
 });

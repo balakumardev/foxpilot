@@ -2071,3 +2071,447 @@ describe("closed-root probe memoization (per call)", () => {
     expect(onClick).toHaveBeenCalledTimes(1);
   });
 });
+
+/**
+ * Review fixes: click retargeting is scoped to role wrappers, label forwarding
+ * skips interactive content inside the label, input events are composed, a
+ * cover inside an ancestor host's own shadow tree is named itself, and uid
+ * lookups try open roots before paying for closed-root probes. Identical block
+ * in the Firefox and Chrome suites.
+ */
+describe("review fixes: retarget scope, label content, composed input, cover naming, lookup cost", () => {
+  const closedRoots = new Map<Element, ShadowRoot>();
+  let restoreChrome: (() => void) | null = null;
+
+  beforeEach(() => {
+    document.body.innerHTML = "";
+  });
+  afterEach(() => {
+    jest.restoreAllMocks();
+    delete (document as unknown as { elementFromPoint?: unknown }).elementFromPoint;
+    if (restoreChrome) {
+      restoreChrome();
+      restoreChrome = null;
+    }
+    closedRoots.clear();
+    document.body.innerHTML = "";
+  });
+
+  function openHost(tag: string, html: string, parent: Element = document.body): ShadowRoot {
+    const host = document.createElement(tag);
+    parent.appendChild(host);
+    const root = host.attachShadow({ mode: "open" });
+    root.innerHTML = html;
+    return root;
+  }
+  function closedHost(tag: string, html: string, parent: Element = document.body): ShadowRoot {
+    const host = document.createElement(tag);
+    parent.appendChild(host);
+    const root = host.attachShadow({ mode: "closed" });
+    root.innerHTML = html;
+    closedRoots.set(host, root);
+    return root;
+  }
+  // chrome.dom stub that counts calls: the closed-root probe is the expensive one.
+  function countClosedProbes(): { calls: number } {
+    const g = globalThis as any;
+    const hadChrome = typeof g.chrome !== "undefined";
+    if (!hadChrome) {
+      g.chrome = {};
+    }
+    const counter = { calls: 0 };
+    g.chrome.dom = {
+      openOrClosedShadowRoot: (el: Element) => {
+        counter.calls++;
+        return closedRoots.get(el) || null;
+      },
+    };
+    restoreChrome = () => {
+      delete g.chrome.dom;
+      if (!hadChrome) {
+        delete g.chrome;
+      }
+    };
+    return counter;
+  }
+  function stubRect(): void {
+    jest.spyOn(Element.prototype, "getBoundingClientRect").mockReturnValue({
+      left: 0, top: 0, width: 20, height: 20,
+      right: 20, bottom: 20, x: 0, y: 0, toJSON: () => ({}),
+    } as DOMRect);
+  }
+  function stubDocHit(el: Element | null): void {
+    (document as unknown as { elementFromPoint: (x: number, y: number) => Element | null })
+      .elementFromPoint = () => el;
+  }
+  // Click uid with the centre hit-test landing on `hit`.
+  function clickWithHit(uid: string, hit: Element, extra?: { doubleClick?: boolean }) {
+    stubRect();
+    stubDocHit(hit);
+    return performInputAction(document, { action: "click", uid, ...(extra || {}) }) as {
+      ok: boolean;
+      error?: string;
+      dispatchedTo?: { tag: string; name?: string };
+    };
+  }
+  function byId(id: string): HTMLElement {
+    return document.getElementById(id) as HTMLElement;
+  }
+
+  describe("click retargeting only unwraps role wrappers", () => {
+    it("a dialog uid does not press the button at its centre", () => {
+      document.body.innerHTML = `<div role="dialog" id="dlg" data-bcmcp-uid="e1"><p>Delete your account?</p><button id="del">Delete account</button></div>`;
+      const onDelete = jest.fn();
+      const onDialog = jest.fn();
+      byId("del").addEventListener("click", onDelete);
+      byId("dlg").addEventListener("click", onDialog);
+
+      const res = clickWithHit("e1", byId("del"));
+
+      expect(res.ok).toBe(true);
+      expect(onDelete).not.toHaveBeenCalled();
+      expect(onDialog).toHaveBeenCalledTimes(1);
+      expect(onDialog.mock.calls[0][0].target).toBe(byId("dlg"));
+      expect(res.dispatchedTo).toBeUndefined();
+    });
+
+    it("a radiogroup uid does not switch the radio at its centre", () => {
+      document.body.innerHTML = `<div role="radiogroup" aria-label="Plan" data-bcmcp-uid="e1">
+        <label><input type="radio" name="plan" id="free" value="free" checked="" /> Free</label>
+        <label><input type="radio" name="plan" id="pro" value="pro" /> <span id="pro-text">Pro</span></label>
+      </div>`;
+
+      clickWithHit("e1", byId("pro-text"));
+
+      expect((byId("pro") as HTMLInputElement).checked).toBe(false);
+      expect((byId("free") as HTMLInputElement).checked).toBe(true);
+    });
+
+    it("a backdrop that closes on its own clicks still receives them", () => {
+      document.body.innerHTML = `<div class="backdrop" id="backdrop" data-bcmcp-uid="e1"><div class="modal"><button id="ok">OK</button></div></div>`;
+      let closed = 0;
+      byId("backdrop").addEventListener("click", (e) => {
+        if (e.target === e.currentTarget) {
+          closed++;
+        }
+      });
+      const onOk = jest.fn();
+      byId("ok").addEventListener("click", onOk);
+
+      clickWithHit("e1", byId("ok"));
+
+      expect(closed).toBe(1);
+      expect(onOk).not.toHaveBeenCalled();
+    });
+
+    it("a contenteditable uid keeps focus when a link sits at its centre, so type-text still works", () => {
+      document.body.innerHTML = `<div contenteditable="true" id="ed" data-bcmcp-uid="e1">Hello <a id="lnk" href="#x">link</a> world</div>`;
+      const onLink = jest.fn();
+      byId("lnk").addEventListener("click", onLink);
+
+      clickWithHit("e1", byId("lnk"));
+      const typed = performInputAction(document, { action: "type", text: "!" });
+
+      expect(onLink).not.toHaveBeenCalled();
+      expect(document.activeElement).toBe(byId("ed"));
+      expect(typed.ok).toBe(true);
+      expect(byId("ed").textContent).toContain("!");
+    });
+
+    it("a product link uid follows the link instead of opening the quick-view button at its centre", () => {
+      document.body.innerHTML = `<a href="#product-42" id="card" data-bcmcp-uid="e1"><span>Wool coat</span><button type="button" id="qv">Quick view</button></a>`;
+      const onQuickView = jest.fn();
+      const onLink = jest.fn();
+      byId("qv").addEventListener("click", onQuickView);
+      byId("card").addEventListener("click", onLink);
+
+      const res = clickWithHit("e1", byId("qv"));
+
+      expect(onQuickView).not.toHaveBeenCalled();
+      expect(onLink).toHaveBeenCalledTimes(1);
+      expect(onLink.mock.calls[0][0].target).toBe(byId("card"));
+      expect(res.dispatchedTo).toBeUndefined();
+    });
+
+    it("a row holding several controls keeps the click (the link at its centre is not followed)", () => {
+      document.body.innerHTML = `<div role="row" id="row" data-bcmcp-uid="e1">
+        <span role="gridcell"><input type="checkbox" aria-label="Select" id="sel" /></span>
+        <span role="gridcell"><a id="item" href="#item-1">Item 1</a></span>
+        <span role="gridcell"><button type="button" aria-label="More">...</button></span>
+      </div>`;
+      const onRow = jest.fn();
+      const onItem = jest.fn();
+      byId("row").addEventListener("click", onRow);
+      byId("item").addEventListener("click", onItem);
+
+      const res = clickWithHit("e1", byId("item"));
+
+      expect(onItem).not.toHaveBeenCalled();
+      expect(onRow).toHaveBeenCalledTimes(1);
+      expect(onRow.mock.calls[0][0].target).toBe(byId("row"));
+      expect((byId("sel") as HTMLInputElement).checked).toBe(false);
+      expect(res.dispatchedTo).toBeUndefined();
+    });
+
+    it("a row whose only control is a link but which shows text of its own keeps the click", () => {
+      document.body.innerHTML = `<div role="row" id="row" data-bcmcp-uid="e1"><span role="gridcell">Invoice 42</span><span role="gridcell"><a id="cust" href="#customer">Acme</a></span><span role="gridcell">Paid</span></div>`;
+      const onRow = jest.fn();
+      const onCustomer = jest.fn();
+      byId("row").addEventListener("click", onRow);
+      byId("cust").addEventListener("click", onCustomer);
+
+      const res = clickWithHit("e1", byId("cust"));
+
+      expect(onCustomer).not.toHaveBeenCalled();
+      expect(onRow.mock.calls[0][0].target).toBe(byId("row"));
+      expect(res.dispatchedTo).toBeUndefined();
+    });
+
+    it("a tablist uid does not press the tab at its centre", () => {
+      document.body.innerHTML = `<div role="tablist" id="tl" data-bcmcp-uid="e1"><button role="tab" id="t1">General</button><button role="tab" id="t2">Billing</button><button role="tab" id="t3">Danger</button></div>`;
+      const onBilling = jest.fn();
+      byId("t2").addEventListener("click", onBilling);
+
+      clickWithHit("e1", byId("t2"));
+
+      expect(onBilling).not.toHaveBeenCalled();
+    });
+
+    it("a card with a disabled button at its centre keeps the click and reports no dispatchedTo", () => {
+      document.body.innerHTML = `<div class="card" id="card" data-bcmcp-uid="e1" style="cursor:pointer"><button id="buy" disabled="">Buy</button></div>`;
+      const onCard = jest.fn();
+      byId("card").addEventListener("click", onCard);
+
+      const res = clickWithHit("e1", byId("buy"));
+
+      expect(res.ok).toBe(true);
+      expect(onCard).toHaveBeenCalledTimes(1);
+      expect(onCard.mock.calls[0][0].target).toBe(byId("card"));
+      expect(res.dispatchedTo).toBeUndefined();
+    });
+
+    it("a menuitem whose only control is disabled or aria-disabled keeps the click", () => {
+      document.body.innerHTML = `<ul role="menu">
+        <li role="menuitem" id="m1" data-bcmcp-uid="e1"><button id="b1" disabled="">Archive</button></li>
+        <li role="menuitem" id="m2" data-bcmcp-uid="e2"><button id="b2" aria-disabled="true">Export</button></li>
+      </ul>`;
+      const onM1 = jest.fn();
+      const onM2 = jest.fn();
+      const onB2 = jest.fn();
+      byId("m1").addEventListener("click", onM1);
+      byId("m2").addEventListener("click", onM2);
+      byId("b2").addEventListener("click", onB2);
+
+      const r1 = clickWithHit("e1", byId("b1"));
+      const r2 = clickWithHit("e2", byId("b2"));
+
+      expect(onM1).toHaveBeenCalledTimes(1);
+      expect(onM1.mock.calls[0][0].target).toBe(byId("m1"));
+      expect(onB2).not.toHaveBeenCalled();
+      expect(onM2.mock.calls[0][0].target).toBe(byId("m2"));
+      expect(r1.dispatchedTo).toBeUndefined();
+      expect(r2.dispatchedTo).toBeUndefined();
+    });
+
+    it("an option wrapper holding two enabled controls keeps the click", () => {
+      document.body.innerHTML = `<div role="option" id="opt" data-bcmcp-uid="e1"><input type="checkbox" id="cb" aria-label="Pick" /><a id="more" href="#more">Details</a></div>`;
+      const onOpt = jest.fn();
+      const onMore = jest.fn();
+      byId("opt").addEventListener("click", onOpt);
+      byId("more").addEventListener("click", onMore);
+
+      clickWithHit("e1", byId("more"));
+
+      expect(onMore).not.toHaveBeenCalled();
+      expect(onOpt.mock.calls[0][0].target).toBe(byId("opt"));
+      expect((byId("cb") as HTMLInputElement).checked).toBe(false);
+    });
+
+    it("a control hidden by a display:none ancestor does not count against the visible one", () => {
+      document.body.innerHTML = `<ul role="menu"><li role="menuitem" data-bcmcp-uid="e1"><div style="display:none"><button id="hid">Hidden</button></div><button id="vis">Rename</button></li></ul>`;
+      const onVisible = jest.fn();
+      byId("vis").addEventListener("click", onVisible);
+
+      const res = clickWithHit("e1", byId("vis"));
+
+      expect(onVisible).toHaveBeenCalledTimes(1);
+      expect(res.dispatchedTo).toEqual({ tag: "button", name: "Rename" });
+    });
+  });
+
+  describe("label forwarding skips interactive content inside the label", () => {
+    it("clicking a link inside a checkbox label follows the link and leaves the box alone", () => {
+      document.body.innerHTML = `<label>I agree to the <a id="terms" href="#terms" data-bcmcp-uid="e1">Terms</a> <input type="checkbox" id="agree" /></label>`;
+      let changes = 0;
+      byId("agree").addEventListener("change", () => changes++);
+      const onLink = jest.fn();
+      byId("terms").addEventListener("click", onLink);
+
+      const res = performInputAction(document, { action: "click", uid: "e1" });
+
+      expect(res.ok).toBe(true);
+      expect(onLink).toHaveBeenCalledTimes(1);
+      expect((byId("agree") as HTMLInputElement).checked).toBe(false);
+      expect(changes).toBe(0);
+    });
+
+    it("clicking inside a button inside a checkbox label leaves the box alone", () => {
+      document.body.innerHTML = `<label><input type="checkbox" id="sub" /> Subscribe <button type="button" id="info"><span id="info-text" data-bcmcp-uid="e1">What is this?</span></button></label>`;
+      const onInfo = jest.fn();
+      byId("info").addEventListener("click", onInfo);
+
+      performInputAction(document, { action: "click", uid: "e1" });
+
+      expect(onInfo).toHaveBeenCalledTimes(1);
+      expect((byId("sub") as HTMLInputElement).checked).toBe(false);
+    });
+
+    it("clicking the label's own text still toggles the box exactly once", () => {
+      document.body.innerHTML = `<label>I agree to the <a href="#terms">Terms</a> <span id="txt" data-bcmcp-uid="e1">and the policy</span> <input type="checkbox" id="agree" /></label>`;
+      let changes = 0;
+      byId("agree").addEventListener("change", () => changes++);
+
+      performInputAction(document, { action: "click", uid: "e1" });
+
+      expect((byId("agree") as HTMLInputElement).checked).toBe(true);
+      expect(changes).toBe(1);
+    });
+  });
+
+  describe("input events are composed (change is not)", () => {
+    it("fill on an input inside a shadow root is seen by a listener on the host", () => {
+      const root = openHost("x-field", `<input id="q" data-bcmcp-uid="e1" />`);
+      const seen: string[] = [];
+      root.host.addEventListener("input", () => seen.push("input"));
+      root.host.addEventListener("change", () => seen.push("change"));
+
+      const res = performInputAction(document, { action: "fill", uid: "e1", value: "ios" });
+
+      expect(res.ok).toBe(true);
+      expect((root.getElementById("q") as HTMLInputElement).value).toBe("ios");
+      expect(seen).toEqual(["input"]);
+    });
+
+    it("fill on a <select> inside a shadow root is seen by a listener on the host", () => {
+      const root = openHost(
+        "x-field",
+        `<select id="s" data-bcmcp-uid="e1"><option value="ios">iOS</option><option value="tvos">tvOS</option></select>`
+      );
+      const seen: string[] = [];
+      root.host.addEventListener("input", () => seen.push("input"));
+      root.host.addEventListener("change", () => seen.push("change"));
+
+      performInputAction(document, { action: "fill", uid: "e1", value: "tvOS" });
+
+      expect((root.getElementById("s") as HTMLSelectElement).value).toBe("tvos");
+      expect(seen).toEqual(["input"]);
+    });
+
+    it("type into an input focused inside a shadow root is seen by a listener on the host", () => {
+      const root = openHost("x-field", `<input id="q" />`);
+      (root.getElementById("q") as HTMLInputElement).focus();
+      const seen: string[] = [];
+      root.host.addEventListener("input", () => seen.push("input"));
+
+      const res = performInputAction(document, { action: "type", text: "ab" });
+
+      expect(res.ok).toBe(true);
+      expect(seen).toContain("input");
+    });
+  });
+
+  describe("cover naming", () => {
+    it("a scrim in an app shell's own shadow tree covering a button slotted into it is named itself", () => {
+      const shell = openHost("app-shell", `<div class="scrim">Loading</div><main><slot></slot></main>`);
+      shell.host.innerHTML = `<button data-bcmcp-uid="e1">Save</button>`;
+      stubRect();
+      stubDocHit(shell.host);
+      (shell as unknown as { elementFromPoint: () => Element | null }).elementFromPoint = () =>
+        shell.querySelector(".scrim");
+
+      const res = performInputAction(document, { action: "classify-intercept", uid: "e1" });
+
+      expect(res.intercepted).toMatchObject({ tag: "div", classes: "scrim", name: "Loading" });
+    });
+  });
+
+  // Chrome exposes a form's named controls as properties of the form, so
+  // `<form><input name="parentNode">` makes form.parentNode return that input
+  // and a naive ancestor walk cycles form -> input -> form forever. jsdom does
+  // not do this, so these tests install the same own property on the form.
+  describe("walks stay bounded when a form control shadows a DOM built-in", () => {
+    function shadowFormProperty(form: Element, prop: string, value: Element | null): void {
+      Object.defineProperty(form, prop, { configurable: true, get: () => value });
+    }
+
+    it("a click on a wrapper holding a form whose control is named parentNode terminates", () => {
+      document.body.innerHTML = `<ul role="menu"><li role="menuitem" id="mi" data-bcmcp-uid="e1"><span id="lbl">Rename</span><form id="f"><input name="parentNode" /><button type="button" id="go">Go</button></form></li></ul>`;
+      shadowFormProperty(byId("f"), "parentNode", byId("f").querySelector('input[name="parentNode"]'));
+      const onItem = jest.fn();
+      byId("mi").addEventListener("click", onItem);
+
+      const res = clickWithHit("e1", byId("lbl"));
+
+      expect(res.ok).toBe(true);
+      expect(onItem).toHaveBeenCalledTimes(1);
+      expect(res.dispatchedTo).toBeUndefined();
+    });
+
+    it("label forwarding reaches the real label through a form whose control is named parentElement", () => {
+      document.body.innerHTML = `<label><input type="checkbox" id="cb" /><form id="f"><input type="hidden" name="parentElement" /><span id="txt" data-bcmcp-uid="e1">Accept</span></form></label>`;
+      shadowFormProperty(byId("f"), "parentElement", byId("f").querySelector('input[name="parentElement"]'));
+      // A browser's closest() is native and ignores the shadowing; jsdom's
+      // (nwsapi) walks .parentElement and would itself cycle, so stand in the
+      // native behaviour for this test.
+      const nativeParent = Object.getOwnPropertyDescriptor(Node.prototype, "parentElement")!.get!;
+      jest.spyOn(Element.prototype, "closest").mockImplementation(function (this: Element, sel: string) {
+        for (let n: Element | null = this; n; n = nativeParent.call(n) as Element | null) {
+          if (n.matches(sel)) {
+            return n;
+          }
+        }
+        return null;
+      });
+      let changes = 0;
+      byId("cb").addEventListener("change", () => changes++);
+
+      const res = performInputAction(document, { action: "click", uid: "e1" });
+
+      expect(res.ok).toBe(true);
+      expect((byId("cb") as HTMLInputElement).checked).toBe(true);
+      expect(changes).toBe(1);
+    });
+  });
+
+  describe("uid lookup tries open shadow roots before probing closed ones", () => {
+    it("resolves a light-DOM uid and an open-root uid without a single closed-root probe", () => {
+      document.body.innerHTML = `<div><span>a</span><span>b</span></div><section><div><p>c</p></div></section><button data-bcmcp-uid="e1">Light</button>`;
+      const root = openHost("x-panel", `<div><span><button data-bcmcp-uid="e2">Shadow</button></span></div>`);
+      const onShadow = jest.fn();
+      root.querySelector("button")!.addEventListener("click", onShadow);
+      const probes = countClosedProbes();
+
+      expect(performInputAction(document, { action: "click", uid: "e1" }).ok).toBe(true);
+      expect(performInputAction(document, { action: "click", uid: "e2" }).ok).toBe(true);
+
+      expect(onShadow).toHaveBeenCalledTimes(1);
+      expect(probes.calls).toBe(0);
+    });
+
+    it("still resolves a closed-root uid once the open pass misses, and still reports a stale one", () => {
+      document.body.innerHTML = `<div><span>a</span></div>`;
+      const root = closedHost("x-secret", `<div><button data-bcmcp-uid="e3">Closed</button></div>`);
+      const onClosed = jest.fn();
+      root.querySelector("button")!.addEventListener("click", onClosed);
+      const probes = countClosedProbes();
+
+      expect(performInputAction(document, { action: "click", uid: "e3" }).ok).toBe(true);
+      const stale = performInputAction(document, { action: "click", uid: "e404" });
+
+      expect(onClosed).toHaveBeenCalledTimes(1);
+      expect(probes.calls).toBeGreaterThan(0);
+      expect(stale.ok).toBe(false);
+      expect(stale.error).toContain("fresh snapshot");
+    });
+  });
+});

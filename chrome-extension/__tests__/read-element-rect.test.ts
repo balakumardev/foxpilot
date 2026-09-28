@@ -88,4 +88,21 @@ describe("content-script readElementRect resolves uids through shadow roots", ()
     };
     expect(await readRect("e4")).not.toBeNull();
   });
+
+  it("measures an open-root uid without a single closed-root probe (open roots are searched first)", async () => {
+    document.body.innerHTML = `<div><span>a</span><span>b</span></div>`;
+    host("amp-nav", `<div><button data-bcmcp-uid="e5">Users and Access</button></div>`, "open");
+    let calls = 0;
+    (chrome as any).dom = {
+      openOrClosedShadowRoot: (el: Element) => {
+        calls++;
+        return closedRoots.get(el) || null;
+      },
+    };
+    restoreClosed = () => {
+      delete (chrome as any).dom;
+    };
+    expect(await readRect("e5")).not.toBeNull();
+    expect(calls).toBe(0);
+  });
 });

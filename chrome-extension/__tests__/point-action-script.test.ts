@@ -708,3 +708,108 @@ describe("point tools pierce shadow roots", () => {
     expect((btn as any).scrollIntoView).toHaveBeenCalledTimes(2);
   });
 });
+
+/**
+ * Review fixes for the coordinate tools: click-at on interactive content inside
+ * a checkbox label follows that content and leaves the box alone, type-at fires
+ * a composed input event, scroll-into-view resolves an open-root uid without a
+ * closed-root probe, and scroll-at's ancestor walk terminates even when a form
+ * control named "parentNode" shadows the form's own parentNode (Chrome exposes
+ * named controls as form properties; jsdom does not, so the test installs the
+ * same own property). Identical block in the Firefox and Chrome suites.
+ */
+describe("point tools: label content, composed input, lookup cost, bounded walks", () => {
+  const probe = { calls: 0 };
+  let hadChrome = false;
+
+  beforeEach(() => {
+    document.body.innerHTML = "";
+    probe.calls = 0;
+    const g = globalThis as any;
+    hadChrome = typeof g.chrome !== "undefined";
+    if (!hadChrome) {
+      g.chrome = {};
+    }
+    g.chrome.dom = {
+      openOrClosedShadowRoot: () => {
+        probe.calls++;
+        return null;
+      },
+    };
+  });
+  afterEach(() => {
+    const g = globalThis as any;
+    delete g.chrome.dom;
+    if (!hadChrome) {
+      delete g.chrome;
+    }
+    jest.restoreAllMocks();
+    document.body.innerHTML = "";
+    (document as any).elementFromPoint = undefined;
+  });
+
+  function byId(id: string): HTMLElement {
+    return document.getElementById(id) as HTMLElement;
+  }
+
+  it("click-at on a link inside a checkbox label follows the link and leaves the box alone", () => {
+    document.body.innerHTML = `<label>I agree to the <a id="terms" href="#terms">Terms</a> <input type="checkbox" id="agree" /></label>`;
+    (document as any).elementFromPoint = jest.fn(() => byId("terms"));
+    const onLink = jest.fn();
+    byId("terms").addEventListener("click", onLink);
+
+    const res = performPointAction(document, { action: "click-at", x: 1, y: 1 });
+
+    expect(res.ok).toBe(true);
+    expect(onLink).toHaveBeenCalledTimes(1);
+    expect((byId("agree") as HTMLInputElement).checked).toBe(false);
+  });
+
+  it("type-at into an input inside a shadow root fires a composed input the host sees", () => {
+    const host = document.createElement("x-field");
+    document.body.appendChild(host);
+    const root = host.attachShadow({ mode: "open" });
+    root.innerHTML = `<input id="q" />`;
+    const q = root.getElementById("q") as HTMLInputElement;
+    (document as any).elementFromPoint = jest.fn(() => host);
+    (root as any).elementFromPoint = jest.fn(() => q);
+    const seen: string[] = [];
+    host.addEventListener("input", () => seen.push("input"));
+
+    const res = performPointAction(document, { action: "type-at", x: 1, y: 1, text: "ab" });
+
+    expect(res.ok).toBe(true);
+    expect(q.value).toBe("ab");
+    expect(seen).toContain("input");
+  });
+
+  it("scroll-into-view resolves an open-root uid without a closed-root probe", () => {
+    document.body.innerHTML = `<div><span>a</span><span>b</span></div>`;
+    const host = document.createElement("x-list");
+    document.body.appendChild(host);
+    host.attachShadow({ mode: "open" }).innerHTML = `<div><button data-bcmcp-uid="e5">Far below</button></div>`;
+    const btn = host.shadowRoot!.querySelector("button")!;
+    (btn as any).scrollIntoView = jest.fn();
+
+    expect(scrollElementIntoView(document, "e5").ok).toBe(true);
+    expect((btn as any).scrollIntoView).toHaveBeenCalled();
+    expect(probe.calls).toBe(0);
+  });
+
+  it("scroll-at's ancestor walk terminates inside a form whose control shadows form.parentNode", () => {
+    document.body.innerHTML = `<div id="panel" style="overflow-y: scroll"><form id="f"><input name="parentNode" /><span id="leaf">row</span></form></div>`;
+    const form = byId("f");
+    const shadowing = form.querySelector('input[name="parentNode"]');
+    Object.defineProperty(form, "parentNode", { configurable: true, get: () => shadowing });
+    const panel = byId("panel");
+    Object.defineProperty(panel, "scrollHeight", { value: 500, configurable: true });
+    Object.defineProperty(panel, "clientHeight", { value: 200, configurable: true });
+    (panel as any).scrollBy = jest.fn();
+    (window as any).scrollBy = jest.fn();
+    (document as any).elementFromPoint = jest.fn(() => byId("leaf"));
+
+    const res = performPointAction(document, { action: "scroll-at", x: 1, y: 1, dy: 40 });
+
+    expect(res.ok).toBe(true);
+  });
+});

@@ -160,15 +160,20 @@ export async function selectOption(
   }
   // Tree-of-trees search (document tree + every reachable shadow tree, incl. unassigned light nodes'
   // roots). Use for uid resolution and for clearing stale uids — NOT for listing (listing is flat-tree).
+  // Two passes: OPEN roots first (a plain .shadowRoot read, no extension call), then — only on a miss —
+  // closed roots too, so a light-DOM or open-root match never pays for the closed-root probe.
   function deepQuery(root: Document | ShadowRoot, sel: string): Element | null {
-    const hit = root.querySelector(sel);
-    if (hit) return hit;
-    const all = root.querySelectorAll("*");
-    for (let i = 0; i < all.length; i++) {
-      const sr = shadowRootOf(all[i]);
-      if (sr) { const h = deepQuery(sr, sel); if (h) return h; }
+    function walk(r: Document | ShadowRoot, closed: boolean): Element | null {
+      const hit = r.querySelector(sel);
+      if (hit) return hit;
+      const all = r.querySelectorAll("*");
+      for (let i = 0; i < all.length; i++) {
+        const sr = closed ? shadowRootOf(all[i]) : ((all[i] as any).shadowRoot as ShadowRoot | null);
+        if (sr) { const h = walk(sr, closed); if (h) return h; }
+      }
+      return null;
     }
-    return null;
+    return walk(root, false) || walk(root, true);
   }
   function deepQueryAll(root: Document | ShadowRoot, sel: string, out: Element[] = []): Element[] {
     const hits = root.querySelectorAll(sel);
@@ -258,7 +263,9 @@ export async function selectOption(
         };
       }
       (el as HTMLSelectElement).value = chosen.value;
-      el.dispatchEvent(new Event("input", { bubbles: true }));
+      // input is composed (it crosses shadow boundaries, as the browser's own
+      // does); change is not.
+      el.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
       el.dispatchEvent(new Event("change", { bubbles: true }));
       return { ok: true, selected: norm(chosen.textContent || chosen.value) };
     }
@@ -341,7 +348,7 @@ export async function selectOption(
       } else {
         (search as { value?: string }).value = rawWant;
       }
-      search.dispatchEvent(new Event("input", { bubbles: true }));
+      search.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
       for (let i = 0; i < rawWant.length; i++) {
         const ch = rawWant.charAt(i);
         search.dispatchEvent(new KeyboardEvent("keydown", { key: ch, bubbles: true }));
@@ -352,11 +359,7 @@ export async function selectOption(
     // 3. Poll for a matching option to render (portal menus mount async). Bounded:
     //    ≤ 15 iterations × 300ms. First check is at iter 0 (no sleep) so an
     //    already-open menu resolves immediately.
-    function findOption(): Element | null {
-      // deepQueryAll: option rows rendered inside a shadow root (a web-component
-      // listbox) count too; without shadow roots this is exactly the old
-      // doc.querySelectorAll list, in document order.
-      const nodes = deepQueryAll(doc, OPTION_SELECTOR);
+    function pickOption(nodes: ArrayLike<Element>): Element | null {
       for (let i = 0; i < nodes.length; i++) {
         if (isUnclickableOption(nodes[i])) {
           continue;
@@ -366,6 +369,61 @@ export async function selectOption(
         }
       }
       return null;
+    }
+    // Option rows inside every OPEN shadow root on the page, reached through
+    // plain .shadowRoot reads (no extension call).
+    function openShadowRows(r: Document | ShadowRoot, out: Element[]): Element[] {
+      const all = r.querySelectorAll("*");
+      for (let i = 0; i < all.length; i++) {
+        const sr = (all[i] as any).shadowRoot as ShadowRoot | null;
+        if (sr) {
+          const rows = sr.querySelectorAll(OPTION_SELECTOR);
+          for (let j = 0; j < rows.length; j++) {
+            out.push(rows[j]);
+          }
+          openShadowRows(sr, out);
+        }
+      }
+      return out;
+    }
+    // Option rows in the closed shadow tree the control lives in or hosts — the
+    // one closed tree a closed-root select renders its own listbox into (nested
+    // roots within it included). Whatever is reachable through open roots alone
+    // is openShadowRows' job already.
+    function controlClosedRows(): Element[] {
+      const out: Element[] = [];
+      const home = el!.getRootNode();
+      let openly = true;
+      let r: Node = home;
+      for (let depth = 0; r.nodeType === 11 && depth < 32; depth++) {
+        const h = (r as ShadowRoot).host;
+        if (!h || h.shadowRoot !== r) {
+          openly = false;
+          break;
+        }
+        r = h.getRootNode();
+      }
+      if (!openly) {
+        deepQueryAll(home as ShadowRoot, OPTION_SELECTOR, out);
+      } else {
+        const own = shadowRootOf(el!);
+        if (own && el!.shadowRoot !== own) {
+          deepQueryAll(own, OPTION_SELECTOR, out);
+        }
+      }
+      return out;
+    }
+    function findOption(): Element | null {
+      // The light DOM first — exactly the old lookup, so a page without shadow
+      // roots does no extra work when the option is there. Then open shadow
+      // roots anywhere, then the control's own closed tree. A page-wide
+      // closed-root probe on every 300 ms poll would cost one extension call per
+      // element per poll, even on a page with no shadow roots at all.
+      return (
+        pickOption(doc.querySelectorAll(OPTION_SELECTOR)) ||
+        pickOption(openShadowRows(doc, [])) ||
+        pickOption(controlClosedRows())
+      );
     }
     // Opening the menu ran the page's own handlers, and every await below lets
     // it run more — either can attach a new shadow root (a web-component

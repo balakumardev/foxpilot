@@ -144,3 +144,87 @@ describe("performFileUpload pierces shadow roots", () => {
     expect(input.files?.length).toBe(1);
   });
 });
+
+/**
+ * Review fixes for upload-file: the uid lookup tries open shadow roots before
+ * probing closed ones, the file input's input event is composed (its change is
+ * not), and the drop-zone ancestor walk reads the real parent even when a form
+ * control named "parentNode" shadows the form's own (Chrome exposes named
+ * controls as form properties; jsdom does not, so the test installs the same
+ * own property). Identical block in the Firefox and Chrome suites.
+ */
+describe("performFileUpload: lookup cost, composed input, real ancestors", () => {
+  const probe = { calls: 0 };
+  let hadChrome = false;
+
+  beforeEach(() => {
+    document.body.innerHTML = "";
+    (global as unknown as { DataTransfer: unknown }).DataTransfer = MockDataTransfer;
+    probe.calls = 0;
+    const g = globalThis as any;
+    hadChrome = typeof g.chrome !== "undefined";
+    if (!hadChrome) {
+      g.chrome = {};
+    }
+    g.chrome.dom = {
+      openOrClosedShadowRoot: () => {
+        probe.calls++;
+        return null;
+      },
+    };
+  });
+  afterEach(() => {
+    const g = globalThis as any;
+    delete g.chrome.dom;
+    if (!hadChrome) {
+      delete g.chrome;
+    }
+    document.body.innerHTML = "";
+  });
+
+  function openRoot(tag: string, html: string): ShadowRoot {
+    const host = document.createElement(tag);
+    document.body.appendChild(host);
+    const root = host.attachShadow({ mode: "open" });
+    root.innerHTML = html;
+    return root;
+  }
+
+  it("resolves a file input uid in an open shadow root without a closed-root probe", () => {
+    document.body.innerHTML = `<div><span>a</span><span>b</span></div>`;
+    const root = openRoot("x-upload", `<div><input type="file" data-bcmcp-uid="e1"></div>`);
+    const input = root.querySelector("input") as HTMLInputElement;
+    makeFilesSettable(input);
+
+    const r = performFileUpload(document, args("e1"));
+
+    expect(r.ok).toBe(true);
+    expect(input.files?.length).toBe(1);
+    expect(probe.calls).toBe(0);
+  });
+
+  it("the file input's input event is composed (the host sees it) and its change is not", () => {
+    const root = openRoot("x-upload", `<input type="file" data-bcmcp-uid="e1">`);
+    makeFilesSettable(root.querySelector("input") as HTMLInputElement);
+    const seen: string[] = [];
+    root.host.addEventListener("input", () => seen.push("input"));
+    root.host.addEventListener("change", () => seen.push("change"));
+
+    expect(performFileUpload(document, args("e1")).ok).toBe(true);
+    expect(seen).toEqual(["input"]);
+  });
+
+  it("finds the drop zone's input through a form whose control is named parentNode", () => {
+    document.body.innerHTML = `<div class="dropzone"><input type="file" id="real" style="display:none"><form id="f"><input name="parentNode" /><button type="button" data-bcmcp-uid="e1">Choose file</button></form></div>`;
+    const form = document.getElementById("f")!;
+    const shadowing = form.querySelector('input[name="parentNode"]');
+    Object.defineProperty(form, "parentNode", { configurable: true, get: () => shadowing });
+    const real = document.getElementById("real") as HTMLInputElement;
+    makeFilesSettable(real);
+
+    const r = performFileUpload(document, args("e1"));
+
+    expect(r.ok).toBe(true);
+    expect(real.files?.length).toBe(1);
+  });
+});

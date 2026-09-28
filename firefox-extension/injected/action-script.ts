@@ -87,15 +87,20 @@ export function performInputAction(
     }
     // Tree-of-trees search (document tree + every reachable shadow tree, incl. unassigned light nodes'
     // roots). Use for uid resolution and for clearing stale uids — NOT for listing (listing is flat-tree).
+    // Two passes: OPEN roots first (a plain .shadowRoot read, no extension call), then — only on a miss —
+    // closed roots too, so a light-DOM or open-root match never pays for the closed-root probe.
     function deepQuery(root: Document | ShadowRoot, sel: string): Element | null {
-      const hit = root.querySelector(sel);
-      if (hit) return hit;
-      const all = root.querySelectorAll("*");
-      for (let i = 0; i < all.length; i++) {
-        const sr = shadowRootOf(all[i]);
-        if (sr) { const h = deepQuery(sr, sel); if (h) return h; }
+      function walk(r: Document | ShadowRoot, closed: boolean): Element | null {
+        const hit = r.querySelector(sel);
+        if (hit) return hit;
+        const all = r.querySelectorAll("*");
+        for (let i = 0; i < all.length; i++) {
+          const sr = closed ? shadowRootOf(all[i]) : ((all[i] as any).shadowRoot as ShadowRoot | null);
+          if (sr) { const h = walk(sr, closed); if (h) return h; }
+        }
+        return null;
       }
-      return null;
+      return walk(root, false) || walk(root, true);
     }
     // document.elementFromPoint retargets to the outermost host; ShadowRoot.elementFromPoint drills one level
     // only, so loop. Stops when a root has no elementFromPoint or returns the host itself.
@@ -276,7 +281,7 @@ export function performInputAction(
     function labeledCheckControl(el: Element): Element | null {
       try {
         const label = (
-          el.tagName === "LABEL"
+          el.localName === "label"
             ? el
             : typeof (el as { closest?: (s: string) => Element | null })
                 .closest === "function"
@@ -295,12 +300,58 @@ export function performInputAction(
         // controls (text inputs, selects) are left untouched — a trusted label
         // click only focuses those, which the press sequence already does.
         const type = (ctl.getAttribute("type") || "").toLowerCase();
-        if (ctl.tagName !== "INPUT" || (type !== "checkbox" && type !== "radio")) {
+        if (ctl.localName !== "input" || (type !== "checkbox" && type !== "radio")) {
           return null;
+        }
+        // A click on interactive content inside the label — a link, a button,
+        // another field — or on anything inside it runs THAT element's
+        // activation and never the label's (the browsers skip label activation
+        // for such targets). So "Terms" in `<label>I agree to the <a
+        // href=#terms>Terms</a> <input type=checkbox></label>` follows the link
+        // and leaves the box alone; forwarding here would do both. The walk
+        // reads the native parentElement getter (a form control named
+        // "parentElement" shadows the form's own) and is capped.
+        const parentOf = Object.getOwnPropertyDescriptor(Node.prototype, "parentElement")!.get!;
+        let n: Element | null = el;
+        for (let steps = 0; n && n !== label && steps < 4096; steps++) {
+          if (n !== ctl && isInteractiveContent(n)) {
+            return null;
+          }
+          n = parentOf.call(n) as Element | null;
         }
         return ctl;
       } catch (e) {
         return null;
+      }
+    }
+
+    // HTML "interactive content" as the browsers apply it to label activation:
+    // element kinds, not ARIA roles or tabindex.
+    function isInteractiveContent(n: Element): boolean {
+      if (n.namespaceURI !== "http://www.w3.org/1999/xhtml") {
+        return false;
+      }
+      switch (n.localName) {
+        case "a":
+          return n.hasAttribute("href");
+        case "audio":
+        case "video":
+          return n.hasAttribute("controls");
+        case "img":
+        case "object":
+          return n.hasAttribute("usemap");
+        case "input":
+          return (n.getAttribute("type") || "").toLowerCase() !== "hidden";
+        case "button":
+        case "details":
+        case "embed":
+        case "iframe":
+        case "label":
+        case "select":
+        case "textarea":
+          return true;
+        default:
+          return false;
       }
     }
 
@@ -404,17 +455,22 @@ export function performInputAction(
     }
 
     // The element to NAME for an interception: the cover as seen from a tree the
-    // target shares. A cover inside some OTHER component's shadow root is named
-    // by that component's host (a cookie banner built as a web component reads as
-    // its host element, exactly as the old document-level hit-test reported it);
-    // a cover in the target's own tree is named itself. Without shadow roots
-    // this is always the topmost element.
+    // target is rendered through. A cover inside some OTHER component's shadow
+    // root is named by that component's host (a cookie banner built as a web
+    // component reads as its host element, exactly as the old document-level
+    // hit-test reported it); a cover in any tree on the target's composed path —
+    // its own, or the shadow tree of an ancestor host it is slotted into (an app
+    // shell's scrim) — is named itself. Without shadow roots this is always the
+    // topmost element. The upward walk is capped (see isRenderedWithin).
     function interceptSubject(target: Element, cover: Element): Element {
       const shared: Node[] = [];
-      for (let r: Node | null = target.getRootNode(); r; ) {
-        shared.push(r);
-        const h = (r as any).host as Element | undefined;
-        r = h ? h.getRootNode() : null;
+      let n: Node | null = target;
+      for (let steps = 0; n && steps < 4096; steps++) {
+        const r = n.getRootNode();
+        if (shared.indexOf(r) < 0) {
+          shared.push(r);
+        }
+        n = composedParent(n);
       }
       let c: Element = cover;
       for (let depth = 0; depth < 32; depth++) {
@@ -429,6 +485,37 @@ export function performInputAction(
     }
 
     // --- role-wrapper click retargeting ---
+    // A menu/list/grid row whose ONE control fills it (`<li role=menuitem>
+    // <button>Draft…</button></li>`) is a single target: a real click at the
+    // row's centre lands on the button's text and activates the button, while a
+    // click dispatched on the row never reaches the button's own handler. So a
+    // click on such a wrapper goes to that control. Everything else keeps the
+    // click: containers with several controls, dialogs / radiogroups / tablists
+    // / backdrops (not wrapper roles), elements with an activation of their own
+    // (a link, a label, an editor), a row that shows text of its own ("Invoice
+    // 42 · Acme · Paid" with only "Acme" a link), and a disabled or unrendered
+    // control. The wrapper roles and the one-control rule mirror the snapshot's
+    // role-wrapper collapse (snapshot-script.ts).
+    function isWrapperRole(role: string): boolean {
+      switch (role) {
+        case "menuitem":
+        case "menuitemcheckbox":
+        case "menuitemradio":
+        case "option":
+        case "tab":
+        case "treeitem":
+        case "row":
+        case "gridcell":
+        case "listitem":
+          return true;
+        default:
+          return false;
+      }
+    }
+
+    function firstRoleToken(el: Element): string {
+      return (el.getAttribute("role") || "").trim().split(/\s+/)[0].toLowerCase();
+    }
 
     // First role token that makes an element an interactive control (the shared
     // interactive-control predicate; the snapshot's role-wrapper collapse keys
@@ -463,53 +550,182 @@ export function performInputAction(
       return INTERACTIVE_ROLES[role] === true;
     }
 
-    // Hidden controls don't count as activation targets (the snapshot never
-    // lists them). Only checks that can hold for a node on a rendered hit path.
-    function isHiddenControl(el: Element): boolean {
-      if (el.hasAttribute("hidden") || el.getAttribute("aria-hidden") === "true") {
+    // Elements whose own click already does something — follows a link, presses
+    // a button, edits, forwards to a labeled control. Such a uid is never
+    // unwrapped: the click is meant for it, whatever sits at its centre.
+    function hasOwnActivation(el: Element): boolean {
+      const tag = el.localName;
+      if (
+        tag === "button" ||
+        tag === "input" ||
+        tag === "select" ||
+        tag === "textarea" ||
+        tag === "summary" ||
+        tag === "label"
+      ) {
+        return true;
+      }
+      if ((tag === "a" || tag === "area") && el.hasAttribute("href")) {
+        return true;
+      }
+      if ((el as { isContentEditable?: boolean }).isContentEditable === true) {
+        return true;
+      }
+      const ce = el.getAttribute("contenteditable");
+      return ce !== null && ce.toLowerCase() !== "false";
+    }
+
+    function isDisabledControl(el: Element): boolean {
+      if (el.hasAttribute("disabled") || el.getAttribute("aria-disabled") === "true") {
         return true;
       }
       try {
-        const cs =
-          win && typeof win.getComputedStyle === "function"
-            ? win.getComputedStyle(el)
-            : null;
-        return (
-          !!cs &&
-          (cs.display === "none" ||
-            cs.visibility === "hidden" ||
-            cs.visibility === "collapse")
-        );
+        return el.matches(":disabled"); // e.g. inside a disabled <fieldset>
       } catch (e) {
         return false;
       }
     }
 
-    // Where a real click at the uid element's centre would land its activation.
-    // When the centre hit is a descendant of the uid element, a trusted click
-    // targets that descendant and the NEAREST activatable element on its path
-    // runs — e.g. the <button> inside an li[role=menuitem] wrapper, whose own
-    // click handler a click dispatched on the li never reached. So walk the
-    // composed path from the hit up to (not including) the uid element and take
-    // the first interactive control or <label> (label forwarding then still
-    // runs on it). None → the uid element itself, exactly as before; that keeps
-    // button>span and a>span on the button/link (activation never depends on
-    // the browser forwarding an untrusted click from an inner span) and
-    // li(handler)>span on the li. Elements without click() (SVG) are skipped.
-    function activationTargetFor(target: Element, hit: Element): Element {
-      for (let n: Node | null = hit; n && n !== target; n = composedParent(n)) {
-        if (n.nodeType !== 1) {
-          continue;
+    function computedStyleOf(el: Element): CSSStyleDeclaration | null {
+      try {
+        return win && typeof win.getComputedStyle === "function"
+          ? win.getComputedStyle(el)
+          : null;
+      } catch (e) {
+        return null;
+      }
+    }
+
+    // Rendered: not visibility:hidden, and nothing hidden / display:none between
+    // it and `stop` (a display:none ancestor hides it although its own computed
+    // display is not "none"). Every upward walk here is capped: a form control
+    // named "parentNode" makes the form's parentNode lie, and the walk would
+    // cycle.
+    function isRenderedWithin(el: Element, stop: Element): boolean {
+      let n: Node | null = el;
+      for (let steps = 0; n && n !== stop && steps < 4096; steps++) {
+        if (n.nodeType === 1) {
+          if ((n as Element).hasAttribute("hidden")) {
+            return false;
+          }
+          const cs = computedStyleOf(n as Element);
+          if (cs && cs.display === "none") {
+            return false;
+          }
         }
-        const e = n as Element;
-        if (typeof (e as { click?: unknown }).click !== "function") {
-          continue;
-        }
-        if (e.localName === "label" || (isInteractiveControl(e) && !isHiddenControl(e))) {
-          return e;
+        n = composedParent(n);
+      }
+      const own = computedStyleOf(el);
+      return !(own && (own.visibility === "hidden" || own.visibility === "collapse"));
+    }
+
+    // w and every shadow root hosted inside it (open, or closed via the
+    // extension APIs). Walked with querySelectorAll, never .children, which a
+    // form control named "children" shadows.
+    function scopesWithin(w: Element): (Element | ShadowRoot)[] {
+      const scopes: (Element | ShadowRoot)[] = [w];
+      const own = shadowRootOf(w);
+      if (own) {
+        scopes.push(own);
+      }
+      for (let s = 0; s < scopes.length; s++) {
+        const all = scopes[s].querySelectorAll("*");
+        for (let i = 0; i < all.length; i++) {
+          const sr = shadowRootOf(all[i]);
+          if (sr) {
+            scopes.push(sr);
+          }
         }
       }
-      return target;
+      return scopes;
+    }
+
+    // The ONE visible, enabled interactive control rendered inside w, or null
+    // when there is none or there are several.
+    function soleEnabledControl(w: Element, scopes: (Element | ShadowRoot)[]): Element | null {
+      let found: Element | null = null;
+      for (let s = 0; s < scopes.length; s++) {
+        const all = scopes[s].querySelectorAll("*");
+        for (let i = 0; i < all.length; i++) {
+          const e = all[i];
+          // aria-hidden too: the snapshot never lists such a control.
+          if (
+            isInteractiveControl(e) &&
+            e.getAttribute("aria-hidden") !== "true" &&
+            !isDisabledControl(e) &&
+            isRenderedWithin(e, w)
+          ) {
+            if (found) {
+              return null;
+            }
+            found = e;
+          }
+        }
+      }
+      return found;
+    }
+
+    // True when w shows text of its own outside `inner`: it then says more than
+    // its one control (a row reading "Invoice 42 · Acme · Paid" whose only link
+    // is "Acme") and stays the click target. Stands in for the snapshot's rule
+    // that a collapsed wrapper and its control carry the same name. Only
+    // rendered text counts; a hidden subtree's text is not shown.
+    function hasOwnText(
+      w: Element,
+      scopes: (Element | ShadowRoot)[],
+      inner: Element
+    ): boolean {
+      for (let s = 0; s < scopes.length; s++) {
+        const walker = doc.createTreeWalker(scopes[s], 4 /* NodeFilter.SHOW_TEXT */);
+        for (let t = walker.nextNode(); t; t = walker.nextNode()) {
+          if (!/\S/.test(t.nodeValue || "") || composedContains(inner, t)) {
+            continue;
+          }
+          const p = t.parentNode as Node | null;
+          const pe = (p && p.nodeType === 11 ? (p as ShadowRoot).host : p) as Element | null;
+          if (!pe || pe.localName === "style" || pe.localName === "script") {
+            continue;
+          }
+          if (isRenderedWithin(pe, w)) {
+            return true;
+          }
+        }
+      }
+      return false;
+    }
+
+    // Where a real click at a role wrapper's centre lands its activation: on the
+    // wrapper's one control when the centre hit lies inside that control, or
+    // inside a <label> for it (label forwarding then runs on the label). Every
+    // other case — see the rules above — returns the uid element itself, which
+    // is exactly what was clicked before retargeting existed.
+    function activationTargetFor(target: Element, hit: Element): Element {
+      if (hasOwnActivation(target) || !isWrapperRole(firstRoleToken(target))) {
+        return target;
+      }
+      const scopes = scopesWithin(target);
+      const only = soleEnabledControl(target, scopes);
+      if (!only || typeof (only as { click?: unknown }).click !== "function") {
+        return target;
+      }
+      let chosen: Element | null = null;
+      let n: Node | null = hit;
+      for (let steps = 0; n && n !== target && steps < 4096; steps++) {
+        if (
+          n === only ||
+          (n.nodeType === 1 &&
+            (n as Element).localName === "label" &&
+            (n as { control?: Element | null }).control === only)
+        ) {
+          chosen = n as Element;
+          break;
+        }
+        n = composedParent(n);
+      }
+      if (!chosen || hasOwnText(target, scopes, chosen)) {
+        return target;
+      }
+      return chosen;
     }
 
     function describeTarget(el: Element): { tag: string; name?: string } {
@@ -565,8 +781,10 @@ export function performInputAction(
       return desc.tag;
     }
 
+    // Tag tests use localName: in an application/xhtml+xml document tagName
+    // keeps its lowercase spelling ("input"), so tagName === "INPUT" fails there.
     function isCheckable(el: Element): boolean {
-      if (el.tagName !== "INPUT") {
+      if (el.localName !== "input") {
         return false;
       }
       const type = ((el.getAttribute("type") || "") as string).toLowerCase();
@@ -581,7 +799,7 @@ export function performInputAction(
       // Use the prototype's native value setter so framework-managed inputs
       // (React, etc.) observe the change instead of swallowing it.
       const proto =
-        el.tagName === "TEXTAREA"
+        el.localName === "textarea"
           ? win!.HTMLTextAreaElement.prototype
           : win!.HTMLInputElement.prototype;
       const descriptor = Object.getOwnPropertyDescriptor(proto, "value");
@@ -608,7 +826,7 @@ export function performInputAction(
     ): { ok: boolean; error?: string } {
       scrollTo(el);
 
-      if (el.tagName === "SELECT") {
+      if (el.localName === "select") {
         // Resolve the option by exact value OR trimmed visible text / label, then
         // set it through the native HTMLSelectElement value setter so a
         // React-controlled <select> observes the change; fire input + change.
@@ -650,7 +868,9 @@ export function performInputAction(
         } else {
           (el as { value?: string }).value = chosen.value;
         }
-        el.dispatchEvent(new Event("input", { bubbles: true }));
+        // input is composed (it crosses shadow boundaries, as the browser's own
+        // does); change is not.
+        el.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
         el.dispatchEvent(new Event("change", { bubbles: true }));
         return { ok: true };
       }
@@ -679,14 +899,14 @@ export function performInputAction(
       // contenteditable editor) has no value to set: the native
       // HTMLInputElement setter would throw "Illegal invocation" at it, which
       // told the caller nothing. Say what the element is instead.
-      if (el.tagName !== "INPUT" && el.tagName !== "TEXTAREA") {
+      if (el.localName !== "input" && el.localName !== "textarea") {
         return {
           ok: false,
           error:
             "Element uid '" +
             uid +
             "' (<" +
-            el.tagName.toLowerCase() +
+            el.localName +
             ">) is not a fillable field — fill-element sets <input>, <textarea> and <select> values. Target the field itself (take a fresh snapshot); for a contenteditable editor, click it and use type-text.",
         };
       }
@@ -694,7 +914,7 @@ export function performInputAction(
       // Text input / textarea.
       focusSafely(el);
       nativeSetValue(el, value);
-      el.dispatchEvent(new Event("input", { bubbles: true }));
+      el.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
       el.dispatchEvent(new Event("change", { bubbles: true }));
       return { ok: true };
     }
@@ -844,7 +1064,7 @@ export function performInputAction(
             composed: true,
           });
         } else {
-          inputEv = new Event("input", { bubbles: true });
+          inputEv = new Event("input", { bubbles: true, composed: true });
           try {
             Object.defineProperty(inputEv, "inputType", { value: "insertText" });
             Object.defineProperty(inputEv, "data", { value: text });
@@ -1022,8 +1242,8 @@ export function performInputAction(
       // Focus inside a shadow tree leaves document.activeElement on the
       // outermost host; drill down to the element that actually has focus.
       const active = deepActiveElement(doc);
-      const tag = active ? active.tagName : "";
-      const isField = tag === "INPUT" || tag === "TEXTAREA";
+      const tag = active ? active.localName : "";
+      const isField = tag === "input" || tag === "textarea";
       const isCE = !!active && contentEditableHost(active as Element);
       if (!active || (!isField && !isCE)) {
         return {
@@ -1036,7 +1256,7 @@ export function performInputAction(
       if (isField) {
         const current = ((el as { value?: string }).value || "") as string;
         nativeSetValue(el, current + text);
-        el.dispatchEvent(new Event("input", { bubbles: true }));
+        el.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
       } else {
         // contenteditable host — insert via a real beforeinput/input pair rather
         // than rejecting it (the SPA rich-text-editor case).

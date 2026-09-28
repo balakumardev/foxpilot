@@ -273,7 +273,9 @@ export function typeCharStep(
           composed: true,
         });
       }
-      const ev = new Event(type, { bubbles: true, cancelable: cancelable });
+      // Composed like the InputEvent branch (and the browser's own input), so
+      // listeners outside a shadow root see it.
+      const ev = new Event(type, { bubbles: true, cancelable: cancelable, composed: true });
       try {
         Object.defineProperty(ev, "inputType", { value: "insertText" });
         Object.defineProperty(ev, "data", { value: data });
@@ -374,15 +376,20 @@ export function readElementScreenRect(
     }
     // Tree-of-trees search (document tree + every reachable shadow tree, incl. unassigned light nodes'
     // roots). Use for uid resolution and for clearing stale uids — NOT for listing (listing is flat-tree).
+    // Two passes: OPEN roots first (a plain .shadowRoot read, no extension call), then — only on a miss —
+    // closed roots too, so a light-DOM or open-root match never pays for the closed-root probe.
     function deepQuery(root: Document | ShadowRoot, sel: string): Element | null {
-      const hit = root.querySelector(sel);
-      if (hit) return hit;
-      const all = root.querySelectorAll("*");
-      for (let i = 0; i < all.length; i++) {
-        const sr = shadowRootOf(all[i]);
-        if (sr) { const h = deepQuery(sr, sel); if (h) return h; }
+      function walk(r: Document | ShadowRoot, closed: boolean): Element | null {
+        const hit = r.querySelector(sel);
+        if (hit) return hit;
+        const all = r.querySelectorAll("*");
+        for (let i = 0; i < all.length; i++) {
+          const sr = closed ? shadowRootOf(all[i]) : ((all[i] as any).shadowRoot as ShadowRoot | null);
+          if (sr) { const h = walk(sr, closed); if (h) return h; }
+        }
+        return null;
       }
-      return null;
+      return walk(root, false) || walk(root, true);
     }
 
     const el = deepQuery(doc, '[data-bcmcp-uid="' + uid + '"]');
