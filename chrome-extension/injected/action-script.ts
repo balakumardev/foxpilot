@@ -126,6 +126,7 @@ export function performInputAction(
         if (sr) {
           const slots = sr.querySelectorAll("slot");
           for (let i = 0; i < slots.length; i++) {
+            if (typeof (slots[i] as any).assignedNodes !== "function") continue; // <svg><slot>
             const assigned = (slots[i] as HTMLSlotElement).assignedNodes();
             for (let j = 0; j < assigned.length; j++) if (assigned[j] === n) return slots[i];
           }
@@ -1269,6 +1270,7 @@ export function classifyHit(
       if (sr) {
         const slots = sr.querySelectorAll("slot");
         for (let i = 0; i < slots.length; i++) {
+          if (typeof (slots[i] as any).assignedNodes !== "function") continue; // <svg><slot>
           const assigned = (slots[i] as HTMLSlotElement).assignedNodes();
           for (let j = 0; j < assigned.length; j++) if (assigned[j] === n) return slots[i];
         }

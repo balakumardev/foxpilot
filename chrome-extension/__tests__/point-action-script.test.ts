@@ -641,6 +641,48 @@ describe("point tools pierce shadow roots", () => {
     expect(res.element!.id).toBe("scroller");
   });
 
+  it("scroll-at from slotted content of a CLOSED host skips an <svg><slot> in the root-side slot lookup (both API shapes)", () => {
+    const root = closedHost(
+      "amp-search",
+      `<svg><slot></slot></svg><div id="scroller" style="overflow-y: auto"><slot></slot></div>`
+    );
+    const leaf = document.createElement("button");
+    leaf.textContent = "Last item";
+    root.host.appendChild(leaf);
+    const scroller = root.getElementById("scroller")!;
+    Object.defineProperty(scroller, "scrollHeight", { value: 900, configurable: true });
+    Object.defineProperty(scroller, "clientHeight", { value: 300, configurable: true });
+    (scroller as any).scrollBy = jest.fn();
+    (window as any).scrollBy = jest.fn();
+    stubDocHit(leaf);
+
+    exposeClosedViaProperty();
+    const viaProperty = performPointAction(document, { action: "scroll-at", x: 1, y: 1, dy: 50 });
+    expect(viaProperty.error).toBeUndefined();
+    expect(viaProperty.element!.id).toBe("scroller");
+    restoreClosed!();
+    exposeClosedViaChromeDom();
+    const viaChromeDom = performPointAction(document, { action: "scroll-at", x: 1, y: 1, dy: 40 });
+    expect(viaChromeDom.error).toBeUndefined();
+    expect(viaChromeDom.element!.id).toBe("scroller");
+    expect((scroller as any).scrollBy).toHaveBeenCalledTimes(2);
+    expect((window as any).scrollBy).not.toHaveBeenCalled();
+  });
+
+  it("click-at inside an OPEN root that also holds an <svg><slot> clicks the inner button", () => {
+    const root = openHost("amp-nav", `<svg><slot></slot></svg><button id="ua">Users and Access</button>`);
+    const btn = root.getElementById("ua")!;
+    const onClick = jest.fn();
+    btn.addEventListener("click", onClick);
+    stubDocHit(root.host);
+    stubRootHit(root, btn);
+
+    const res = performPointAction(document, { action: "click-at", x: 5, y: 5 });
+
+    expect(res.ok).toBe(true);
+    expect(onClick).toHaveBeenCalledTimes(1);
+  });
+
   it("scrollElementIntoView resolves a uid inside a shadow root", () => {
     const root = openHost("amp-search", `<button data-bcmcp-uid="e7">Far below</button>`);
     const btn = root.querySelector("button")!;

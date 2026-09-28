@@ -128,7 +128,8 @@ export function buildSnapshot(
       const el = node as Element;
       const sr = shadowRootOf(el);
       if (sr) return Array.from(sr.children);
-      if (el.localName === "slot" && isInShadowTree(el)) return Array.from((el as HTMLSlotElement).assignedElements({ flatten: true }));
+      // An <svg><slot> is an SVG element named "slot" with no assignedElements — only real HTML slots.
+      if (el.localName === "slot" && typeof (el as any).assignedElements === "function" && isInShadowTree(el)) return Array.from((el as HTMLSlotElement).assignedElements({ flatten: true }));
     }
     return Array.from(node.children);
   }
@@ -178,6 +179,7 @@ export function buildSnapshot(
       if (sr) {
         const slots = sr.querySelectorAll("slot");
         for (let i = 0; i < slots.length; i++) {
+          if (typeof (slots[i] as any).assignedNodes !== "function") continue; // <svg><slot>
           const assigned = (slots[i] as HTMLSlotElement).assignedNodes();
           for (let j = 0; j < assigned.length; j++) if (assigned[j] === n) return slots[i];
         }
@@ -206,7 +208,8 @@ export function buildSnapshot(
     if (sr) {
       return sr.childNodes;
     }
-    if (el.localName === "slot" && isInShadowTree(el)) {
+    // Same <svg><slot> guard as composedChildren.
+    if (el.localName === "slot" && typeof (el as any).assignedNodes === "function" && isInShadowTree(el)) {
       return (el as HTMLSlotElement).assignedNodes({ flatten: true });
     }
     return el.childNodes;

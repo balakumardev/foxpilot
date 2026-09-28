@@ -882,6 +882,38 @@ describe("shadow DOM: the snapshot walks the flat tree", () => {
     });
   });
 
+  // An <svg><slot> (icon sets ship them) parses as an SVG element whose
+  // localName is "slot" but that has no assignedNodes / assignedElements. The
+  // flat-tree helpers must treat it as a plain element, not abort the walk.
+  it("walks past an <svg><slot> in an OPEN root (default, verbose and textContains)", () => {
+    document.body.innerHTML = `<div id="w"></div>`;
+    attachHost(
+      "x-icon-card",
+      `<svg><slot></slot></svg><button><svg><slot name="icon"></slot></svg>Icon Button</button><button>Plain Button</button>`,
+      { parent: document.getElementById("w")!, light: `<span>Light child</span>` }
+    );
+    expect(snap().tree).toBe(['button "Icon Button" |  |  [uid=e1]', 'button "Plain Button" |  |  [uid=e2]'].join("\n"));
+    expect(snap({ verbose: true }).tree).toContain('button "Plain Button"');
+    expect(snap({ textContains: "plain button" }).tree).toBe('button "Plain Button" |  |  [uid=e1]');
+  });
+
+  it("walks past an <svg><slot> in a CLOSED root, incl. the root-side slot lookup for its light children", () => {
+    document.body.innerHTML = `<div id="w"></div>`;
+    const c = attachHost("x-closed-icon-card", `<svg><slot></slot></svg><div><slot></slot></div><button>Closed Plain</button>`, {
+      mode: "closed",
+      parent: document.getElementById("w")!,
+      light: `<div id="slotted"><button>Slotted Light</button></div>`,
+    });
+    for (const install of [withFirefoxClosedRoots, withChromeDom]) {
+      install(new Map([[c.host, c.root]]), () => {
+        expect(snap().tree).toBe(['button "Slotted Light" |  |  [uid=e1]', 'button "Closed Plain" |  |  [uid=e2]'].join("\n"));
+        // Scoped to the light child: only its hidden-ancestor climb (the
+        // root-side slot lookup) meets the <svg><slot>.
+        expect(snap({ rootSelector: "#slotted" }).tree).toBe('button "Slotted Light" |  |  [uid=e1]');
+      });
+    }
+  });
+
   it("excludes controls in a display:none host or under a display:none ancestor of the host", () => {
     document.body.innerHTML = `<div id="a"></div><div id="b" style="display:none"></div><div id="c"></div>`;
     attachHost("x-hidden", `<button>Inside Hidden Host</button>`, {

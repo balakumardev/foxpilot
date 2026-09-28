@@ -1608,6 +1608,17 @@ describe("shadow DOM + role-wrapper click retargeting", () => {
       expect(classifyHit(root.querySelector(".frame"), span)).toBe("descendant");
     });
 
+    it("slotted (closed) past an <svg><slot>: the root-side lookup skips the SVG element (both API shapes)", () => {
+      const root = closedHost("amp-card", `<svg><slot></slot></svg><div class="frame"><slot></slot></div>`);
+      const span = document.createElement("span");
+      hostOf(root).appendChild(span);
+      exposeClosedViaProperty();
+      expect(classifyHit(root.querySelector(".frame"), span)).toBe("descendant");
+      restoreClosed!();
+      exposeClosedViaChromeDom();
+      expect(classifyHit(root.querySelector(".frame"), span)).toBe("descendant");
+    });
+
     it("an element in a DIFFERENT component's shadow root is still 'unrelated'", () => {
       const a = openHost("amp-nav", `<button>Users and Access</button>`);
       const b = openHost("cookie-banner", `<div class="scrim">cookies</div>`);
@@ -1825,6 +1836,62 @@ describe("shadow DOM + role-wrapper click retargeting", () => {
       expect(onBtn).toHaveBeenCalledTimes(1);
       expect(onHost).toHaveBeenCalledTimes(1);
       expect((res as { dispatchedTo?: unknown }).dispatchedTo).toEqual({ tag: "button", name: "Sign Out" });
+    });
+
+    // An <svg><slot> is an SVG element named "slot" with no assignedNodes; the
+    // hit-test's root-side slot lookup must skip it, not throw (a throw there is
+    // swallowed and silently drops the retarget back onto the wrapper).
+    function mountClosedRow(): { btn: HTMLElement } {
+      document.body.innerHTML = `<ul role="menu"><li role="menuitem" data-bcmcp-uid="e2"></li></ul>`;
+      const root = closedHost("x-menu-row", `<svg><slot></slot></svg><div><slot></slot></div>`, document.querySelector("li")!);
+      const btn = document.createElement("button");
+      btn.textContent = "Draft macOS Submission (1)";
+      hostOf(root).appendChild(btn);
+      return { btn };
+    }
+    it("a wrapper around a CLOSED host with an <svg><slot>: the slotted button still gets the click (Firefox property)", () => {
+      const { btn } = mountClosedRow();
+      const onBtn = jest.fn();
+      btn.addEventListener("click", onBtn);
+      stubRect();
+      stubDocHit(btn); // slotted content is in the document tree
+      exposeClosedViaProperty();
+
+      const res = performInputAction(document, { action: "click", uid: "e2" });
+
+      expect(res.ok).toBe(true);
+      expect(onBtn).toHaveBeenCalledTimes(1);
+      expect((res as { dispatchedTo?: unknown }).dispatchedTo).toEqual({ tag: "button", name: "Draft macOS Submission (1)" });
+    });
+
+    it("a wrapper around a CLOSED host with an <svg><slot>: the slotted button still gets the click (chrome.dom)", () => {
+      const { btn } = mountClosedRow();
+      const onBtn = jest.fn();
+      btn.addEventListener("click", onBtn);
+      stubRect();
+      stubDocHit(btn);
+      exposeClosedViaChromeDom();
+
+      const res = performInputAction(document, { action: "click", uid: "e2" });
+
+      expect(onBtn).toHaveBeenCalledTimes(1);
+      expect((res as { dispatchedTo?: unknown }).dispatchedTo).toEqual({ tag: "button", name: "Draft macOS Submission (1)" });
+    });
+
+    it("an <svg><slot> in an OPEN root next to the target leaves the click alone", () => {
+      const root = openHost("amp-nav", `<svg><slot></slot></svg><button data-bcmcp-uid="e1">Users and Access</button>`);
+      const btn = root.querySelector("button")!;
+      const onBtn = jest.fn();
+      btn.addEventListener("click", onBtn);
+      stubRect();
+      stubDocHit(hostOf(root));
+      stubRootHit(root, btn);
+
+      const res = performInputAction(document, { action: "click", uid: "e1" });
+
+      expect(res.ok).toBe(true);
+      expect(res.intercepted).toBeUndefined();
+      expect(onBtn).toHaveBeenCalledTimes(1);
     });
 
     it("an overlay hit never retargets (interception rules unchanged)", () => {
