@@ -1272,3 +1272,86 @@ describe("shadow DOM + role-wrapper click retargeting", () => {
     });
   });
 });
+
+/**
+ * Closed-root probe memoization. chrome.dom.openOrClosedShadowRoot costs
+ * microseconds per call and every div/span is a host candidate, so a deep uid
+ * lookup probes each element once PER INJECTED-FUNCTION CALL — never twice in
+ * one call, and never from a cache left over by an earlier call. Identical
+ * block in the Firefox and Chrome suites.
+ */
+describe("closed-root probe memoization (per call)", () => {
+  const closedRoots = new Map<Element, ShadowRoot>();
+  const probes = new Map<Element, number>();
+  let hadChrome = false;
+
+  beforeEach(() => {
+    document.body.innerHTML = "";
+    const g = globalThis as any;
+    hadChrome = typeof g.chrome !== "undefined";
+    if (!hadChrome) {
+      g.chrome = {};
+    }
+    g.chrome.dom = {
+      openOrClosedShadowRoot: (el: Element) => {
+        probes.set(el, (probes.get(el) || 0) + 1);
+        return closedRoots.get(el) || null;
+      },
+    };
+  });
+  afterEach(() => {
+    const g = globalThis as any;
+    delete g.chrome.dom;
+    if (!hadChrome) {
+      delete g.chrome;
+    }
+    closedRoots.clear();
+    probes.clear();
+    document.body.innerHTML = "";
+  });
+
+  function closedHost(tag: string, html: string): ShadowRoot {
+    const host = document.createElement(tag);
+    document.body.appendChild(host);
+    const root = host.attachShadow({ mode: "closed" });
+    root.innerHTML = html;
+    closedRoots.set(host, root);
+    return root;
+  }
+
+  it("fill-form resolving two closed-root uids probes each element at most once", () => {
+    document.body.innerHTML = `<div><span>a</span><span>b</span></div><section><p>c</p></section>`;
+    const root = closedHost("amp-form", `<div><input id="a" data-bcmcp-uid="e1" /><input id="b" data-bcmcp-uid="e2" /></div>`);
+
+    const res = performInputAction(document, {
+      action: "fill-form",
+      fields: [
+        { uid: "e1", value: "alpha" },
+        { uid: "e2", value: "beta" },
+      ],
+    });
+
+    expect(res.ok).toBe(true);
+    expect((root.getElementById("a") as HTMLInputElement).value).toBe("alpha");
+    expect((root.getElementById("b") as HTMLInputElement).value).toBe("beta");
+    expect(probes.size).toBeGreaterThan(0);
+    expect(Math.max(...Array.from(probes.values()))).toBe(1);
+  });
+
+  it("does not carry the cache into the next call (a root attached between calls is found)", () => {
+    document.body.innerHTML = `<x-panel></x-panel>`;
+    closedHost("amp-nav", `<button data-bcmcp-uid="e1">Users and Access</button>`);
+    expect(performInputAction(document, { action: "click", uid: "e1" }).ok).toBe(true);
+    expect(probes.get(document.querySelector("x-panel")!)).toBe(1); // probed: no root yet
+
+    const panel = document.querySelector("x-panel")!;
+    const late = panel.attachShadow({ mode: "closed" });
+    late.innerHTML = `<button data-bcmcp-uid="e2">Late</button>`;
+    closedRoots.set(panel, late);
+    const onClick = jest.fn();
+    late.querySelector("button")!.addEventListener("click", onClick);
+
+    expect(performInputAction(document, { action: "click", uid: "e2" }).ok).toBe(true);
+    expect(onClick).toHaveBeenCalledTimes(1);
+  });
+});

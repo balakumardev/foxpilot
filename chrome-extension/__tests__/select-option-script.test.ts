@@ -418,3 +418,64 @@ describe("select-option pierces shadow roots", () => {
     expect(stale.error).toMatch(/fresh snapshot/);
   });
 });
+
+/**
+ * select-option polls across awaits and opens the menu by running the page's
+ * own handlers, either of which can attach a new shadow root mid-call. The
+ * closed-root probe cache must therefore never be reused across an await (or
+ * across the activation): a listbox whose closed root renders AFTER the
+ * trigger was clicked is still found. Identical block in the Firefox and Chrome
+ * suites.
+ */
+describe("select-option never reuses the closed-root cache across an await", () => {
+  const closedRoots = new Map<Element, ShadowRoot>();
+  let hadChrome = false;
+
+  beforeEach(() => {
+    document.body.innerHTML = "";
+    const g = globalThis as any;
+    hadChrome = typeof g.chrome !== "undefined";
+    if (!hadChrome) {
+      g.chrome = {};
+    }
+    g.chrome.dom = { openOrClosedShadowRoot: (el: Element) => closedRoots.get(el) || null };
+  });
+  afterEach(() => {
+    const g = globalThis as any;
+    delete g.chrome.dom;
+    if (!hadChrome) {
+      delete g.chrome;
+    }
+    closedRoots.clear();
+    document.body.innerHTML = "";
+  });
+
+  it("finds options in a closed root the widget attaches asynchronously after the trigger click", async () => {
+    // The trigger lives in an open root, so the uid lookup walks (and probes)
+    // every element — including the still-empty <x-listbox> host.
+    const picker = document.createElement("amp-picker");
+    document.body.appendChild(picker);
+    const proot = picker.attachShadow({ mode: "open" });
+    proot.innerHTML = `<div role="combobox" data-bcmcp-uid="e1"><span class="select__singleValue"></span></div>`;
+    const lb = document.createElement("x-listbox");
+    document.body.appendChild(lb);
+    let picked = 0;
+    proot.querySelector('[role="combobox"]')!.addEventListener("click", () => {
+      setTimeout(() => {
+        const root = lb.attachShadow({ mode: "closed" });
+        root.innerHTML = `<div role="listbox"><div role="option">India</div></div>`;
+        closedRoots.set(lb, root);
+        root.querySelector('[role="option"]')!.addEventListener("click", () => {
+          picked++;
+          (proot.querySelector(".select__singleValue") as HTMLElement).textContent = "India";
+        });
+      }, 50);
+    });
+
+    const r = await selectOption(document, { uid: "e1", option: "India" });
+
+    expect(r.ok).toBe(true);
+    expect(picked).toBe(1);
+    expect(r.selected).toBe("India");
+  });
+});

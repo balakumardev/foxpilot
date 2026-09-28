@@ -34,17 +34,26 @@ export function dispatchMouseMoveStep(
     // Open root, else a closed root via the extension-only APIs (content-script world only):
     // Firefox exposes a read-only `openOrClosedShadowRoot` PROPERTY (Fx 63+); Chrome exposes
     // `chrome.dom.openOrClosedShadowRoot(el)` (Chrome 88+, no permission). Neither exists in the page world.
+    // PERF (measured): chrome.dom.openOrClosedShadowRoot costs 2.5-8.6 µs per call and div/span are host
+    // candidates, so walks memoize the closed-root probe PER INJECTED-FUNCTION CALL. The cache is declared
+    // inside the exported function (never module scope). Async selectOption must not reuse it across awaits.
+    const closedRootCache = new Map<Element, ShadowRoot | null>();
     function shadowRootOf(el: Element): ShadowRoot | null {
       const open = (el as any).shadowRoot as ShadowRoot | null | undefined;
       if (open) return open;
       const tag = el.localName;
       if (tag.indexOf("-") < 0 && !SHADOW_HOST_TAGS[tag]) return null;
-      try { const ff = (el as any).openOrClosedShadowRoot; if (ff) return ff as ShadowRoot; } catch (_) {}
-      try {
-        const dom = (globalThis as any).chrome && (globalThis as any).chrome.dom;
-        if (dom && typeof dom.openOrClosedShadowRoot === "function") return (dom.openOrClosedShadowRoot(el) as ShadowRoot) || null;
-      } catch (_) {}
-      return null;
+      if (closedRootCache.has(el)) return closedRootCache.get(el) as ShadowRoot | null;
+      let found: ShadowRoot | null = null;
+      try { const ff = (el as any).openOrClosedShadowRoot; if (ff) found = ff as ShadowRoot; } catch (_) {}
+      if (!found) {
+        try {
+          const dom = (globalThis as any).chrome && (globalThis as any).chrome.dom;
+          if (dom && typeof dom.openOrClosedShadowRoot === "function") found = (dom.openOrClosedShadowRoot(el) as ShadowRoot) || null;
+        } catch (_) {}
+      }
+      closedRootCache.set(el, found);
+      return found;
     }
     // document.elementFromPoint retargets to the outermost host; ShadowRoot.elementFromPoint drills one level
     // only, so loop. Stops when a root has no elementFromPoint or returns the host itself.
@@ -113,17 +122,26 @@ export function typeCharStep(
     // Open root, else a closed root via the extension-only APIs (content-script world only):
     // Firefox exposes a read-only `openOrClosedShadowRoot` PROPERTY (Fx 63+); Chrome exposes
     // `chrome.dom.openOrClosedShadowRoot(el)` (Chrome 88+, no permission). Neither exists in the page world.
+    // PERF (measured): chrome.dom.openOrClosedShadowRoot costs 2.5-8.6 µs per call and div/span are host
+    // candidates, so walks memoize the closed-root probe PER INJECTED-FUNCTION CALL. The cache is declared
+    // inside the exported function (never module scope). Async selectOption must not reuse it across awaits.
+    const closedRootCache = new Map<Element, ShadowRoot | null>();
     function shadowRootOf(el: Element): ShadowRoot | null {
       const open = (el as any).shadowRoot as ShadowRoot | null | undefined;
       if (open) return open;
       const tag = el.localName;
       if (tag.indexOf("-") < 0 && !SHADOW_HOST_TAGS[tag]) return null;
-      try { const ff = (el as any).openOrClosedShadowRoot; if (ff) return ff as ShadowRoot; } catch (_) {}
-      try {
-        const dom = (globalThis as any).chrome && (globalThis as any).chrome.dom;
-        if (dom && typeof dom.openOrClosedShadowRoot === "function") return (dom.openOrClosedShadowRoot(el) as ShadowRoot) || null;
-      } catch (_) {}
-      return null;
+      if (closedRootCache.has(el)) return closedRootCache.get(el) as ShadowRoot | null;
+      let found: ShadowRoot | null = null;
+      try { const ff = (el as any).openOrClosedShadowRoot; if (ff) found = ff as ShadowRoot; } catch (_) {}
+      if (!found) {
+        try {
+          const dom = (globalThis as any).chrome && (globalThis as any).chrome.dom;
+          if (dom && typeof dom.openOrClosedShadowRoot === "function") found = (dom.openOrClosedShadowRoot(el) as ShadowRoot) || null;
+        } catch (_) {}
+      }
+      closedRootCache.set(el, found);
+      return found;
     }
     function deepActiveElement(doc: Document): Element | null {
       let a: Element | null = doc.activeElement;
@@ -333,17 +351,26 @@ export function readElementScreenRect(
     // Open root, else a closed root via the extension-only APIs (content-script world only):
     // Firefox exposes a read-only `openOrClosedShadowRoot` PROPERTY (Fx 63+); Chrome exposes
     // `chrome.dom.openOrClosedShadowRoot(el)` (Chrome 88+, no permission). Neither exists in the page world.
+    // PERF (measured): chrome.dom.openOrClosedShadowRoot costs 2.5-8.6 µs per call and div/span are host
+    // candidates, so walks memoize the closed-root probe PER INJECTED-FUNCTION CALL. The cache is declared
+    // inside the exported function (never module scope). Async selectOption must not reuse it across awaits.
+    const closedRootCache = new Map<Element, ShadowRoot | null>();
     function shadowRootOf(el: Element): ShadowRoot | null {
       const open = (el as any).shadowRoot as ShadowRoot | null | undefined;
       if (open) return open;
       const tag = el.localName;
       if (tag.indexOf("-") < 0 && !SHADOW_HOST_TAGS[tag]) return null;
-      try { const ff = (el as any).openOrClosedShadowRoot; if (ff) return ff as ShadowRoot; } catch (_) {}
-      try {
-        const dom = (globalThis as any).chrome && (globalThis as any).chrome.dom;
-        if (dom && typeof dom.openOrClosedShadowRoot === "function") return (dom.openOrClosedShadowRoot(el) as ShadowRoot) || null;
-      } catch (_) {}
-      return null;
+      if (closedRootCache.has(el)) return closedRootCache.get(el) as ShadowRoot | null;
+      let found: ShadowRoot | null = null;
+      try { const ff = (el as any).openOrClosedShadowRoot; if (ff) found = ff as ShadowRoot; } catch (_) {}
+      if (!found) {
+        try {
+          const dom = (globalThis as any).chrome && (globalThis as any).chrome.dom;
+          if (dom && typeof dom.openOrClosedShadowRoot === "function") found = (dom.openOrClosedShadowRoot(el) as ShadowRoot) || null;
+        } catch (_) {}
+      }
+      closedRootCache.set(el, found);
+      return found;
     }
     // Tree-of-trees search (document tree + every reachable shadow tree, incl. unassigned light nodes'
     // roots). Use for uid resolution and for clearing stale uids — NOT for listing (listing is flat-tree).
