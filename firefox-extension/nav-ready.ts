@@ -1,9 +1,11 @@
 /**
- * Background-side tab-readiness for Firefox (MV2). `browser.tabs.update` resolves
- * when a navigation COMMITS, not when the document is ready — so the isolated
- * content-script world is torn down and the next DOM tool runs mid-navigation.
- * `waitForTabReady` closes that gap: it settles on status:"complete" and then
- * confirms the frame is injectable with a trivial executeScript probe. It NEVER
+ * Background-side tab-readiness for Firefox (MV2). `browser.tabs.update`
+ * resolves as soon as a navigation is REQUESTED — before it has even started
+ * loading, let alone committed — so the next DOM tool can run against the page
+ * being left, or mid-navigation once the old isolated world is torn down.
+ * `navigateAndSettle` waits out a navigation it issues itself.
+ * `waitForTabReady` settles on status:"complete" and then confirms the frame is
+ * injectable with a trivial executeScript probe. It NEVER
  * rejects on timeout — it resolves best-effort so the caller proceeds (the tool
  * dispatch that follows surfaces any genuine failure). No new permissions
  * (`tabs` is already granted); the readiness handshake mirrors the nav-race
@@ -75,6 +77,86 @@ export async function waitForTabReady(
     await sleep(POLL_MS);
   }
   // Timeout: resolve best-effort (never reject) so the caller proceeds.
+}
+
+/**
+ * Runs `start` (the tabs.update / tabs.reload that issues a navigation) and
+ * waits until the tab has finished loading the page THAT navigation produced,
+ * or the navigation ended without one (a 204, a download, a cancelled load).
+ * Bounded by `timeoutMs`; never rejects on timeout. Resolves `committed: true`
+ * once the tab reported a location change after `start` began.
+ *
+ * waitForTabReady cannot do this on its own: tabs.update resolves BEFORE the
+ * load has even started. Right after it Firefox still reports the page being
+ * left (status "complete", the old url), and that document keeps answering
+ * executeScript — so a settle that trusts the first tabs.get settles on the
+ * old page and reads back its url. Recorded on Firefox 151: tabs.update and a
+ * tabs.get 12ms later both said complete + old url; the load started at 14ms.
+ * And navigating while the previous load is still in flight first fires a
+ * status:"complete" for that aborted load, then the new status:"loading".
+ *
+ * Firefox's onUpdated separates the phases: status:"loading" with NO url when
+ * a load starts, a `url` on every top-level location change (the commit —
+ * same-url reloads and same-document jumps included), status:"complete" when
+ * it stops. So the listener is armed BEFORE `start` (a fast commit can land
+ * before tabs.update resolves), and the wait only ends on a live "complete"
+ * seen after this navigation's own start or commit.
+ */
+export async function navigateAndSettle(
+  tabId: number,
+  start: () => Promise<unknown>,
+  opts: { timeoutMs: number }
+): Promise<{ committed: boolean }> {
+  const deadline =
+    Date.now() + Math.min(Math.max(opts.timeoutMs, 0), READY_MAX_TIMEOUT_MS);
+  let started = false;
+  let committed = false;
+  let events = 0;
+  let wake: (() => void) | null = null;
+  const listener = (id: number, info: { status?: string; url?: string }) => {
+    if (id !== tabId || !info) return;
+    if (info.url) committed = true;
+    if (info.status === "loading") started = true;
+    events++;
+    if (wake) wake();
+  };
+  browser.tabs.onUpdated.addListener(listener);
+  try {
+    await start();
+    while (true) {
+      const seen = events;
+      let tab: { status?: string } | undefined;
+      try {
+        tab = await browser.tabs.get(tabId);
+      } catch {
+        break; // tab gone — nothing left to wait for
+      }
+      if (tab && tab.status === "complete" && (started || committed)) break;
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) break;
+      // An event that landed during the read may already be stale in `tab`;
+      // re-read at once rather than sleeping through it.
+      if (events !== seen) continue;
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(() => {
+          wake = null;
+          resolve();
+        }, Math.min(POLL_MS, remaining));
+        wake = () => {
+          clearTimeout(timer);
+          wake = null;
+          resolve();
+        };
+      });
+    }
+    return { committed };
+  } finally {
+    try {
+      browser.tabs.onUpdated.removeListener(listener);
+    } catch {
+      /* ignore */
+    }
+  }
 }
 
 // Firefox analog of the Chrome sendMessageToTab harden: run an injected probe,

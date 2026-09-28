@@ -54,7 +54,7 @@ import {
 } from "./cdp-input";
 import { cdpEval } from "./cdp-eval";
 import { raceInputAgainstNavigation } from "./nav-race";
-import { waitForTabReady } from "./nav-ready";
+import { waitForTabReady, navigateAndSettle } from "./nav-ready";
 
 type InputActionArgs =
   | { action: "click"; uid: string; doubleClick?: boolean; failIfIntercepted?: boolean }
@@ -1870,26 +1870,25 @@ export class MessageHandler {
       throw new Error("Domain in user defined deny list");
     }
 
+    // Where the tab is BEFORE navigating: forceLoad picks reload-vs-update from
+    // it, and the reply uses it to tell a tab that moved from one still showing
+    // the page it was asked to leave.
+    let before: { url?: string } | undefined;
+    try {
+      before = await browser.tabs.get(tabId);
+    } catch {
+      before = undefined;
+    }
     // Force a real document load to defeat in-app SPA routing (reload if the tab
     // is already at the target url, else navigate to it).
-    if (opts?.forceLoad) {
-      let current: { url?: string } | undefined;
-      try {
-        current = await browser.tabs.get(tabId);
-      } catch {
-        current = undefined;
-      }
-      if (current && current.url === url) {
-        await browser.tabs.reload(tabId, {});
-      } else {
-        await browser.tabs.update(tabId, { url });
-      }
-    } else {
-      await browser.tabs.update(tabId, { url });
-    }
+    const start = () =>
+      opts?.forceLoad && before && before.url === url
+        ? browser.tabs.reload(tabId, {})
+        : browser.tabs.update(tabId, { url });
 
     // waitUntil:"none" restores the old fire-and-forget echo.
     if (opts?.waitUntil === "none") {
+      await start();
       await this.client.sendResourceToServer({
         resource: "navigated",
         correlationId,
@@ -1909,26 +1908,50 @@ export class MessageHandler {
     const OVERALL_CAP_MS = 28000;
     const budget = Math.min(Math.max(opts?.timeoutMs ?? 15000, 0), 29000);
     const settleBudget = Math.min(budget, 8000);
-    await waitForTabReady(tabId, { timeoutMs: settleBudget });
+    // The navigation wait and the readiness probe share the settle budget.
+    const settleDeadline = Date.now() + settleBudget;
+    const nav = await navigateAndSettle(tabId, start, { timeoutMs: settleBudget });
+    await waitForTabReady(tabId, {
+      timeoutMs: Math.max(0, settleDeadline - Date.now()),
+    });
     const conditionBudget = Math.min(
       budget,
       Math.max(0, OVERALL_CAP_MS - settleBudget)
     );
     const mismatch = await this.awaitNavConditions(tabId, opts, conditionBudget);
 
-    let finalUrl = url;
+    let finalTab: { url?: string; pendingUrl?: string } | undefined;
     try {
-      const finalTab = await browser.tabs.get(tabId);
-      if (finalTab && finalTab.url) finalUrl = finalTab.url;
+      finalTab = await browser.tabs.get(tabId);
     } catch {
-      /* keep the requested url as a best-effort fallback */
+      finalTab = undefined;
     }
+    // An unreadable tab keeps the requested url as a best-effort fallback.
+    const finalUrl = (finalTab && finalTab.url) || url;
+    // Until the navigation commits, tab.url is still the page being left (the
+    // destination sits in pendingUrl). Reporting it as where the tab "navigated
+    // to" is exactly the old-url bug, so when nothing shows the tab moved, say it
+    // did not commit instead — naming what the browser is still loading.
+    // (A commit can also land after the settle window, while a waitFor*
+    // condition is still polling — hence the url comparison.)
+    const moved =
+      nav.committed ||
+      !(finalTab && finalTab.url) ||
+      finalTab.url !== (before && before.url);
 
     await this.client.sendResourceToServer({
       resource: "navigated",
       correlationId,
       tabId,
       url: mismatch ? `${finalUrl} — ${mismatch}` : finalUrl,
+      ...(moved
+        ? {}
+        : {
+            committed: false,
+            ...(finalTab && finalTab.pendingUrl
+              ? { pendingUrl: finalTab.pendingUrl }
+              : {}),
+          }),
     });
   }
 

@@ -1,5 +1,12 @@
+// The settle itself is covered against realistic tab events by
+// navigate-tab-final-url.test.ts; here it simply issues the navigation and
+// reports that it committed, so these tests isolate the budget/condition logic.
 jest.mock("../nav-ready", () => ({
   waitForTabReady: jest.fn().mockResolvedValue(undefined),
+  navigateAndSettle: jest.fn(async (_tabId: number, start: () => Promise<unknown>) => {
+    await start();
+    return { committed: true };
+  }),
 }));
 // Defensive module-load mocks (mirror message-handler.test.ts header).
 jest.mock("../native-input-client", () => ({
@@ -9,7 +16,7 @@ jest.mock("../cdp-eval", () => ({ cdpEval: jest.fn() }));
 
 import { mockBrowser } from "./setup";
 import { MessageHandler } from "../message-handler";
-import { waitForTabReady } from "../nav-ready";
+import { navigateAndSettle, waitForTabReady } from "../nav-ready";
 import type { ExtensionTransport } from "../transport";
 import type { ServerMessageRequest } from "@foxpilot/common";
 
@@ -76,6 +83,7 @@ describe("chrome navigate-tab settle", () => {
     // (addAuditLogForReq) for every tabId-bearing command, so asserting on
     // waitForTabReady — not tabs.get — is the accurate proxy for "no settle".)
     expect(waitForTabReady).not.toHaveBeenCalled();
+    expect(navigateAndSettle).not.toHaveBeenCalled();
   });
 
   it("clamps the combined settle+condition budget under the broker cap for a large timeoutMs", async () => {
@@ -87,8 +95,10 @@ describe("chrome navigate-tab settle", () => {
       waitForText: "Never appears", timeoutMs: 40000, correlationId: "c4",
     } as any;
     await handler.handleDecodedMessage(req);
-    // Settle stays capped at 8s.
-    expect(waitForTabReady).toHaveBeenCalledWith(7, { timeoutMs: 8000 });
+    // Settle stays capped at 8s: the navigation wait gets it, and the readiness
+    // probe only what is left of it.
+    expect(navigateAndSettle).toHaveBeenCalledWith(7, expect.any(Function), { timeoutMs: 8000 });
+    expect((waitForTabReady as jest.Mock).mock.calls[0][1].timeoutMs).toBeLessThanOrEqual(8000);
     // Condition budget is clamped so settle(8s) + conditions ≤ 28s (< 30s broker cap).
     const conditionBudget = condSpy.mock.calls[0][2] as number;
     expect(conditionBudget).toBe(20000);

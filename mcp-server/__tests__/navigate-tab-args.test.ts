@@ -38,6 +38,9 @@ describe("BrowserAPI.navigateTab params over the broker", () => {
   let ext: WebSocket;
   let api: BrowserAPI;
   let lastReq: ServerMessageRequest | null = null;
+  // When set, the mock extension answers with these fields instead of the
+  // settled-url default below.
+  let replyOverride: Record<string, unknown> | null = null;
   const origSecret = process.env.EXTENSION_SECRET;
   const origPort = process.env.EXTENSION_PORT;
 
@@ -53,6 +56,7 @@ describe("BrowserAPI.navigateTab params over the broker", () => {
         correlationId: req.correlationId,
         tabId: (req as any).tabId,
         url: "https://dash.cloudflare.com/home",
+        ...replyOverride,
       };
     });
     process.env.EXTENSION_SECRET = SECRET;
@@ -92,5 +96,19 @@ describe("BrowserAPI.navigateTab params over the broker", () => {
     expect((lastReq as any).cmd).toBe("navigate-tab");
     expect((lastReq as any).waitUntil).toBeUndefined();
     expect(result.url).toBe("https://dash.cloudflare.com/home");
+  });
+
+  it("carries a not-committed result through the broker intact", async () => {
+    // Dropping these fields anywhere on the way would make the tool print the
+    // page the tab is still on as the place it navigated to.
+    replyOverride = { committed: false, pendingUrl: "https://dash.cloudflare.com/templates" };
+    try {
+      const result = await api.navigateTab(7, "https://dash.cloudflare.com/templates");
+      expect(result.url).toBe("https://dash.cloudflare.com/home");
+      expect(result.committed).toBe(false);
+      expect(result.pendingUrl).toBe("https://dash.cloudflare.com/templates");
+    } finally {
+      replyOverride = null;
+    }
   });
 });

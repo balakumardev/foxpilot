@@ -82,6 +82,13 @@ export interface NavigatedExtensionMessage extends ExtensionMessageBase {
   resource: "navigated";
   tabId: number;
   url?: string;
+  // navigate-tab only (append-only, optional for back-compat). Set false when
+  // the tab never showed the navigation committing within the wait: `url` is
+  // then the page the tab is STILL on, not the destination. Absent otherwise.
+  committed?: boolean;
+  // With committed:false, the url the browser is still loading, when it says
+  // (Chrome's tabs.Tab.pendingUrl; Firefox has no equivalent).
+  pendingUrl?: string;
 }
 
 export interface TabSelectedExtensionMessage extends ExtensionMessageBase {

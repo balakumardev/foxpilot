@@ -9,6 +9,7 @@ import { formatNetworkHeaders } from "./network-format";
 import { formatSnapshotResult } from "./snapshot-format";
 import { formatEvalResult } from "./eval-format";
 import { formatClickResult } from "./click-format";
+import { formatNavigateResult } from "./navigate-format";
 import { allowedNavUrl, NAV_URL_MESSAGE } from "./url-policy";
 import dayjs from "dayjs";
 import relativeTime from "dayjs/plugin/relativeTime";
@@ -322,14 +323,7 @@ mcpServer.tool(
       timeoutMs,
       activateTab,
     });
-    return {
-      content: [
-        {
-          type: "text",
-          text: `Navigated tab ${result.tabId} to ${result.url ?? url}`,
-        },
-      ],
-    };
+    return formatNavigateResult(url, result);
   }
 );
 

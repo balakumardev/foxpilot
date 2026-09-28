@@ -43,6 +43,10 @@ jest.mock("../native-input-client", () => ({
 jest.mock("../nav-ready", () => ({
   waitForTabReady: jest.fn().mockResolvedValue(undefined),
   execWithReadyRetry: jest.fn(),
+  navigateAndSettle: jest.fn(async (_tabId: number, start: () => Promise<unknown>) => {
+    await start();
+    return { committed: true };
+  }),
 }));
 
 // The shared setup mock (__tests__/setup.ts) does not include
