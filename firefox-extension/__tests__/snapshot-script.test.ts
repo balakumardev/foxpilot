@@ -1,4 +1,5 @@
 import { buildSnapshot } from "../injected/snapshot-script";
+import * as vm from "vm";
 
 /**
  * These tests run in jsdom (the default Jest test environment for this package).
@@ -1789,4 +1790,139 @@ describe("role-wrapper collapse", () => {
       ].join("\n")
     );
   });
+});
+
+/**
+ * A <form> exposes its controls as named properties that SHADOW built-ins
+ * ([LegacyOverrideBuiltIns]): `<select name="children">` makes `form.children`
+ * return that select, so a walk over it lists the select's options and skips
+ * the rest of the form. jsdom implements no form named properties, so these
+ * tests shadow the property on the form itself — which is what the browser's
+ * named-property lookup amounts to. The oracle is the same page unshadowed.
+ */
+describe("a form's named controls cannot hide its children", () => {
+  afterEach(() => {
+    document.body.innerHTML = "";
+    document.head.innerHTML = "";
+  });
+
+  const FORM = `<button>Outside</button><form id="f"><h2>Search stays</h2><label>Adults <input name="adults" type="number" value="2"></label><label>Kids <select name="children"><option>0</option><option>1</option></select></label><input name="childNodes" aria-label="Promo code"><button>Search</button></form>`;
+
+  function shadowFormProperties(): void {
+    const form = document.getElementById("f")!;
+    const select = form.querySelector("select")!;
+    const promo = form.querySelector('[name="childNodes"]')!;
+    Object.defineProperty(form, "children", { configurable: true, get: () => select });
+    Object.defineProperty(form, "childNodes", { configurable: true, get: () => promo });
+  }
+
+  it.each([
+    ["default", {}],
+    ["verbose", { verbose: true }],
+    ["rootSelector on the form", { rootSelector: "form" }],
+    ["textContains", { textContains: "search" }],
+    ["selector", { selector: "input, select, button" }],
+  ])("%s: lists the form exactly as if nothing were shadowed", (_label, extra) => {
+    document.body.innerHTML = FORM;
+    const expected = snap(extra);
+    expect(expected.total).toBeGreaterThan(0);
+    shadowFormProperties();
+    const got = snap(extra);
+    expect(got.tree).toBe(expected.tree);
+    expect(got.total).toBe(expected.total);
+  });
+
+  it("still lists every control of the shadowed form (default mode)", () => {
+    document.body.innerHTML = FORM;
+    shadowFormProperties();
+    expect(snap().tree).toBe(
+      [
+        'button "Outside" |  |  [uid=e1]',
+        'textbox "Adults" | "2" | Search stays [uid=e2]',
+        'combobox "Kids" | "0" | Search stays [uid=e3]',
+        'textbox "Promo code" |  |  [uid=e4]',
+        'button "Search" |  |  [uid=e5]',
+      ].join("\n")
+    );
+  });
+
+  it("names a cursor:pointer form from its own text when childNodes is shadowed", () => {
+    document.body.innerHTML = `<form id="f" style="cursor: pointer">Open calendar<img name="childNodes" alt=""></form>`;
+    const form = document.getElementById("f")!;
+    const img = form.querySelector("img")!;
+    Object.defineProperty(form, "childNodes", { configurable: true, get: () => img });
+    expect(snap().tree).toBe('clickable "Open calendar" |  |  [uid=e1]');
+  });
+});
+
+/**
+ * A hostile page can name form controls after the DOM's traversal properties:
+ * `<form><input name="parentNode">` makes `form.parentNode` return that input,
+ * which turns every walk up through the form into a cycle — and a content
+ * script shares the page's main thread, so an unbounded walk freezes the tab.
+ * The walks read the prototype getters and are capped. jsdom implements no form
+ * named properties, so each test shadows the property on the form with a getter
+ * that counts its reads and throws once it is clearly read in a loop. The
+ * snapshot memoizes parents, so a cycle can also spin in memory without reading
+ * the property again; the shadowed runs therefore execute the stringified
+ * function (as Firefox injects it) in a vm with a time limit. Either way a
+ * regression fails the test instead of hanging the suite. The oracle is the same
+ * page unshadowed.
+ */
+describe("a form's named controls cannot trap the snapshot in a cycle", () => {
+  afterEach(() => {
+    document.body.innerHTML = "";
+    document.head.innerHTML = "";
+  });
+
+  function trapFormProperty(form: Element, name: string, inner: Element): void {
+    let reads = 0;
+    Object.defineProperty(form, name, {
+      configurable: true,
+      get() {
+        reads += 1;
+        if (reads > 5000) {
+          throw new Error("cycle: form." + name + " read " + reads + " times");
+        }
+        return inner;
+      },
+    });
+  }
+
+  function snapBounded(extra: Record<string, unknown>) {
+    const ctx = vm.createContext({
+      document,
+      Element,
+      Node,
+      opts: { verbose: false, maxLength: 25000, ...extra },
+    });
+    return vm.runInContext("(" + buildSnapshot.toString() + ")(document, opts)", ctx, {
+      timeout: 4000,
+    }) as ReturnType<typeof buildSnapshot>;
+  }
+
+  const PAGE = `<h2>Checkout</h2><form id="f"><label>Card number <input name="cc"></label><input id="trap" aria-label="Coupon"><button>Pay</button></form><button>Help</button>`;
+
+  // No `parentElement` case here: jsdom's own selector engine (behind
+  // getComputedStyle and closest) walks the JS-visible parentElement, so
+  // shadowing it loops inside jsdom, which no browser engine does. That name is
+  // covered for real in e2e/snapshot-edge-cases.spec.ts.
+  it.each(["parentNode", "assignedSlot", "previousElementSibling"])(
+    "form.%s pointing back inside the form",
+    (prop) => {
+      document.body.innerHTML = PAGE;
+      const modes: Array<Record<string, unknown>> = [
+        {},
+        { verbose: true },
+        { textContains: "pay" },
+        { textContains: "coupon" },
+        { selector: "input, button" },
+        { rootSelector: "form" },
+      ];
+      const expected = modes.map((extra) => snap(extra).tree);
+      expect(expected[0]).toContain('button "Pay" |  | Checkout [uid=');
+      trapFormProperty(document.getElementById("f")!, prop, document.getElementById("trap")!);
+      expect(modes.map((extra) => snapBounded(extra).tree)).toEqual(expected);
+    }
+  );
 });

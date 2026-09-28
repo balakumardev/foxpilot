@@ -684,3 +684,45 @@ describe("extractPageContent — text beside a shadow host reads like innerText"
     expect(extractPageContent(document, { offset: 0 }).fullText).toBe("Cap It-All O'neil Hello 3rd");
   });
 });
+
+/**
+ * A <form> exposes its controls as named properties that SHADOW built-ins
+ * ([LegacyOverrideBuiltIns]): `<select name="children">` makes `form.children`
+ * return that select, and `<input name="childNodes">` does the same to
+ * `form.childNodes`. The flat-tree path (any shadow root on the page) walks
+ * both. jsdom implements no form named properties, so these tests shadow the
+ * properties on the form itself; the oracle is the same page unshadowed.
+ */
+describe("extractPageContent — a form's named controls cannot hide its children", () => {
+  function shadowFormProperty(form: Element, name: "children" | "childNodes"): void {
+    const control = form.querySelector('[name="' + name + '"]')!;
+    Object.defineProperty(form, name, { configurable: true, get: () => control });
+  }
+
+  it("lists a form's links on a page with a shadow root", () => {
+    document.body.innerHTML =
+      '<amp-x style="display:block"></amp-x><form id="f"><a href="https://example.com/help">Form help</a> ' +
+      '<select name="children"><option>0</option></select> <input name="childNodes"></form>';
+    openRoot(q("amp-x"), '<a href="https://example.com/shadow">Shadow link</a>');
+    const expected = extractPageContent(document, { offset: 0 });
+    expect(expected.links.map((l) => l.text)).toEqual(["Shadow link", "Form help"]);
+    // The link list walks `children`. (Only that one: this form holds no host, so
+    // its text is the engine's own innerText, which never reads the property.)
+    shadowFormProperty(q("#f"), "children");
+    expect(extractPageContent(document, { offset: 0 })).toEqual(expected);
+  });
+
+  it("reads the text of a form that holds a shadow host", () => {
+    document.body.innerHTML =
+      '<form id="f"><p>Before the widget</p><amp-x style="display:block"></amp-x>' +
+      '<select name="children"><option>0</option></select><input name="childNodes"><p>After the widget</p></form>';
+    openRoot(q("amp-x"), "<span>Inside the widget</span>");
+    const expected = extractPageContent(document, { offset: 0 });
+    expect(expected.fullText).toContain("Before the widget");
+    expect(expected.fullText).toContain("After the widget");
+    // A form holding a host is walked node by node, through `childNodes`.
+    shadowFormProperty(q("#f"), "childNodes");
+    shadowFormProperty(q("#f"), "children");
+    expect(extractPageContent(document, { offset: 0 })).toEqual(expected);
+  });
+});

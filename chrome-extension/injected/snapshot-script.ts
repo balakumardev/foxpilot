@@ -120,6 +120,18 @@ export function buildSnapshot(
     const r = n.getRootNode ? n.getRootNode() : null;
     return !!r && r.nodeType === 11 && !!(r as any).host;
   }
+  // Native accessors, read once per call. A <form> exposes its controls as named properties that SHADOW
+  // built-ins ([LegacyOverrideBuiltIns]): `<form><select name="children">` makes `form.children` return the
+  // select, and `<input name="parentNode">` makes `form.parentNode` return that input, which turns every walk
+  // up through the form into a cycle. Prototype getters are immune; where an environment lacks one, the plain
+  // property is read. Documents and shadow roots have no such named properties.
+  function protoGetter(proto: () => object, name: string): ((this: unknown) => unknown) | undefined {
+    try { const d = Object.getOwnPropertyDescriptor(proto(), name); return d && d.get; } catch (_) { return undefined; }
+  }
+  const nativeChildren = protoGetter(() => Element.prototype, "children");
+  const nativeChildNodes = protoGetter(() => Node.prototype, "childNodes");
+  const nativeParentNode = protoGetter(() => Node.prototype, "parentNode");
+  const nativeAssignedSlot = protoGetter(() => Element.prototype, "assignedSlot");
   // FLAT-TREE children: a host renders its shadow root's children (its light children only via slots);
   // a <slot> inside a shadow tree renders assignedElements({flatten:true}) (fallback content when nothing
   // is assigned). This is what guarantees nothing is listed twice and unassigned light children are skipped.
@@ -130,6 +142,7 @@ export function buildSnapshot(
       if (sr) return Array.from(sr.children);
       // An <svg><slot> is an SVG element named "slot" with no assignedElements — only real HTML slots.
       if (el.localName === "slot" && typeof (el as any).assignedElements === "function" && isInShadowTree(el)) return Array.from((el as HTMLSlotElement).assignedElements({ flatten: true }));
+      return Array.from(nativeChildren ? (nativeChildren.call(el) as HTMLCollection) : el.children);
     }
     return Array.from(node.children);
   }
@@ -174,9 +187,9 @@ export function buildSnapshot(
   // assignedSlot is ALWAYS null when the host's root is closed (even for extensions), so for a child of a
   // closed host we find the slot from the root side (root.querySelectorAll("slot") + assignedNodes()).
   function composedParent(n: Node): Node | null {
-    const slot = (n as any).assignedSlot as Element | null | undefined;
+    const slot = (n.nodeType === 1 && nativeAssignedSlot ? nativeAssignedSlot.call(n) : (n as any).assignedSlot) as Element | null | undefined;
     if (slot) return slot;
-    const p = n.parentNode;
+    const p = (nativeParentNode ? nativeParentNode.call(n) : n.parentNode) as Node | null;
     if (!p) return null;
     if (p.nodeType === 11 && (p as any).host) return (p as any).host as Element;
     if (p.nodeType === 1 && !(p as any).shadowRoot) {
@@ -191,6 +204,21 @@ export function buildSnapshot(
       }
     }
     return p;
+  }
+
+  // The snapshot's own walks read the same prototype getters and every walk up
+  // is capped: a content script shares the page's main thread, so no page may
+  // turn one into an endless loop.
+  const WALK_MAX = 4096;
+  const nativeParentElement = protoGetter(() => Node.prototype, "parentElement");
+  const nativePreviousElementSibling = protoGetter(() => Element.prototype, "previousElementSibling");
+  function parentElementOf(el: Element): Element | null {
+    return (nativeParentElement ? nativeParentElement.call(el) : el.parentElement) as Element | null;
+  }
+  function previousElementOf(el: Element): Element | null {
+    return (nativePreviousElementSibling
+      ? nativePreviousElementSibling.call(el)
+      : el.previousElementSibling) as Element | null;
   }
 
   // composedParent, memoized: the hidden-ancestor walk and the descendant
@@ -217,7 +245,8 @@ export function buildSnapshot(
     if (el.localName === "slot" && typeof (el as any).assignedNodes === "function" && isInShadowTree(el)) {
       return (el as HTMLSlotElement).assignedNodes({ flatten: true });
     }
-    return el.childNodes;
+    // Same named-property guard as composedChildren.
+    return nativeChildNodes ? (nativeChildNodes.call(el) as NodeListOf<ChildNode>) : el.childNodes;
   }
 
   function isLabelControlTag(tag: string): boolean {
@@ -383,7 +412,7 @@ export function buildSnapshot(
     const chain: Node[] = [];
     let result = false;
     let n: Node | null = flatParent(el);
-    while (n && n.nodeType === 1) {
+    while (n && n.nodeType === 1 && chain.length < WALK_MAX) {
       const known = displayNoneMemo.get(n);
       if (known !== undefined) {
         result = known;
@@ -566,14 +595,14 @@ export function buildSnapshot(
   }
 
   function labelFromAncestor(el: Element): string {
-    let node: Element | null = el.parentElement;
-    while (node) {
+    let node: Element | null = parentElementOf(el);
+    for (let up = 0; node && up < WALK_MAX; up++) {
       if (node.tagName.toLowerCase() === "label") {
         // The label's accessible name is its OWN text, excluding any embedded
         // form controls (the wrapped input/select/etc. and its value).
         return textOf(node, true);
       }
-      node = node.parentElement;
+      node = parentElementOf(node);
     }
     return "";
   }
@@ -917,16 +946,16 @@ export function buildSnapshot(
       }
     }
     // 3. ancestor + previousElementSibling walk for the nearest heading.
-    let node: Element | null = el.parentElement;
-    while (node) {
-      let sib: Element | null = node.previousElementSibling;
+    let node: Element | null = parentElementOf(el);
+    for (let up = 0; node && up < WALK_MAX; up++) {
+      let sib: Element | null = previousElementOf(node);
       while (sib) {
         if (isHeading(sib) && collapseWhitespace(textOf(sib))) {
           return textOf(sib);
         }
-        sib = sib.previousElementSibling;
+        sib = previousElementOf(sib);
       }
-      node = node.parentElement;
+      node = parentElementOf(node);
     }
     return "";
   }
@@ -1227,8 +1256,10 @@ export function buildSnapshot(
     }
     const matchBelow = new Set<Node>();
     matched.forEach(function (el) {
-      for (let n = flatParent(el); n && !matchBelow.has(n); n = flatParent(n)) {
+      let n = flatParent(el);
+      for (let up = 0; n && !matchBelow.has(n) && up < WALK_MAX; up++) {
         matchBelow.add(n);
+        n = flatParent(n);
       }
     });
     candidates = candidates.filter(function (el) {
@@ -1260,7 +1291,8 @@ export function buildSnapshot(
     if (!isInteractiveControl(d)) {
       return null;
     }
-    for (let n = flatParent(d); n && n !== root && n.nodeType === 1; n = flatParent(n)) {
+    let n = flatParent(d);
+    for (let up = 0; n && n !== root && n.nodeType === 1 && up < WALK_MAX; up++, n = flatParent(n)) {
       const w = n as Element;
       if (!isWrapperRole(firstRoleToken(w)) || isHidden(w)) {
         continue;
@@ -1394,7 +1426,9 @@ export function buildSnapshot(
       // Build the name from the element's IMMEDIATE text only (its direct child
       // text nodes), never the deep textContent of a large container.
       const parts: string[] = [];
-      const kids = el.childNodes;
+      const kids = nativeChildNodes
+        ? (nativeChildNodes.call(el) as NodeListOf<ChildNode>)
+        : el.childNodes;
       for (let k = 0; k < kids.length; k++) {
         const node = kids[k];
         if (node.nodeType === 3) {
@@ -1408,8 +1442,10 @@ export function buildSnapshot(
     // candidate among them wraps a real control (possibly in a shadow root).
     const wrapsStamped = new Set<Node>();
     for (let s = 0; s < stamped.length; s++) {
-      for (let n = flatParent(stamped[s]); n && !wrapsStamped.has(n); n = flatParent(n)) {
+      let n = flatParent(stamped[s]);
+      for (let up = 0; n && !wrapsStamped.has(n) && up < WALK_MAX; up++) {
         wrapsStamped.add(n);
+        n = flatParent(n);
       }
     }
 

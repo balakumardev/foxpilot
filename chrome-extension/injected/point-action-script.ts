@@ -92,13 +92,23 @@ export function performPointAction(
       }
       return hit;
     }
+    // Native accessors, read once per call. A <form> exposes its controls as named properties that SHADOW
+    // built-ins ([LegacyOverrideBuiltIns]): `<form><select name="children">` makes `form.children` return the
+    // select, and `<input name="parentNode">` makes `form.parentNode` return that input, which turns every walk
+    // up through the form into a cycle. Prototype getters are immune; where an environment lacks one, the plain
+    // property is read. Documents and shadow roots have no such named properties.
+    function protoGetter(proto: () => object, name: string): ((this: unknown) => unknown) | undefined {
+      try { const d = Object.getOwnPropertyDescriptor(proto(), name); return d && d.get; } catch (_) { return undefined; }
+    }
+    const nativeParentNode = protoGetter(() => Node.prototype, "parentNode");
+    const nativeAssignedSlot = protoGetter(() => Element.prototype, "assignedSlot");
     // Flat-tree parent: slotted node → its slot, top-level node of a shadow tree → host, else parentNode.
     // assignedSlot is ALWAYS null when the host's root is closed (even for extensions), so for a child of a
     // closed host we find the slot from the root side (root.querySelectorAll("slot") + assignedNodes()).
     function composedParent(n: Node): Node | null {
-      const slot = (n as any).assignedSlot as Element | null | undefined;
+      const slot = (n.nodeType === 1 && nativeAssignedSlot ? nativeAssignedSlot.call(n) : (n as any).assignedSlot) as Element | null | undefined;
       if (slot) return slot;
-      const p = n.parentNode;
+      const p = (nativeParentNode ? nativeParentNode.call(n) : n.parentNode) as Node | null;
       if (!p) return null;
       if (p.nodeType === 11 && (p as any).host) return (p as any).host as Element;
       if (p.nodeType === 1 && !(p as any).shadowRoot) {

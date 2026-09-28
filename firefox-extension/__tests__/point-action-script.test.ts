@@ -813,3 +813,47 @@ describe("point tools: label content, composed input, lookup cost, bounded walks
     expect(res.ok).toBe(true);
   });
 });
+
+/**
+ * composedParent reads the prototype getters: a form's named controls shadow its
+ * built-ins, so `<form><input name="parentNode">` makes `form.parentNode` return
+ * that input and scroll-at's walk up to a scrollable ancestor would cycle. jsdom
+ * implements no form named properties; the test shadows the property on the form
+ * with a getter that throws once it is clearly read in a loop, so a regression
+ * fails instead of hanging the suite.
+ */
+describe("a form's named controls cannot trap scroll-at in a cycle", () => {
+  afterEach(() => {
+    document.body.innerHTML = "";
+    (document as any).elementFromPoint = undefined;
+  });
+
+  it.each(["parentNode", "assignedSlot"])("scroll-at climbs through form.%s to the scrollable panel", (prop) => {
+    document.body.innerHTML = `<div id="panel" style="overflow-y: scroll"><form id="f"><input id="trap"><span id="leaf">row</span></form></div>`;
+    const panel = document.getElementById("panel")!;
+    const form = document.getElementById("f")!;
+    const trapInput = document.getElementById("trap")!;
+    Object.defineProperty(panel, "scrollHeight", { value: 500, configurable: true });
+    Object.defineProperty(panel, "clientHeight", { value: 200, configurable: true });
+    (panel as any).scrollBy = jest.fn();
+    (window as any).scrollBy = jest.fn();
+    (document as any).elementFromPoint = jest.fn(() => document.getElementById("leaf"));
+    let reads = 0;
+    Object.defineProperty(form, prop, {
+      configurable: true,
+      get() {
+        reads += 1;
+        if (reads > 5000) {
+          throw new Error("cycle: form." + prop + " read " + reads + " times");
+        }
+        return trapInput;
+      },
+    });
+
+    const res = performPointAction(document, { action: "scroll-at", x: 5, y: 5, dy: 120 });
+
+    expect((panel as any).scrollBy).toHaveBeenCalledWith(0, 120);
+    expect((window as any).scrollBy).not.toHaveBeenCalled();
+    expect(res.element!.id).toBe("panel");
+  });
+});

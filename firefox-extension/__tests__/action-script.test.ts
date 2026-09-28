@@ -2515,3 +2515,69 @@ describe("review fixes: retarget scope, label content, composed input, cover nam
     });
   });
 });
+
+/**
+ * composedParent reads the prototype getters and composedContains is capped: a
+ * form's named controls shadow its built-ins, so `<form><input
+ * name="parentNode">` makes `form.parentNode` return that input and turns every
+ * walk up through the form into a cycle (a content script shares the page's main
+ * thread, so an unbounded walk freezes the tab). jsdom implements no form named
+ * properties; each test shadows the property on the form with a getter that
+ * throws once it is clearly read in a loop, so a regression fails instead of
+ * hanging the suite.
+ */
+describe("a form's named controls cannot trap composedContains in a cycle", () => {
+  function trapFormProperty(form: Element, name: string, inner: Element): void {
+    let reads = 0;
+    Object.defineProperty(form, name, {
+      configurable: true,
+      get() {
+        reads += 1;
+        if (reads > 5000) {
+          throw new Error("cycle: form." + name + " read " + reads + " times");
+        }
+        return inner;
+      },
+    });
+  }
+  const PAGE = `<form id="f"><input id="trap"><button id="pay">Pay</button></form><div id="overlay">cookies</div>`;
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+    delete (document as unknown as { elementFromPoint?: unknown }).elementFromPoint;
+    document.body.innerHTML = "";
+  });
+
+  it.each(["parentNode", "assignedSlot"])("classifyHit walks through form.%s and terminates", (prop) => {
+    document.body.innerHTML = PAGE;
+    const form = document.getElementById("f")!;
+    const pay = document.getElementById("pay")!;
+    const overlay = document.getElementById("overlay")!;
+    trapFormProperty(form, prop, document.getElementById("trap")!);
+    expect(classifyHit(pay, overlay)).toBe("unrelated");
+    expect(classifyHit(overlay, pay)).toBe("unrelated");
+    expect(classifyHit(form, pay)).toBe("descendant");
+    expect(classifyHit(pay, form)).toBe("ancestor");
+  });
+
+  it.each(["parentNode", "assignedSlot"])("a click whose hit-test walks through form.%s completes", (prop) => {
+    document.body.innerHTML = PAGE;
+    const pay = document.getElementById("pay")!;
+    const overlay = document.getElementById("overlay")!;
+    pay.setAttribute("data-bcmcp-uid", "e1");
+    const onClick = jest.fn();
+    pay.addEventListener("click", onClick);
+    (document as unknown as { elementFromPoint: () => Element }).elementFromPoint = () => overlay;
+    jest.spyOn(Element.prototype, "getBoundingClientRect").mockReturnValue({
+      left: 0, top: 0, width: 20, height: 20,
+      right: 20, bottom: 20, x: 0, y: 0, toJSON: () => ({}),
+    } as DOMRect);
+    trapFormProperty(document.getElementById("f")!, prop, document.getElementById("trap")!);
+
+    const res = performInputAction(document, { action: "click", uid: "e1" });
+
+    expect(res.ok).toBe(true);
+    expect(onClick).toHaveBeenCalledTimes(1);
+    expect(res.intercepted).toMatchObject({ tag: "div", id: "overlay" });
+  });
+});

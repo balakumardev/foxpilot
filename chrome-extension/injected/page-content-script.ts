@@ -78,6 +78,16 @@ export function extractPageContent(
     const r = n.getRootNode ? n.getRootNode() : null;
     return !!r && r.nodeType === 11 && !!(r as any).host;
   }
+  // Native accessors, read once per call. A <form> exposes its controls as named properties that SHADOW
+  // built-ins ([LegacyOverrideBuiltIns]): `<form><select name="children">` makes `form.children` return the
+  // select, and `<input name="parentNode">` makes `form.parentNode` return that input, which turns every walk
+  // up through the form into a cycle. Prototype getters are immune; where an environment lacks one, the plain
+  // property is read. Documents and shadow roots have no such named properties.
+  function protoGetter(proto: () => object, name: string): ((this: unknown) => unknown) | undefined {
+    try { const d = Object.getOwnPropertyDescriptor(proto(), name); return d && d.get; } catch (_) { return undefined; }
+  }
+  const nativeChildren = protoGetter(() => Element.prototype, "children");
+  const nativeChildNodes = protoGetter(() => Node.prototype, "childNodes");
   // FLAT-TREE children: a host renders its shadow root's children (its light children only via slots);
   // a <slot> inside a shadow tree renders assignedElements({flatten:true}) (fallback content when nothing
   // is assigned). This is what guarantees nothing is listed twice and unassigned light children are skipped.
@@ -88,6 +98,7 @@ export function extractPageContent(
       if (sr) return Array.from(sr.children);
       // An <svg><slot> is an SVG element named "slot" with no assignedElements — only real HTML slots.
       if (el.localName === "slot" && typeof (el as any).assignedElements === "function" && isInShadowTree(el)) return Array.from((el as HTMLSlotElement).assignedElements({ flatten: true }));
+      return Array.from(nativeChildren ? (nativeChildren.call(el) as HTMLCollection) : el.children);
     }
     return Array.from(node.children);
   }
@@ -185,7 +196,8 @@ export function extractPageContent(
     if (el.localName === "slot" && typeof (el as any).assignedNodes === "function" && isInShadowTree(el)) {
       return Array.from((el as HTMLSlotElement).assignedNodes({ flatten: true }));
     }
-    return Array.from(el.childNodes);
+    // Same named-property guard as composedChildren.
+    return Array.from(nativeChildNodes ? (nativeChildNodes.call(el) as NodeListOf<ChildNode>) : el.childNodes);
   }
   // Has a box whose contents render. False for a display:none subtree, an
   // unslotted light child or an SVG <title> (no box), and — checkVisibility —
