@@ -187,7 +187,7 @@ test.describe("get-tab-web-content extractor on shadow DOM (inline page)", () =>
       "<!doctype html><html><body>" +
         "<p>Hello <amp-x></amp-x> world</p>" +
         '<amp-lines style="display:block"></amp-lines>' +
-        "<table><tbody><tr><td>Name</td><td><x-status></x-status></td></tr>" +
+        "<table><tbody><tr><td>Name</td><td> <x-status></x-status> </td></tr>" +
         "<tr><td>Build</td><td>Green</td></tr></tbody></table>" +
         '<fancy-link><span>Docs</span></fancy-link>' +
         "</body></html>"
@@ -211,6 +211,76 @@ test.describe("get-tab-web-content extractor on shadow DOM (inline page)", () =>
         "Name\tPassing\nBuild\tGreen\nDocs"
     );
     expect(r.links).toEqual([{ url: "https://example.com/docs", text: "Docs" }]);
+  });
+});
+
+test.describe("get-tab-web-content extractor on the shadow-dom fixture", () => {
+  const SHADOW_URL = `http://localhost:${Number(process.env.SHADOW_FIXTURE_PORT || 8880)}/`;
+  // Every string here occurs once in the rendered page (the #state oracle's
+  // keys are camelCase precisely so they cannot match), in this reading order:
+  // the nav's shadow root, light <main>, the slotted card, the search widget,
+  // then the footer's shadow root.
+  const READING_ORDER = [
+    "Developer Portal",
+    "Users and Access",
+    "Sign Out",
+    "Main content paragraph",
+    "Light Button",
+    "Slotted Title",
+    "Slotted link",
+    "Fallback button",
+    "Card action",
+    "Search apps",
+    "Load more results",
+    "Privacy",
+    "Terms",
+  ];
+
+  test.beforeEach(async ({ page }) => {
+    await page.goto(SHADOW_URL);
+    // app.js defines the hosts at the end of <body>, so they are upgraded (and
+    // their roots attached) once the oracle has rendered.
+    await expect(page.locator("#state")).not.toBeEmpty();
+  });
+
+  test("reads nav, main and footer text in reading order, once each", async ({ page }) => {
+    const before = await legacy(page);
+    const r = await extract(page);
+    let last = -1;
+    for (const s of READING_ORDER) {
+      expect(count(r.fullText, s), s).toBe(1);
+      const at = r.fullText.indexOf(s);
+      expect(at, s).toBeGreaterThan(last);
+      last = at;
+    }
+    // Before: body.innerText saw none of the shadow-root text.
+    for (const s of ["Developer Portal", "Users and Access", "Sign Out", "Card action", "Privacy"]) {
+      expect(before.fullText).not.toContain(s);
+    }
+    expect(r.totalLength).toBe(r.fullText.length);
+  });
+
+  test("lists the shadow and slotted links in reading order", async ({ page }) => {
+    expect((await legacy(page)).links).toEqual([
+      { url: "https://example.com/slotted", text: "Slotted link" },
+    ]);
+    expect((await extract(page)).links).toEqual([
+      { url: "https://example.com/apps", text: "Apps" },
+      { url: "https://example.com/business", text: "Business" },
+      { url: "https://example.com/slotted", text: "Slotted link" },
+      { url: "https://example.com/privacy", text: "Privacy" },
+      { url: "https://example.com/terms", text: "Terms" },
+    ]);
+  });
+
+  test("leaves out the closed root, the display:none host, the unassigned child and replaced fallback", async ({
+    page,
+  }) => {
+    const t = (await extract(page)).fullText;
+    expect(t).not.toContain("Closed Button"); // main world: the closed root is unreachable
+    expect(t).not.toContain("Hidden Host Button");
+    expect(t).not.toContain("Unassigned");
+    expect(t).not.toContain("Fallback title");
   });
 });
 
