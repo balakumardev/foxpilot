@@ -45,7 +45,7 @@ jest.mock("../nav-ready", () => ({
   execWithReadyRetry: jest.fn(),
   navigateAndSettle: jest.fn(async (_tabId: number, start: () => Promise<unknown>) => {
     await start();
-    return { committed: true };
+    return { committed: () => true, gone: () => false, dispose: jest.fn() };
   }),
 }));
 

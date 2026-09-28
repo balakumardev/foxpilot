@@ -81,12 +81,32 @@ export async function waitForTabReady(
   // Timeout: resolve best-effort (never reject) so the caller proceeds.
 }
 
+/** A navigation issued by navigateAndSettle, watched until dispose(). */
+export interface NavigationWatch {
+  /**
+   * The tab has reported committing this navigation. When the settle ran out of
+   * time with the navigation still in flight, this keeps updating until
+   * dispose(), so a commit that lands later (say, during a waitFor* poll) still
+   * counts — read it at the moment you read the tab. Once the settle saw the
+   * navigation end, the answer is final: a later url change belongs to the
+   * page the tab is showing, not to this navigation.
+   */
+  committed(): boolean;
+  /** The tab could no longer be read: closed, or replaced (see replacedBy). */
+  gone(): boolean;
+  /** The id of the tab Chrome swapped in for ours (tabs.onReplaced), if any. */
+  replacedBy(): number | undefined;
+  /** Stops listening. Idempotent; the caller must always call it. */
+  dispose(): void;
+}
+
 /**
  * Runs `start` (the tabs.update / tabs.reload that issues a navigation) and
  * waits until the tab has finished loading the page THAT navigation produced,
  * or the navigation ended without one (a 204, a download, a cancelled load).
- * Bounded by `timeoutMs`; never rejects on timeout. Resolves `committed: true`
- * once the tab reported committing a navigation after `start` began.
+ * Bounded by `timeoutMs`; never rejects on timeout. Returns a watch that keeps
+ * listening until the caller disposes it (on a failed `start` it disposes
+ * itself and rethrows).
  *
  * waitForTabReady cannot do this on its own: tabs.update resolves BEFORE the
  * navigation commits, with url still the OLD page and the destination parked
@@ -99,67 +119,101 @@ export async function waitForTabReady(
  * pendingUrl from its result onwards) and reports status:"loading" (with the
  * url when it changed) only when a navigation COMMITS. So the listener is
  * armed BEFORE `start` (a fast commit can land before tabs.update resolves),
- * and "complete with nothing pending" means the navigation is over either way.
- * A commit event whose tab still has a pendingUrl belongs to the OLD page
- * changing its own url while ours is in flight, so it does not count.
+ * and a live "complete" means the navigation is over either way. pendingUrl is
+ * deliberately not part of that test, so a build that kept a stale pending
+ * entry after the navigation ended cannot stall the wait. A commit event whose
+ * tab still has a pendingUrl is the OLD page changing its own url while ours
+ * is in flight, so it does not count — and nothing else can mark the tab as
+ * moved, since the old page's own url changes look the same in tabs.get. For
+ * the same reason nothing counts once the navigation has ended: with no
+ * pendingUrl left to tell them apart, a later url change is the page's own.
  */
 export async function navigateAndSettle(
   tabId: number,
   start: () => Promise<unknown>,
   opts: { timeoutMs: number }
-): Promise<{ committed: boolean }> {
+): Promise<NavigationWatch> {
   const deadline =
     Date.now() + Math.min(Math.max(opts.timeoutMs, 0), READY_MAX_TIMEOUT_MS);
   let committed = false;
+  let over = false; // the navigation ended: nothing after this is ours
+  let gone = false;
+  let replacedBy: number | undefined;
   let events = 0;
   let wake: (() => void) | null = null;
-  const listener = (
+  const onUpdated = (
     id: number,
     info: { status?: string; url?: string },
     tab?: { pendingUrl?: string }
   ) => {
     if (id !== tabId || !info) return;
-    if ((info.status === "loading" || info.url) && !(tab && tab.pendingUrl)) {
+    if (!over && (info.status === "loading" || info.url) && !(tab && tab.pendingUrl)) {
       committed = true;
     }
     events++;
     if (wake) wake();
   };
-  chrome.tabs.onUpdated.addListener(listener);
+  const onReplaced = (addedTabId: number, removedTabId: number) => {
+    if (removedTabId !== tabId) return;
+    replacedBy = addedTabId;
+    gone = true;
+    events++;
+    if (wake) wake();
+  };
+  const replacedEvent = chrome.tabs.onReplaced;
+  chrome.tabs.onUpdated.addListener(onUpdated);
+  if (replacedEvent) replacedEvent.addListener(onReplaced);
+  let disposed = false;
+  const watch: NavigationWatch = {
+    committed: () => committed,
+    gone: () => gone,
+    replacedBy: () => replacedBy,
+    dispose: () => {
+      if (disposed) return;
+      disposed = true;
+      try {
+        chrome.tabs.onUpdated.removeListener(onUpdated);
+        if (replacedEvent) replacedEvent.removeListener(onReplaced);
+      } catch {
+        /* ignore */
+      }
+    },
+  };
   try {
     await start();
-    while (true) {
-      const seen = events;
-      let tab: { status?: string; pendingUrl?: string } | undefined;
-      try {
-        tab = await chrome.tabs.get(tabId);
-      } catch {
-        break; // tab gone — nothing left to wait for
-      }
-      if (tab && tab.status === "complete" && !tab.pendingUrl) break;
-      const remaining = deadline - Date.now();
-      if (remaining <= 0) break;
-      // An event that landed during the read may already be stale in `tab`;
-      // re-read at once rather than sleeping through it.
-      if (events !== seen) continue;
-      await new Promise<void>((resolve) => {
-        const timer = setTimeout(() => {
-          wake = null;
-          resolve();
-        }, Math.min(POLL_MS, remaining));
-        wake = () => {
-          clearTimeout(timer);
-          wake = null;
-          resolve();
-        };
-      });
-    }
-    return { committed };
-  } finally {
-    try {
-      chrome.tabs.onUpdated.removeListener(listener);
-    } catch {
-      /* ignore */
-    }
+  } catch (e) {
+    watch.dispose();
+    throw e;
   }
+  while (!gone) {
+    const seen = events;
+    let tab: { status?: string } | undefined;
+    try {
+      tab = await chrome.tabs.get(tabId);
+    } catch {
+      gone = true; // closed — nothing left to wait for
+      break;
+    }
+    if (tab && tab.status === "complete") {
+      over = true;
+      break;
+    }
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) break;
+    // An event that landed during the read may already be stale in `tab`;
+    // re-read at once rather than sleeping through it.
+    if (events !== seen) continue;
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(() => {
+        wake = null;
+        resolve();
+      }, Math.min(POLL_MS, remaining));
+      wake = () => {
+        clearTimeout(timer);
+        wake = null;
+        resolve();
+      };
+    });
+  }
+  return watch;
 }

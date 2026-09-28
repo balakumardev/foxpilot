@@ -1,5 +1,10 @@
 import { mockBrowser } from "./setup";
-import { waitForTabReady, execWithReadyRetry, navigateAndSettle } from "../nav-ready";
+import {
+  waitForTabReady,
+  execWithReadyRetry,
+  navigateAndSettle,
+  type NavigationWatch,
+} from "../nav-ready";
 
 describe("firefox nav-ready", () => {
   beforeEach(() => {
@@ -49,6 +54,7 @@ describe("firefox nav-ready", () => {
 describe("firefox navigateAndSettle", () => {
   type Listener = (id: number, info: Record<string, string>, tab: object) => void;
   let listeners: Listener[];
+  const NEW = "https://new.example/";
 
   beforeEach(() => {
     jest.clearAllMocks();
@@ -62,35 +68,93 @@ describe("firefox navigateAndSettle", () => {
     };
   });
 
-  it("gives up at the deadline without rejecting, and releases its listener", async () => {
+  it("gives up at the deadline without rejecting, and keeps listening until disposed", async () => {
     // A load that never finishes (long-poll page, hung server).
     (mockBrowser.tabs.get as jest.Mock).mockResolvedValue({ status: "loading", url: "https://old.example/" });
     const start = jest.fn().mockResolvedValue(undefined);
     const t0 = Date.now();
-    await expect(navigateAndSettle(5, start, { timeoutMs: 60 })).resolves.toEqual({ committed: false });
+    const watch = await navigateAndSettle(5, start, { timeoutMs: 60, targetUrl: NEW });
+    expect(watch.committed()).toBe(false);
     expect(Date.now() - t0).toBeLessThan(1000);
     expect(start).toHaveBeenCalledTimes(1);
+    expect(listeners).toHaveLength(1);
+    watch.dispose();
     expect(listeners).toHaveLength(0);
+    watch.dispose(); // idempotent
+  });
+
+  it("counts a commit that lands after the settle window, until it is disposed", async () => {
+    (mockBrowser.tabs.get as jest.Mock).mockResolvedValue({ status: "loading", url: "https://old.example/" });
+    const watch = await navigateAndSettle(5, jest.fn().mockResolvedValue(undefined), {
+      timeoutMs: 60,
+      targetUrl: NEW,
+    });
+    expect(watch.committed()).toBe(false);
+    // Our load starts and commits while the caller polls a waitFor* condition.
+    listeners.slice().forEach((l) => l(5, { status: "loading" }, {}));
+    listeners.slice().forEach((l) => l(5, { status: "loading", url: NEW }, {}));
+    expect(watch.committed()).toBe(true);
+    watch.dispose();
   });
 
   it("propagates a failure to start the navigation and still releases its listener", async () => {
     const start = jest.fn().mockRejectedValue(new Error("Invalid tab ID: 5"));
-    await expect(navigateAndSettle(5, start, { timeoutMs: 1000 })).rejects.toThrow("Invalid tab ID: 5");
+    await expect(navigateAndSettle(5, start, { timeoutMs: 1000, targetUrl: NEW })).rejects.toThrow(
+      "Invalid tab ID: 5"
+    );
     expect(listeners).toHaveLength(0);
   });
 
   it("is listening before the navigation starts, so a commit that lands immediately is not missed", async () => {
     let state = { status: "complete", url: "https://old.example/" };
     (mockBrowser.tabs.get as jest.Mock).mockImplementation(async () => state);
-    // A same-document jump commits and completes before tabs.update resolves.
+    // A same-document jump to the target commits and completes before
+    // tabs.update resolves.
     const start = jest.fn(async () => {
       state = { status: "complete", url: "https://old.example/#next" };
       listeners.slice().forEach((l) => l(5, { status: "complete", url: state.url }, state));
     });
     const t0 = Date.now();
-    await expect(navigateAndSettle(5, start, { timeoutMs: 2000 })).resolves.toEqual({ committed: true });
+    const watch = await navigateAndSettle(5, start, {
+      timeoutMs: 2000,
+      targetUrl: "https://old.example/#next",
+    });
+    expect(watch.committed()).toBe(true);
     // ...and there is nothing left to wait for.
     expect(Date.now() - t0).toBeLessThan(1000);
+    watch.dispose();
+  });
+
+  it("does not count url changes that are neither our commit nor our target", async () => {
+    (mockBrowser.tabs.get as jest.Mock).mockResolvedValue({ status: "loading", url: "https://old.example/" });
+    const watch = await navigateAndSettle(5, jest.fn().mockResolvedValue(undefined), {
+      timeoutMs: 60,
+      targetUrl: NEW,
+    });
+    // Before our load starts: the old page rewrites its url on a loaded page,
+    // and (while its own load is still going) mid-load.
+    listeners.slice().forEach((l) => l(5, { status: "complete", url: "https://old.example/#tab2" }, {}));
+    listeners.slice().forEach((l) => l(5, { status: "loading", url: "https://old.example/#tab3" }, {}));
+    expect(watch.committed()).toBe(false);
+    watch.dispose();
+  });
+
+  it("reports a tab closed mid-navigation as gone, without waiting out the deadline", async () => {
+    let closed = false;
+    (mockBrowser.tabs.get as jest.Mock).mockImplementation(async () => {
+      if (closed) throw new Error("Invalid tab ID: 5");
+      return { status: "loading", url: "https://old.example/" };
+    });
+    const start = jest.fn(async () => {
+      setTimeout(() => {
+        closed = true;
+      }, 20);
+    });
+    const t0 = Date.now();
+    const watch = await navigateAndSettle(5, start, { timeoutMs: 3000, targetUrl: NEW });
+    expect(watch.gone()).toBe(true);
+    expect(Date.now() - t0).toBeLessThan(1000);
+    watch.dispose();
   });
 
   it("does not sleep through a load that finished while it was reading the tab", async () => {
@@ -103,20 +167,21 @@ describe("firefox navigateAndSettle", () => {
           // The start, commit and end of the load are delivered while this
           // read is in flight, so the state it returns is already stale.
           listeners.slice().forEach((l) => l(5, { status: "loading" }, {}));
-          listeners.slice().forEach((l) => l(5, { status: "loading", url: "https://new.example/" }, {}));
+          listeners.slice().forEach((l) => l(5, { status: "loading", url: NEW }, {}));
           listeners.slice().forEach((l) => l(5, { status: "complete" }, {}));
-          return { status: "loading", url: "https://new.example/" };
+          return { status: "loading", url: NEW };
         }
-        return { status: "complete", url: "https://new.example/" };
+        return { status: "complete", url: NEW };
       });
-      let settled: unknown;
-      navigateAndSettle(5, async () => undefined, { timeoutMs: 5000 }).then((r) => {
-        settled = r;
+      let settled: NavigationWatch | undefined;
+      navigateAndSettle(5, async () => undefined, { timeoutMs: 5000, targetUrl: NEW }).then((w) => {
+        settled = w;
       });
       // Run promise callbacks WITHOUT advancing the clock: nothing is left to
       // wait for, so the settle must not be parked on a poll timer.
       for (let i = 0; i < 50; i++) await Promise.resolve();
-      expect(settled).toEqual({ committed: true });
+      expect(settled && settled.committed()).toBe(true);
+      settled?.dispose();
     } finally {
       jest.useRealTimers();
     }

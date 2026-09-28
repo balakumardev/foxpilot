@@ -6,7 +6,7 @@ jest.mock("../nav-ready", () => ({
   execWithReadyRetry: jest.fn(),
   navigateAndSettle: jest.fn(async (_tabId: number, start: () => Promise<unknown>) => {
     await start();
-    return { committed: true };
+    return { committed: () => true, gone: () => false, dispose: jest.fn() };
   }),
 }));
 
@@ -73,8 +73,14 @@ describe("firefox navigate-tab settle", () => {
     await handler.handleDecodedMessage(req);
     // Settle stays capped at 8s: the navigation wait gets it, and the readiness
     // probe only what is left of it.
-    expect(navigateAndSettle).toHaveBeenCalledWith(7, expect.any(Function), { timeoutMs: 8000 });
-    expect((waitForTabReady as jest.Mock).mock.calls[0][1].timeoutMs).toBeLessThanOrEqual(8000);
+    expect(navigateAndSettle).toHaveBeenCalledWith(7, expect.any(Function), {
+      timeoutMs: 8000,
+      targetUrl: "https://dash.cloudflare.com/x",
+    });
+    // The (instant, mocked) navigation wait leaves the probe nearly all of it.
+    const readyBudget = (waitForTabReady as jest.Mock).mock.calls[0][1].timeoutMs;
+    expect(readyBudget).toBeGreaterThan(7000);
+    expect(readyBudget).toBeLessThanOrEqual(8000);
     // Condition budget is clamped so settle(8s) + conditions ≤ 28s (< 30s broker cap).
     const conditionBudget = condSpy.mock.calls[0][2] as number;
     expect(conditionBudget).toBe(20000);
@@ -90,5 +96,28 @@ describe("firefox navigate-tab settle", () => {
     } as any;
     await handler.handleDecodedMessage(req);
     expect(condSpy.mock.calls[0][2]).toBe(15000);
+  });
+
+  it("reports committed:false when the settle saw no commit, and releases the watch", async () => {
+    const dispose = jest.fn();
+    (navigateAndSettle as jest.Mock).mockImplementationOnce(
+      async (_tabId: number, start: () => Promise<unknown>) => {
+        await start();
+        return { committed: () => false, gone: () => false, dispose };
+      }
+    );
+    (mockBrowser.tabs.get as jest.Mock).mockResolvedValue({ url: "https://dash.cloudflare.com/home", status: "complete" });
+    const req: ServerMessageRequest = {
+      cmd: "navigate-tab", tabId: 7, url: "https://dash.cloudflare.com/x", correlationId: "c5",
+    } as any;
+    await handler.handleDecodedMessage(req);
+    expect(transport.sendResourceToServer).toHaveBeenCalledWith({
+      resource: "navigated",
+      correlationId: "c5",
+      tabId: 7,
+      url: "https://dash.cloudflare.com/home",
+      committed: false,
+    });
+    expect(dispose).toHaveBeenCalledTimes(1);
   });
 });

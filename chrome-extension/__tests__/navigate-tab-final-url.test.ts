@@ -29,8 +29,18 @@ const OLD = "https://app.example.com/dashboard";
 const NEW = "https://app.example.com/settings";
 
 type TabState = { url: string; status: "loading" | "complete"; pendingUrl?: string };
-type Step = { at: number; set?: Partial<TabState>; event?: Record<string, string> };
+// `close` makes the tab disappear (tabs.get rejects from then on); `replacedBy`
+// additionally fires tabs.onReplaced(replacedBy, TAB) first, as Chrome does when
+// it swaps a tab's contents into a new tab id.
+type Step = {
+  at: number;
+  set?: Partial<TabState>;
+  event?: Record<string, string>;
+  close?: true;
+  replacedBy?: number;
+};
 type Listener = (id: number, info: Record<string, string>, tab: object) => void;
+type ReplacedListener = (addedTabId: number, removedTabId: number) => void;
 
 const timers: ReturnType<typeof setTimeout>[] = [];
 
@@ -41,6 +51,8 @@ const timers: ReturnType<typeof setTimeout>[] = [];
 function fakeTab(initial: TabState, timeline: Step[]) {
   const state: TabState = { ...initial };
   const listeners: Listener[] = [];
+  const replacedListeners: ReplacedListener[] = [];
+  let closed = false;
   (mockBrowser as any).tabs.onUpdated = {
     addListener: (l: Listener) => listeners.push(l),
     removeListener: (l: Listener) => {
@@ -48,12 +60,22 @@ function fakeTab(initial: TabState, timeline: Step[]) {
       if (i >= 0) listeners.splice(i, 1);
     },
   };
+  (mockBrowser as any).tabs.onReplaced = {
+    addListener: (l: ReplacedListener) => replacedListeners.push(l),
+    removeListener: (l: ReplacedListener) => {
+      const i = replacedListeners.indexOf(l);
+      if (i >= 0) replacedListeners.splice(i, 1);
+    },
+  };
   const snapshot = () => {
     const tab: Record<string, unknown> = { id: TAB, url: state.url, status: state.status };
     if (state.pendingUrl) tab.pendingUrl = state.pendingUrl;
     return tab;
   };
-  (mockBrowser.tabs.get as jest.Mock).mockImplementation(async () => snapshot());
+  (mockBrowser.tabs.get as jest.Mock).mockImplementation(async (id: number) => {
+    if (closed) throw new Error(`No tab with id: ${id}.`);
+    return snapshot();
+  });
   // The content script of whichever document is live answers the ping — the
   // old page included, until the new one commits.
   (mockBrowser.scripting.executeScript as jest.Mock).mockResolvedValue([]);
@@ -64,6 +86,11 @@ function fakeTab(initial: TabState, timeline: Step[]) {
       timers.push(
         setTimeout(() => {
           Object.assign(state, step.set);
+          if (step.replacedBy !== undefined) {
+            const added = step.replacedBy;
+            replacedListeners.slice().forEach((l) => l(added, TAB));
+          }
+          if (step.close || step.replacedBy !== undefined) closed = true;
           if (step.event) {
             const info = step.event;
             listeners.slice().forEach((l) => l(TAB, info, snapshot()));
@@ -73,7 +100,7 @@ function fakeTab(initial: TabState, timeline: Step[]) {
     }
     return snapshot();
   });
-  return { state, listeners };
+  return { state, listeners, replacedListeners };
 }
 
 function makeTransport(): jest.Mocked<ExtensionTransport> {
@@ -210,6 +237,199 @@ describe("chrome navigate-tab reports the navigated-to url, never the old one", 
       committed: false,
       pendingUrl: NEW,
     });
+  });
+
+  it("never reports a url the page being LEFT gave itself as the destination", async () => {
+    // The old page's router rewrites its own url while ours is pending (the
+    // event's tab still carries our pendingUrl), then ours ends without a page.
+    const REWRITTEN = OLD + "#tab2";
+    fakeTab({ url: OLD, status: "complete" }, [
+      { at: 20, set: { url: REWRITTEN }, event: { status: "loading", url: REWRITTEN } },
+      { at: 40, set: { status: "complete", pendingUrl: undefined } },
+    ]);
+
+    await handler.handleDecodedMessage(navigate({ timeoutMs: 3000 }));
+
+    expect(transport.sendResourceToServer).toHaveBeenCalledWith({
+      resource: "navigated",
+      correlationId: "c1",
+      tabId: TAB,
+      url: REWRITTEN,
+      committed: false,
+    });
+  });
+
+  it("never reports the old page's own rewritten url as the destination while ours is still in flight", async () => {
+    const REWRITTEN = OLD + "#tab2";
+    fakeTab({ url: OLD, status: "complete" }, [
+      { at: 20, set: { url: REWRITTEN }, event: { status: "loading", url: REWRITTEN } },
+      { at: 5000, set: { url: NEW, pendingUrl: undefined }, event: { status: "loading", url: NEW } },
+    ]);
+
+    await handler.handleDecodedMessage(navigate({ timeoutMs: 200 }));
+
+    expect(transport.sendResourceToServer).toHaveBeenCalledWith({
+      resource: "navigated",
+      correlationId: "c1",
+      tabId: TAB,
+      url: REWRITTEN,
+      committed: false,
+      pendingUrl: NEW,
+    });
+  });
+
+  it("reports a reload of the current url as navigated when it commits during the waitFor* poll", async () => {
+    const tab = fakeTab({ url: NEW, status: "complete" }, [
+      { at: 1200, set: { pendingUrl: undefined }, event: { status: "loading" } },
+      { at: 1220, set: { status: "complete" }, event: { status: "complete" } },
+    ]);
+    // waitForText is only met once the reloaded page is in.
+    (mockBrowser.scripting.executeScript as jest.Mock).mockImplementation(async (d: { func?: unknown }) =>
+      d.func ? [{ result: tab.state.pendingUrl === undefined }] : []
+    );
+
+    await handler.handleDecodedMessage(navigate({ timeoutMs: 1000, waitForText: "Settings" }));
+
+    expect(transport.sendResourceToServer).toHaveBeenCalledWith({
+      resource: "navigated",
+      correlationId: "c1",
+      tabId: TAB,
+      url: NEW,
+    });
+  });
+
+  it("fails clearly when the tab is closed mid-navigation, instead of claiming it arrived", async () => {
+    fakeTab({ url: OLD, status: "complete" }, [{ at: 20, close: true }]);
+
+    const started = Date.now();
+    await expect(handler.handleDecodedMessage(navigate({ timeoutMs: 3000 }))).rejects.toThrow(
+      /tab 7 was closed/i
+    );
+    expect(transport.sendResourceToServer).not.toHaveBeenCalled();
+    // Nothing is left to wait for once the tab is gone.
+    expect(Date.now() - started).toBeLessThan(1500);
+  });
+
+  it("names the tab that replaced ours mid-navigation", async () => {
+    const tab = fakeTab({ url: OLD, status: "complete" }, [{ at: 20, replacedBy: 12 }]);
+
+    await expect(handler.handleDecodedMessage(navigate({ timeoutMs: 3000 }))).rejects.toThrow(
+      /tab 7 was replaced by tab 12/i
+    );
+    expect(tab.replacedListeners).toHaveLength(0);
+  });
+
+  it("does not claim a destination for a tab that has never committed any page", async () => {
+    // A brand-new tab has url "" until its first commit; ours then outlasts
+    // the wait.
+    fakeTab({ url: "", status: "loading", pendingUrl: "https://app.example.com/start" }, [
+      { at: 5000, set: { url: NEW, pendingUrl: undefined }, event: { status: "loading", url: NEW } },
+    ]);
+
+    await handler.handleDecodedMessage(navigate({ timeoutMs: 200 }));
+
+    expect(transport.sendResourceToServer).toHaveBeenCalledWith({
+      resource: "navigated",
+      correlationId: "c1",
+      tabId: TAB,
+      url: "",
+      committed: false,
+      pendingUrl: NEW,
+    });
+  });
+
+  it("keeps a waitFor* mismatch out of the url when the navigation did not commit", async () => {
+    fakeTab({ url: OLD, status: "complete" }, [
+      { at: 5000, set: { url: NEW, pendingUrl: undefined }, event: { status: "loading", url: NEW } },
+    ]);
+    (mockBrowser.scripting.executeScript as jest.Mock).mockImplementation(async (d: { func?: unknown }) =>
+      d.func ? [{ result: false }] : []
+    );
+
+    await handler.handleDecodedMessage(navigate({ timeoutMs: 300, waitForText: "Create Token" }));
+
+    expect(transport.sendResourceToServer).toHaveBeenCalledWith({
+      resource: "navigated",
+      correlationId: "c1",
+      tabId: TAB,
+      url: OLD,
+      committed: false,
+      pendingUrl: NEW,
+      mismatch: 'expected text "Create Token" not found',
+    });
+  });
+
+  it("stops waiting, and does not claim it is still loading, once the navigation is over but a stale pendingUrl lingers", async () => {
+    // Defensive: not observed on Chromium 149 (a 204 from the New Tab page
+    // drops pendingUrl within ~60ms), but a build that kept the pending entry
+    // after the navigation ended must neither stall the wait nor be described
+    // as still loading.
+    fakeTab({ url: OLD, status: "complete" }, [{ at: 20, set: { status: "complete" } }]);
+
+    const started = Date.now();
+    await handler.handleDecodedMessage(navigate({ timeoutMs: 3000 }));
+
+    expect(transport.sendResourceToServer).toHaveBeenCalledWith({
+      resource: "navigated",
+      correlationId: "c1",
+      tabId: TAB,
+      url: OLD,
+      committed: false,
+    });
+    expect(Date.now() - started).toBeLessThan(1500);
+  });
+
+  it("does not credit the page being left with a url change it makes after our navigation ended without a page", async () => {
+    const LATER = OLD + "#later";
+    fakeTab({ url: OLD, status: "complete" }, [
+      // Ours ends without a page (204 / download): Chromium fires no event.
+      { at: 20, set: { status: "complete", pendingUrl: undefined } },
+      // Then, while a waitFor* condition is still polling, the old page's
+      // router changes its own url.
+      { at: 300, set: { url: LATER }, event: { status: "loading", url: LATER } },
+      { at: 310, event: { status: "complete" } },
+    ]);
+    (mockBrowser.scripting.executeScript as jest.Mock).mockImplementation(async (d: { func?: unknown }) =>
+      d.func ? [{ result: false }] : []
+    );
+
+    await handler.handleDecodedMessage(navigate({ timeoutMs: 800, waitForText: "Settings" }));
+
+    expect(transport.sendResourceToServer).toHaveBeenCalledWith({
+      resource: "navigated",
+      correlationId: "c1",
+      tabId: TAB,
+      url: LATER,
+      committed: false,
+      mismatch: 'expected text "Settings" not found',
+    });
+  });
+
+  it("does not wait out the budget probing a page that cannot be scripted when nothing committed", async () => {
+    // Recorded on Chromium 149: a 204 from the New Tab page. The tab stays on
+    // chrome://newtab/, where no content script can run, so the readiness
+    // ping can never answer.
+    fakeTab({ url: "chrome://newtab/", status: "complete" }, [
+      { at: 20, set: { status: "complete", pendingUrl: undefined } },
+    ]);
+    (mockBrowser.scripting.executeScript as jest.Mock).mockRejectedValue(
+      new Error("Cannot access a chrome:// URL")
+    );
+    (mockBrowser.tabs.sendMessage as jest.Mock).mockRejectedValue(
+      new Error("Could not establish connection. Receiving end does not exist.")
+    );
+
+    const started = Date.now();
+    await handler.handleDecodedMessage(navigate({ timeoutMs: 3000 }));
+
+    expect(transport.sendResourceToServer).toHaveBeenCalledWith({
+      resource: "navigated",
+      correlationId: "c1",
+      tabId: TAB,
+      url: "chrome://newtab/",
+      committed: false,
+    });
+    expect(Date.now() - started).toBeLessThan(1500);
   });
 
   it("says the navigation has not committed yet when it outlasts the wait, naming the pending url", async () => {

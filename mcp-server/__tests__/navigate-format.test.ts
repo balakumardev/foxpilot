@@ -40,13 +40,50 @@ describe("formatNavigateResult", () => {
     expect(out.isError).toBeUndefined();
   });
 
-  it("names the url the browser is still loading when it knows it", () => {
+  it("names the url the browser is still loading when it differs from the one requested", () => {
+    const out = formatNavigateResult(REQUESTED, {
+      tabId: 7,
+      url: "https://app.example.com/dashboard",
+      committed: false,
+      pendingUrl: "https://app.example.com/login",
+    });
+    expect(out.content[0].text).toContain("still loading https://app.example.com/login");
+  });
+
+  it("does not repeat the destination when it is the url still loading", () => {
     const out = formatNavigateResult(REQUESTED, {
       tabId: 7,
       url: "https://app.example.com/dashboard",
       committed: false,
       pendingUrl: "https://app.example.com/settings",
     });
-    expect(out.content[0].text).toContain("still loading https://app.example.com/settings");
+    const text = out.content[0].text;
+    expect(text.split(REQUESTED).length - 1).toBe(1);
+    expect(text).toContain("still loading");
+  });
+
+  it("keeps a wait-condition mismatch apart from the url", () => {
+    const out = formatNavigateResult(REQUESTED, {
+      tabId: 7,
+      url: "https://app.example.com/dashboard",
+      committed: false,
+      mismatch: 'expected text "Create Token" not found',
+    });
+    const text = out.content[0].text;
+    expect(text).toContain("still shows https://app.example.com/dashboard");
+    expect(text).not.toContain("dashboard — expected");
+    expect(text).toContain('expected text "Create Token" not found');
+  });
+
+  it("does not describe a page for a tab that has never committed one", () => {
+    const out = formatNavigateResult(REQUESTED, {
+      tabId: 7,
+      url: "",
+      committed: false,
+      pendingUrl: "https://app.example.com/settings",
+    });
+    const text = out.content[0].text;
+    expect(text).not.toContain("still shows");
+    expect(text).toContain(REQUESTED);
   });
 });

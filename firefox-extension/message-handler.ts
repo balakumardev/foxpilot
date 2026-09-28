@@ -1845,19 +1845,18 @@ export class MessageHandler {
       throw new Error("Domain in user defined deny list");
     }
 
-    // Where the tab is BEFORE navigating: forceLoad picks reload-vs-update from
-    // it, and the reply uses it to tell a tab that moved from one still showing
-    // the page it was asked to leave.
-    let before: { url?: string } | undefined;
-    try {
-      before = await browser.tabs.get(tabId);
-    } catch {
-      before = undefined;
+    // forceLoad reloads when the tab is already at the target url.
+    let reload = false;
+    if (opts?.forceLoad) {
+      try {
+        const current = await browser.tabs.get(tabId);
+        reload = !!current && current.url === url;
+      } catch {
+        /* navigate normally */
+      }
     }
     const start = () =>
-      opts?.forceLoad && before && before.url === url
-        ? browser.tabs.reload(tabId, {})
-        : browser.tabs.update(tabId, { url });
+      reload ? browser.tabs.reload(tabId, {}) : browser.tabs.update(tabId, { url });
 
     if (opts?.waitUntil === "none") {
       await start();
@@ -1882,40 +1881,65 @@ export class MessageHandler {
     const settleBudget = Math.min(budget, 8000);
     // The navigation wait and the readiness probe share the settle budget.
     const settleDeadline = Date.now() + settleBudget;
-    const nav = await navigateAndSettle(tabId, start, { timeoutMs: settleBudget });
-    await waitForTabReady(tabId, {
-      timeoutMs: Math.max(0, settleDeadline - Date.now()),
+    const nav = await navigateAndSettle(tabId, start, {
+      timeoutMs: settleBudget,
+      targetUrl: url,
     });
-    const conditionBudget = Math.min(
-      budget,
-      Math.max(0, OVERALL_CAP_MS - settleBudget)
-    );
-    const mismatch = await this.awaitNavConditions(tabId, opts, conditionBudget);
-
+    let mismatch: string | undefined;
     let finalTab: { url?: string } | undefined;
+    let committed = false;
     try {
-      finalTab = await browser.tabs.get(tabId);
-    } catch {
-      finalTab = undefined;
+      if (!nav.gone()) {
+        // The readiness probe waits for the document THIS navigation produced.
+        // When nothing committed there is no such document, and probing the page
+        // being left can only burn the budget: it may refuse executeScript
+        // entirely (an about: page, or an origin without host permission).
+        if (nav.committed()) {
+          await waitForTabReady(tabId, {
+            timeoutMs: Math.max(0, settleDeadline - Date.now()),
+          });
+        }
+        const conditionBudget = Math.min(
+          budget,
+          Math.max(0, OVERALL_CAP_MS - settleBudget)
+        );
+        mismatch = await this.awaitNavConditions(tabId, opts, conditionBudget);
+      }
+      try {
+        finalTab = await browser.tabs.get(tabId);
+      } catch {
+        finalTab = undefined;
+      }
+      // Read while the watch is still listening: a commit that lands after the
+      // settle window, during a waitFor* poll, still counts.
+      committed = nav.committed();
+    } finally {
+      nav.dispose();
     }
-    // An unreadable tab keeps the requested url as a best-effort fallback.
-    const finalUrl = (finalTab && finalTab.url) || url;
+
+    if (!finalTab) {
+      throw new Error(`Tab ${tabId} was closed while navigating to ${url}.`);
+    }
+    if (committed) {
+      const finalUrl = finalTab.url || url;
+      await this.client.sendResourceToServer({
+        resource: "navigated",
+        correlationId,
+        tabId,
+        url: mismatch ? `${finalUrl} — ${mismatch}` : finalUrl,
+      });
+      return;
+    }
     // Until the navigation commits, the tab's url is still the page being left.
     // Reporting it as where the tab "navigated to" is exactly the old-url bug,
-    // so when nothing shows the tab moved, say it did not commit instead.
-    // (A commit can also land after the settle window, while a waitFor*
-    // condition is still polling — hence the url comparison.)
-    const moved =
-      nav.committed ||
-      !(finalTab && finalTab.url) ||
-      finalTab.url !== (before && before.url);
-
+    // so say it did not commit instead.
     await this.client.sendResourceToServer({
       resource: "navigated",
       correlationId,
       tabId,
-      url: mismatch ? `${finalUrl} — ${mismatch}` : finalUrl,
-      ...(moved ? {} : { committed: false }),
+      url: finalTab.url ?? "",
+      committed: false,
+      ...(mismatch ? { mismatch } : {}),
     });
   }
 
