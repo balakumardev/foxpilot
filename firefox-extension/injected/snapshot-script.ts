@@ -964,37 +964,21 @@ export function buildSnapshot(
     }
   }
 
-  function isInteractiveRole(role: string): boolean {
-    switch (role) {
-      case "button":
-      case "link":
-      case "checkbox":
-      case "radio":
-      case "switch":
-      case "menuitem":
-      case "menuitemcheckbox":
-      case "menuitemradio":
-      case "option":
-      case "tab":
-      case "treeitem":
-      case "textbox":
-      case "searchbox":
-      case "combobox":
-      case "slider":
-      case "spinbutton":
-        return true;
-      default:
-        return false;
-    }
-  }
-
   function firstRoleToken(el: Element): string {
     return (el.getAttribute("role") || "").trim().split(/\s+/)[0].toLowerCase();
   }
 
-  // Something a user operates (the predicate click retargeting shares).
+  // Something a user operates: the interactive-control predicate click
+  // retargeting shares (action-script.ts inlines the same body).
+  const INTERACTIVE_ROLES: Record<string, true> = {
+    button: true, link: true, checkbox: true, radio: true, switch: true,
+    menuitem: true, menuitemcheckbox: true, menuitemradio: true, option: true,
+    tab: true, treeitem: true, textbox: true, searchbox: true, combobox: true,
+    slider: true, spinbutton: true,
+  };
+
   function isInteractiveControl(el: Element): boolean {
-    const tag = el.tagName.toLowerCase();
+    const tag = el.localName;
     if (tag === "button" || tag === "select" || tag === "textarea" || tag === "summary") {
       return true;
     }
@@ -1004,17 +988,16 @@ export function buildSnapshot(
     if (tag === "input") {
       return (el.getAttribute("type") || "").toLowerCase() !== "hidden";
     }
-    if (
-      el.hasAttribute("contenteditable") &&
-      (el.getAttribute("contenteditable") || "").toLowerCase() !== "false"
-    ) {
+    const ce = el.getAttribute("contenteditable");
+    if (ce !== null && ce.toLowerCase() !== "false") {
       return true;
     }
-    const tabindex = el.getAttribute("tabindex");
-    if (tabindex !== null && parseInt(tabindex, 10) >= 0) {
+    const ti = el.getAttribute("tabindex");
+    if (ti !== null && parseInt(ti, 10) >= 0) {
       return true;
     }
-    return isInteractiveRole(firstRoleToken(el));
+    const role = (el.getAttribute("role") || "").trim().split(/\s+/)[0].toLowerCase();
+    return INTERACTIVE_ROLES[role] === true;
   }
 
   // The single visible interactive flat-tree descendant of w, or null when it
