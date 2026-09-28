@@ -1,4 +1,5 @@
 import { performInputAction, classifyHit } from "../injected/action-script";
+import * as vm from "vm";
 import { buildSnapshot } from "../injected/snapshot-script";
 
 /**
@@ -1931,4 +1932,72 @@ describe("a form's named controls cannot trap composedContains in a cycle", () =
     expect(onClick).toHaveBeenCalledTimes(1);
     expect(res.intercepted).toMatchObject({ tag: "div", id: "overlay" });
   });
+});
+
+/**
+ * The whole path, across modules: take-snapshot hands out the menu item's uid,
+ * and click-element unwraps a click on that role wrapper onto the button its
+ * centre lands on. Both the snapshot and the unwrap walk up from the button,
+ * through a form whose control shadows parentNode / assignedSlot, to the menu
+ * item. composedParent reads the prototype getters, so the walk reaches the
+ * item instead of cycling form → control → form. jsdom implements no form named
+ * properties; the shadowing getter throws once it is clearly read in a loop, and
+ * the snapshot (which memoizes parents, so a cycle can spin without re-reading
+ * the property) runs stringified in a vm with a time limit — a regression fails
+ * instead of hanging the suite.
+ */
+describe("snapshot → click through a form whose control shadows a traversal property", () => {
+  afterEach(() => {
+    jest.restoreAllMocks();
+    delete (document as unknown as { elementFromPoint?: unknown }).elementFromPoint;
+    document.body.innerHTML = "";
+  });
+
+  it.each(["parentNode", "assignedSlot"])(
+    "the menu item's uid unwraps onto the button inside the form (form.%s shadowed)",
+    (prop) => {
+      // One control in the item (the hidden input is not one), and a name of its
+      // own, so the snapshot gives the item its own uid and the click unwraps.
+      document.body.innerHTML = `<ul role="menu"><li role="menuitem" id="mi" aria-label="Rename file"><form id="f"><input type="hidden" name="${prop}"><button type="button" id="go">Rename</button></form></li></ul>`;
+      const form = document.getElementById("f")!;
+      const control = form.querySelector("input")!;
+      let reads = 0;
+      Object.defineProperty(form, prop, {
+        configurable: true,
+        get() {
+          reads += 1;
+          if (reads > 5000) {
+            throw new Error("cycle: form." + prop + " read " + reads + " times");
+          }
+          return control;
+        },
+      });
+      const go = document.getElementById("go")!;
+      const onGo = jest.fn();
+      go.addEventListener("click", onGo);
+
+      const snap = vm.runInContext(
+        "(" + buildSnapshot.toString() + ")(document, { verbose: false, maxLength: 25000 })",
+        vm.createContext({ document, Element, Node }),
+        { timeout: 4000 }
+      ) as ReturnType<typeof buildSnapshot>;
+      const item = document.getElementById("mi")!;
+      const uid = item.getAttribute("data-bcmcp-uid")!;
+      expect(snap.tree).toContain('menuitem "Rename file" |  |  [uid=' + uid + "]");
+
+      jest.spyOn(Element.prototype, "getBoundingClientRect").mockReturnValue({
+        left: 0, top: 0, width: 20, height: 20,
+        right: 20, bottom: 20, x: 0, y: 0, toJSON: () => ({}),
+      } as DOMRect);
+      (document as unknown as { elementFromPoint: () => Element }).elementFromPoint = () => go;
+      const res = performInputAction(document, { action: "click", uid }) as {
+        ok: boolean;
+        dispatchedTo?: { tag: string; name?: string };
+      };
+
+      expect(res.ok).toBe(true);
+      expect(onGo).toHaveBeenCalledTimes(1);
+      expect(res.dispatchedTo).toMatchObject({ tag: "button", name: "Rename" });
+    }
+  );
 });

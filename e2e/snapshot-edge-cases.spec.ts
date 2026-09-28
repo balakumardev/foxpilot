@@ -1,6 +1,6 @@
 import { test, expect, type Page } from "@playwright/test";
 import { buildSnapshot } from "../firefox-extension/injected/snapshot-script";
-import { classifyHit } from "../firefox-extension/injected/action-script";
+import { classifyHit, performInputAction } from "../firefox-extension/injected/action-script";
 import { extractPageContent } from "../firefox-extension/injected/page-content-script";
 
 /**
@@ -21,6 +21,7 @@ import { extractPageContent } from "../firefox-extension/injected/page-content-s
  */
 const SNAPSHOT_SRC = buildSnapshot.toString();
 const CLASSIFY_SRC = classifyHit.toString();
+const ACTION_SRC = performInputAction.toString();
 const CONTENT_SRC = extractPageContent.toString();
 
 type SnapshotOptions = Partial<Parameters<typeof buildSnapshot>[1]>;
@@ -205,4 +206,39 @@ test.describe("textContains under a real layout engine", () => {
       expect(res.tree, needle).toBe("");
     }
   });
+});
+
+// The whole agent path through a real hostile form: take-snapshot hands out the
+// menu item's uid, click-element unwraps the click onto the item's one button,
+// and both walk up from the button through `<input type="hidden" name="...">`'s
+// form. A page with such a form used to freeze both calls.
+test.describe("snapshot → click through a real hostile form", () => {
+  for (const prop of ["parentNode", "assignedSlot"]) {
+    test(`the menu item's uid unwraps onto the button inside the form (form.${prop})`, async ({ page }) => {
+      await page.setContent(
+        `<ul role="menu" style="list-style:none;margin:0;padding:0">` +
+          `<li role="menuitem" id="mi" aria-label="Rename file">` +
+          `<form id="f" style="margin:0"><input type="hidden" name="${prop}">` +
+          `<button type="button" id="go" style="display:block;width:100%">Rename</button></form></li></ul>` +
+          `<script>window.__go = 0; document.getElementById("go").addEventListener("click", () => window.__go++);</script>`
+      );
+      expect(await page.evaluate((p) => (document.getElementById("f") as any)[p].localName, prop)).toBe("input");
+
+      const { tree } = await snapshot(page);
+      const row = rowsNamed(tree, "Rename file")[0];
+      expect(row, tree).toBeTruthy();
+      const uid = /\[uid=(e\d+)\]/.exec(row)![1];
+      const res = await page.evaluate(
+        ({ src, uid }) => {
+          // eslint-disable-next-line no-eval
+          const fn = (0, eval)("(" + src + ")");
+          return fn(document, { action: "click", uid });
+        },
+        { src: ACTION_SRC, uid }
+      );
+
+      expect(res.ok).toBe(true);
+      expect(await page.evaluate(() => (window as any).__go)).toBe(1);
+    });
+  }
 });
