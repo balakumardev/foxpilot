@@ -7,6 +7,10 @@ const PORT = Number(process.env.FIXTURE_PORT || 8878);
 // The antd 4.x fixture runs alongside the spa-widgets one (default one port up)
 // so a spec can drive real antd components without tearing the other down.
 const ANTD_PORT = Number(process.env.ANTD_FIXTURE_PORT || 8879);
+// The shadow-DOM and role-wrapper fixtures take the next two ports, so every
+// fixture server runs side by side.
+const SHADOW_PORT = Number(process.env.SHADOW_FIXTURE_PORT || 8880);
+const ROLE_WRAPPER_PORT = Number(process.env.ROLE_WRAPPER_FIXTURE_PORT || 8881);
 
 // Real-browser (Chromium) regression harness for the spa-widgets fixture. This
 // project is deliberately outside the release-blocking test path (npm/jest/nx);
@@ -39,6 +43,18 @@ export default defineConfig({
     {
       command: `node ../test-fixtures/antd4/server.mjs ${ANTD_PORT}`,
       url: `http://localhost:${ANTD_PORT}/`,
+      reuseExistingServer: true,
+      timeout: 10_000,
+    },
+    {
+      command: `node ../test-fixtures/shadow-dom/server.mjs ${SHADOW_PORT}`,
+      url: `http://localhost:${SHADOW_PORT}/`,
+      reuseExistingServer: true,
+      timeout: 10_000,
+    },
+    {
+      command: `node ../test-fixtures/role-wrapper/server.mjs ${ROLE_WRAPPER_PORT}`,
+      url: `http://localhost:${ROLE_WRAPPER_PORT}/`,
       reuseExistingServer: true,
       timeout: 10_000,
     },

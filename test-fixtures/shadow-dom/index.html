@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Shadow DOM fixture</title>
+    <style>
+      * { box-sizing: border-box; }
+      body { margin: 0; padding: 0 16px 16px; font-family: system-ui, sans-serif; max-width: 880px; }
+      amp-nav, amp-card, amp-search, amp-secret, amp-footer { display: block; }
+      main { padding: 8px 0; }
+      #state { background: #111; color: #6f6; padding: 8px; border-radius: 6px; font-size: 12px; white-space: pre-wrap; }
+    </style>
+  </head>
+  <body>
+    <!-- No light-DOM <nav> anywhere on purpose: rootSelector "nav" must have to
+         look inside <amp-nav>'s shadow root to find one. -->
+    <header><amp-nav></amp-nav></header>
+    <main>
+      <h1>Apps</h1>
+      <p>Main content paragraph</p>
+      <button type="button" id="light-button">Light Button</button>
+    </main>
+    <section id="widgets">
+      <amp-card>
+        <span slot="title">Slotted Title</span>
+        <a href="https://example.com/slotted" id="slotted-link">Slotted link</a>
+        <!-- No slot named "nope": this light child is never rendered. -->
+        <button type="button" slot="nope" id="unassigned">Unassigned</button>
+      </amp-card>
+      <amp-search></amp-search>
+      <amp-secret></amp-secret>
+      <amp-hidden style="display: none"></amp-hidden>
+    </section>
+    <footer><amp-footer></amp-footer></footer>
+    <pre id="state"></pre>
+    <script src="app.js"></script>
+  </body>
+</html>

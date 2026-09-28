@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Role-wrapper click fixture</title>
+    <style>
+      * { box-sizing: border-box; }
+      body { margin: 0; padding: 16px; font-family: system-ui, sans-serif; max-width: 880px; }
+      h1 { font-size: 18px; }
+      section { border: 1px solid #ddd; border-radius: 8px; padding: 12px; margin: 12px 0; }
+      section h2 { font-size: 14px; margin: 0 0 8px; color: #333; }
+      button { font: inherit; }
+      .menu-area { position: relative; width: 380px; padding: 4px; }
+      [role="menu"] { list-style: none; margin: 0; padding: 0; border: 1px solid #ccc; border-radius: 6px; }
+      [role="menuitem"] { padding: 4px; }
+      [role="menuitem"] button { display: block; width: 100%; text-align: left; padding: 6px 8px; background: #fff; border: 0; }
+      [role="menuitem"] button p { margin: 2px 0 0; font-size: 12px; color: #666; }
+      #item-delete { padding: 10px 12px; color: #b00; }
+      /* Full cover over the menu (not the toggle), for the interception check. */
+      .overlay { position: absolute; inset: 0; z-index: 10; background: rgba(0, 0, 0, .35); border-radius: 6px; }
+      /* The card's secondary actions sit in its bottom-right corner, away from
+         its centre, so a click on the card itself cannot land on either. */
+      .card { position: relative; width: 380px; height: 150px; padding: 12px; border: 1px solid #bbb; border-radius: 8px; cursor: pointer; }
+      .card h3 { margin: 0 0 6px; font-size: 15px; }
+      .card p { margin: 0; color: #555; }
+      .card-actions { position: absolute; right: 8px; bottom: 8px; display: flex; gap: 6px; }
+      /* antd-shaped checkbox: the real <input> is invisible (opacity:0) and
+         stacked over the painted box; the wrapping <label> is the click area. */
+      .check-wrapper, .radio-wrapper { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; margin-right: 16px; }
+      .check { position: relative; display: inline-block; width: 16px; height: 16px; }
+      .check-input { position: absolute; inset: 0; margin: 0; opacity: 0; z-index: 1; cursor: pointer; }
+      .check-inner { display: block; width: 16px; height: 16px; border: 1px solid #999; border-radius: 3px; background: #fff; }
+      .check-input:checked + .check-inner { background: #1677ff; border-color: #1677ff; }
+      fieldset { border: 0; padding: 0; margin: 12px 0 0; }
+      [role="combobox"] { display: inline-block; min-width: 220px; padding: 6px 8px; border: 1px solid #999; border-radius: 6px; cursor: pointer; }
+      [role="listbox"] { list-style: none; margin: 4px 0 0; padding: 4px 0; width: 220px; border: 1px solid #999; border-radius: 6px; }
+      [role="option"] { padding: 4px 8px; cursor: pointer; }
+      #state { background: #111; color: #6f6; padding: 8px; border-radius: 6px; font-size: 12px; white-space: pre-wrap; }
+    </style>
+  </head>
+  <body>
+    <h1>Role-wrapper click fixture</h1>
+
+    <section>
+      <h2>Drafts</h2>
+      <div class="menu-area">
+        <!-- The menuitem is a WRAPPER: the handler lives on the inner <button>,
+             so activating the <li> itself does nothing. -->
+        <ul role="menu" aria-label="Drafts">
+          <li role="menuitem" id="item-macos"><button type="button" tabindex="0" id="draft-macos">Draft macOS Submission (1)<p>Started by Jane Today at 11:21 AM</p></button></li>
+          <li role="menuitem" id="item-ios"><button type="button" tabindex="0" id="draft-ios">Draft iOS Submission (2)<p>Started by Omar Yesterday at 4:05 PM</p></button></li>
+          <!-- Here the handler IS on the <li>; nothing inside it is interactive. -->
+          <li role="menuitem" id="item-delete"><span>Delete draft</span></li>
+        </ul>
+        <div class="overlay" id="menu-overlay" hidden></div>
+      </div>
+      <button type="button" id="overlay-toggle" aria-label="Toggle overlay">
+        <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><rect x="2" y="2" width="12" height="12" rx="2" fill="currentColor"></rect></svg>
+      </button>
+    </section>
+
+    <section>
+      <h2>Projects</h2>
+      <div class="card" id="project-card" role="button" tabindex="0" aria-label="Open Project Apollo">
+        <h3>Project Apollo</h3>
+        <p>Lunar lander telemetry dashboard</p>
+        <div class="card-actions">
+          <button type="button" id="card-edit">Edit</button>
+          <button type="button" id="card-share">Share</button>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Preferences</h2>
+      <label class="check-wrapper">
+        <span class="check"><input type="checkbox" class="check-input" id="notify" name="notify"><span class="check-inner"></span></span>
+        <span>Email me when a build finishes</span>
+      </label>
+      <fieldset>
+        <legend>Plan</legend>
+        <label class="radio-wrapper"><input type="radio" name="plan" value="basic" checked><span>Basic plan</span></label>
+        <label class="radio-wrapper"><input type="radio" name="plan" value="pro"><span>Pro plan</span></label>
+      </fieldset>
+    </section>
+
+    <section>
+      <h2>Settings</h2>
+      <form id="settings-form">
+        <button type="submit" id="save-button"><span>Save</span></button>
+      </form>
+      <p><a href="#anchored" id="anchor-link"><span>Anchor</span></a></p>
+    </section>
+
+    <section>
+      <h2>Fruit</h2>
+      <div role="combobox" id="fruit-combo" tabindex="0" aria-label="Fruit" aria-haspopup="listbox" aria-expanded="false" aria-controls="fruit-listbox"><span id="fruit-value">Choose a fruit</span></div>
+      <ul role="listbox" id="fruit-listbox" aria-label="Fruits" hidden>
+        <li role="option">Apple</li>
+        <li role="option">Banana</li>
+        <li role="option">Cherry</li>
+      </ul>
+    </section>
+
+    <section id="anchored">
+      <h2>Anchored section</h2>
+      <p>The Anchor link's target.</p>
+    </section>
+
+    <pre id="state"></pre>
+    <script src="app.js"></script>
+  </body>
+</html>
