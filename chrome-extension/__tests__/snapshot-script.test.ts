@@ -1090,11 +1090,6 @@ describe("textContains also matches the accessible name", () => {
     expect(snap({ textContains: "email" }).tree).toContain('textbox "Email address" |  |  [uid=');
   });
 
-  it("deepest match wins across text and name: a descendant matching by name beats its ancestor's text", () => {
-    document.body.innerHTML = `<div class="toolbar">Close panel <button aria-label="Close"></button></div>`;
-    expect(snap({ textContains: "close" }).tree).toBe('button "Close" |  |  [uid=e1]');
-  });
-
   it("does not turn every element inside a <label> into a name match", () => {
     document.body.innerHTML = `<label class="ant-checkbox-wrapper"><span class="ant-checkbox"><input type="checkbox" class="ant-checkbox-input"><span class="ant-checkbox-inner"></span></span><span>Remember me</span></label>`;
     expect(snap({ textContains: "remember" }).tree).toBe(
@@ -1376,4 +1371,128 @@ describe("a form's named controls cannot trap the snapshot in a cycle", () => {
       expect(modes.map((extra) => snapBounded(extra).tree)).toEqual(expected);
     }
   );
+});
+
+/**
+ * textContains decides, per occurrence of the needle, which element owns it:
+ * the deepest element whose composed text contains it. A slot or a
+ * display:contents element has no box of its own, and a hidden element cannot
+ * be acted on, so neither may own a match and hide every visible ancestor.
+ * Slotted (box-less) text goes to the first control between it and its
+ * component's host, else to the nearest element with a box; hidden text only to
+ * a visible control right above it — never to a bare container such as body.
+ */
+describe("textContains: slots, box-less wrappers and hidden text", () => {
+  afterEach(() => {
+    document.body.innerHTML = "";
+    document.head.innerHTML = "";
+  });
+
+  function host(tag: string, light: string, shadow: string, attrs = ""): { host: Element; root: ShadowRoot } {
+    const wrap = document.createElement("div");
+    wrap.innerHTML = `<${tag} ${attrs}>${light}</${tag}>`;
+    const el = wrap.firstElementChild!;
+    document.body.appendChild(el);
+    const root = el.attachShadow({ mode: "open" });
+    root.innerHTML = shadow;
+    return { host: el, root };
+  }
+
+  it("credits slotted text to the component's own role=button host", () => {
+    const x = host("x-btn", "Save draft", `<div part="label"><slot></slot></div>`, 'role="button" tabindex="0"');
+    expect(snap({ textContains: "save draft" }).tree).toBe('button "Save draft" |  |  [uid=e1]');
+    expect(x.host.getAttribute("data-bcmcp-uid")).toBe("e1");
+  });
+
+  it("credits slotted text to the button inside the component when the host is not a control", () => {
+    const x = host("x-btn", "Save draft", `<button part="base"><span part="label"><slot></slot></span></button>`);
+    expect(snap({ textContains: "save draft" }).tree).toBe('button "Save draft" |  |  [uid=e1]');
+    expect(x.root.querySelector("button")!.getAttribute("data-bcmcp-uid")).toBe("e1");
+  });
+
+  it("credits slotted text with no control around it to the nearest element with a box", () => {
+    const x = host("amp-card", "Card body text", `<div class="body"><slot></slot></div>`);
+    expect(snap({ textContains: "card body" }).tree).toBe('clickable "Card body text" |  |  [uid=e1]');
+    expect(x.root.querySelector(".body")!.getAttribute("data-bcmcp-uid")).toBe("e1");
+  });
+
+  it("credits text inside a display:contents wrapper to the element that renders it", () => {
+    document.body.innerHTML = `<button><span style="display:contents">Save</span></button>`;
+    expect(snap({ textContains: "save" }).tree).toBe('button "Save" |  |  [uid=e1]');
+  });
+
+  it("lets text hidden with CSS inside a control find that control", () => {
+    document.body.innerHTML = `<button>Close<span style="display:none"> and archive</span></button><p>Other</p>`;
+    expect(snap({ textContains: "and archive" }).tree).toBe('button "Close and archive" |  |  [uid=e1]');
+  });
+
+  it("does not list a bare container for text that is hidden everywhere inside it", () => {
+    document.body.innerHTML = `<main><div style="display:none"><p>Quarterly report</p></div><button>Other</button></main><div class="modal" hidden>Delete account?</div>`;
+    expect(snap({ textContains: "quarterly" }).total).toBe(0);
+    expect(snap({ textContains: "delete account" }).total).toBe(0);
+    document.body.innerHTML = `<p>Report <span style="display:none">(archived)</span> quarterly</p>`;
+    expect(snap({ textContains: "archived" }).total).toBe(0);
+    expect(snap({ textContains: "quarterly" }).tree).toBe('clickable "Report (archived) quarterly" |  |  [uid=e1]');
+  });
+
+  it("never lists html or body for <title> or <script> text", () => {
+    document.head.innerHTML = `<title>Quarterly numbers</title>`;
+    document.body.innerHTML = `<script>var q = "quarterly";</script><p>Nothing to see</p>`;
+    expect(snap({ textContains: "quarterly" }).total).toBe(0);
+  });
+});
+
+/**
+ * Name matches (aria-label, alt, title, <label> …) join text matches, with two
+ * guards against noise: a descendant that matches ONLY by name never hides an
+ * ancestor that matches by its own text, and such a name-only match is dropped
+ * when a matching control around it is the real target (the <img alt> inside a
+ * link or button). Selector mode keeps deepest-wins among the selector's own
+ * matches only, and only form controls take a name from a wrapping <label>.
+ */
+describe("textContains: name matches never steal a control's match", () => {
+  afterEach(() => {
+    document.body.innerHTML = "";
+    document.head.innerHTML = "";
+  });
+
+  it("keeps the link, not its icon, when both match", () => {
+    document.body.innerHTML = `<a href="/cart"><img alt="Cart icon"> Cart (3)</a>`;
+    expect(snap({ textContains: "cart" }).tree).toBe('link "Cart (3)" |  |  [uid=e1]');
+  });
+
+  it("keeps the button and its disabled state, not its icon", () => {
+    document.body.innerHTML = `<button disabled><img alt="Delete"> Delete</button>`;
+    expect(snap({ textContains: "delete" }).tree).toBe('button "Delete" |  |  [uid=e1] (disabled)');
+  });
+
+  it("keeps an icon button, not the icon inside it, when both match by name", () => {
+    document.body.innerHTML = `<button aria-label="Cart"><img alt="Cart"></button>`;
+    expect(snap({ textContains: "cart" }).tree).toBe('button "Cart" |  |  [uid=e1]');
+  });
+
+  it("a name-only match on a descendant does not hide an ancestor that matches by its own text", () => {
+    document.body.innerHTML = `<div class="toolbar">Close panel <button aria-label="Close"></button></div>`;
+    expect(snap({ textContains: "close" }).tree).toBe(
+      ['clickable "Close panel" |  |  [uid=e1]', 'button "Close" |  |  [uid=e2]'].join("\n")
+    );
+  });
+
+  it("selector mode applies deepest-wins among the selector's own matches only", () => {
+    document.body.innerHTML = `<label>Email <input></label>`;
+    expect(snap({ selector: "label", textContains: "email" }).tree).toBe('clickable "Email" |  |  [uid=e1]');
+    document.body.innerHTML = `<button><span>Save</span></button>`;
+    expect(snap({ selector: "button", textContains: "save" }).tree).toBe('button "Save" |  |  [uid=e1]');
+  });
+
+  it("gives a wrapping <label>'s text only to the control it labels", () => {
+    document.body.innerHTML = `<label><input type="checkbox"> I agree to the <a href="/terms">Terms</a></label>`;
+    // Default mode: the link keeps its own name (it used to read the label's).
+    expect(snap().tree).toBe(
+      ['checkbox "I agree to the Terms" |  |  [uid=e1]', 'link "Terms" |  |  [uid=e2]'].join("\n")
+    );
+    expect(snap({ textContains: "agree" }).tree).toBe(
+      ['clickable "I agree to the Terms" |  |  [uid=e1]', 'checkbox "I agree to the Terms" |  |  [uid=e2]'].join("\n")
+    );
+  });
 });

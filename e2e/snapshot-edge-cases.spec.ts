@@ -124,3 +124,85 @@ test.describe("a form's named controls cannot hide or trap the page walks", () =
     expect(res.fullText).toContain("Form help");
   });
 });
+
+// Slots and display:contents elements have no box, and hidden content is 0x0,
+// only under a real layout engine — so these textContains cases live here.
+const TEXT_PAGE = `
+  <x-save role="button" tabindex="0" id="role-host">Save draft</x-save>
+  <x-publish id="plain-host">Publish now</x-publish>
+  <amp-card id="card-host">Card body text</amp-card>
+  <button id="contents-btn"><span style="display:contents">Duplicate</span></button>
+  <button id="hidden-btn">Close<span style="display:none"> and archive</span></button>
+  <select id="country" aria-label="Country"><option>Norway</option><option>Uruguay</option></select>
+  <div class="modal" hidden><p>Delete account forever?</p></div>
+  <script>var secretWord = "quarterlyfigures";</script>
+  <script>
+    document.getElementById("role-host").attachShadow({ mode: "open" }).innerHTML = '<div part="label"><slot></slot></div>';
+    document.getElementById("plain-host").attachShadow({ mode: "open" }).innerHTML = '<button part="base"><span part="label"><slot></slot></span></button>';
+    document.getElementById("card-host").attachShadow({ mode: "open" }).innerHTML = '<div class="body"><slot></slot></div>';
+  </script>`;
+
+test.describe("textContains under a real layout engine", () => {
+  test.beforeEach(async ({ page }) => {
+    await page.setContent(TEXT_PAGE);
+  });
+
+  // The element carrying `uid`, described by where it lives.
+  function whoHas(page: Page, uid: string): Promise<string> {
+    return page.evaluate((uid) => {
+      const sel = '[data-bcmcp-uid="' + uid + '"]';
+      const light = document.querySelector(sel);
+      if (light) return "light:" + (light.id || light.localName);
+      for (const h of Array.from(document.querySelectorAll("*"))) {
+        const hit = h.shadowRoot && h.shadowRoot.querySelector(sel);
+        if (hit) return "shadow(" + h.id + "):" + hit.localName;
+      }
+      return "none";
+    }, uid);
+  }
+  function onlyUid(tree: string): string {
+    const lines = tree.split("\n").filter(Boolean);
+    expect(lines, tree).toHaveLength(1);
+    return /\[uid=(e\d+)\]/.exec(lines[0])![1];
+  }
+
+  test("slotted text finds the component's role=button host", async ({ page }) => {
+    const { tree } = await snapshot(page, { textContains: "save draft" });
+    expect(tree).toMatch(/^button "Save draft"/);
+    expect(await whoHas(page, onlyUid(tree))).toBe("light:role-host");
+  });
+
+  test("slotted text finds the button inside a component whose host is not a control", async ({ page }) => {
+    const { tree } = await snapshot(page, { textContains: "publish now" });
+    expect(tree).toMatch(/^button "Publish now"/);
+    expect(await whoHas(page, onlyUid(tree))).toBe("shadow(plain-host):button");
+  });
+
+  test("slotted text with no control around it finds the nearest box", async ({ page }) => {
+    const { tree } = await snapshot(page, { textContains: "card body" });
+    expect(await whoHas(page, onlyUid(tree))).toBe("shadow(card-host):div");
+  });
+
+  test("text in a display:contents wrapper finds the button that renders it", async ({ page }) => {
+    const { tree } = await snapshot(page, { textContains: "duplicate" });
+    expect(await whoHas(page, onlyUid(tree))).toBe("light:contents-btn");
+  });
+
+  test("text hidden with CSS inside a control finds that control", async ({ page }) => {
+    const { tree } = await snapshot(page, { textContains: "and archive" });
+    expect(await whoHas(page, onlyUid(tree))).toBe("light:hidden-btn");
+  });
+
+  test("an option's text finds its select", async ({ page }) => {
+    const { tree } = await snapshot(page, { textContains: "uruguay" });
+    expect(tree).toMatch(/^combobox "Country"/);
+    expect(await whoHas(page, onlyUid(tree))).toBe("light:country");
+  });
+
+  test("text that is hidden everywhere never lists a bare container", async ({ page }) => {
+    for (const needle of ["delete account", "quarterlyfigures"]) {
+      const res = await snapshot(page, { textContains: needle });
+      expect(res.tree, needle).toBe("");
+    }
+  });
+});

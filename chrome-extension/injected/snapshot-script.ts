@@ -271,6 +271,13 @@ export function buildSnapshot(
   let textIndex: Map<Element, number[]> | null = null;
   let textRaw = "";
   let textLower = "";
+  // Per indexed (non-empty) text node, in order: where it starts in textLower
+  // and the element it renders in — for a slotted text node that is the slot.
+  const textStarts: number[] = [];
+  const textParents: Element[] = [];
+  function spanOf(el: Element): number[] | undefined {
+    return textIndex ? textIndex.get(el) : undefined;
+  }
   function indexComposedText(from: Document | Element): void {
     const index = new Map<Element, number[]>();
     const raw: string[] = [];
@@ -278,15 +285,20 @@ export function buildSnapshot(
     let rawPos = 0;
     let lowPos = 0;
     // Entries: a node to visit, or the span of an element whose subtree has
-    // just been emitted (closed at the current positions).
+    // just been emitted (closed at the current positions). `parents` runs in
+    // step with it: the element each visited node was reached from.
     const stack: Array<Node | number[]> = [];
+    const parents: Array<Element | null> = [];
     const top: ArrayLike<Node> =
       from.nodeType === 1 ? composedChildNodes(from as Element) : from.childNodes;
+    const topParent = from.nodeType === 1 ? (from as Element) : null;
     for (let i = top.length - 1; i >= 0; i--) {
       stack.push(top[i]);
+      parents.push(topParent);
     }
     while (stack.length) {
       const item = stack.pop() as Node | number[];
+      const parent = parents.pop() as Element | null;
       if (Array.isArray(item)) {
         item[1] = rawPos;
         item[3] = lowPos;
@@ -296,6 +308,10 @@ export function buildSnapshot(
       if (n.nodeType === 3 || n.nodeType === 4) {
         const s = (n as CharacterData).data;
         const l = s.toLowerCase();
+        if (parent && l.length > 0) {
+          textStarts.push(lowPos);
+          textParents.push(parent);
+        }
         raw.push(s);
         low.push(l);
         rawPos += s.length;
@@ -307,9 +323,11 @@ export function buildSnapshot(
           continue; // an empty span, as textOf reports
         }
         stack.push(span);
+        parents.push(null);
         const kids = composedChildNodes(n as Element);
         for (let i = kids.length - 1; i >= 0; i--) {
           stack.push(kids[i]);
+          parents.push(n as Element);
         }
       }
     }
@@ -437,7 +455,10 @@ export function buildSnapshot(
     return result;
   }
 
-  function computeHidden(el: Element): boolean {
+  // ignoreBox: judge only whether el's content is rendered, not whether el has a
+  // box of its own (a slot or display:contents element never does, and so would
+  // otherwise always read as hidden under a real layout engine).
+  function computeHidden(el: Element, ignoreBox?: boolean): boolean {
     if (el.hasAttribute("hidden")) {
       return true;
     }
@@ -483,7 +504,7 @@ export function buildSnapshot(
         // overlays, custom file pickers, checkbox-hack labels). Hiding them would
         // drop reachable controls.
       }
-      if (layoutActive) {
+      if (layoutActive && !ignoreBox) {
         try {
           const r = el.getBoundingClientRect();
           if (r && r.width === 0 && r.height === 0) {
@@ -497,6 +518,23 @@ export function buildSnapshot(
       // display is not none.
       if (displayNoneAbove(el, dv)) {
         return true;
+      }
+    }
+    return false;
+  }
+
+  // A real <slot>, or any display:contents element: it renders its children
+  // but has no box of its own, so it is never a target by itself.
+  function isBoxless(el: Element): boolean {
+    if (el.localName === "slot" && typeof (el as any).assignedNodes === "function" && isInShadowTree(el)) {
+      return true;
+    }
+    const dv = doc.defaultView;
+    if (dv && typeof dv.getComputedStyle === "function") {
+      try {
+        return dv.getComputedStyle(el).display === "contents";
+      } catch (e) {
+        return false;
       }
     }
     return false;
@@ -594,6 +632,23 @@ export function buildSnapshot(
     return "";
   }
 
+  // What a <label> can label (HTML's labelable elements). Only these take a
+  // wrapping label's text as their name — a link inside a label keeps its own.
+  function isLabelable(el: Element): boolean {
+    const tag = el.localName;
+    if (tag === "input") {
+      return (el.getAttribute("type") || "").toLowerCase() !== "hidden";
+    }
+    return (
+      tag === "select" ||
+      tag === "textarea" ||
+      tag === "button" ||
+      tag === "meter" ||
+      tag === "output" ||
+      tag === "progress"
+    );
+  }
+
   function labelFromAncestor(el: Element): string {
     let node: Element | null = parentElementOf(el);
     for (let up = 0; node && up < WALK_MAX; up++) {
@@ -678,7 +733,7 @@ export function buildSnapshot(
       return clip(forLabel);
     }
 
-    const ancestorLabel = labelFromAncestor(el);
+    const ancestorLabel = isLabelable(el) ? labelFromAncestor(el) : "";
     if (collapseWhitespace(ancestorLabel)) {
       return clip(ancestorLabel);
     }
@@ -1208,8 +1263,7 @@ export function buildSnapshot(
 
   if (textMode) {
     // Match the composed text (text content, including text hidden with CSS)
-    // OR the accessible name, deepest match wins: an element is dropped when a
-    // flat-tree descendant also matches by either. Linear: index the text once,
+    // OR the accessible name, deepest match wins. Linear: index the text once,
     // then mark the ancestors of every match instead of re-scanning subtrees.
     indexComposedText(root);
     const occurrences: number[] = [];
@@ -1243,28 +1297,153 @@ export function buildSnapshot(
       }
       return lo < occurrences.length && occurrences[lo] + textNeedle.length <= span[3];
     };
-    const matched = new Set<Element>();
-    for (let i = 0; i < all.length; i++) {
-      const el = all[i];
-      if (
-        textHasNeedle(el) ||
-        (el.matches(nameCarrier) &&
-          getAccessibleName(el, getRole(el)).toLowerCase().indexOf(textNeedle) !== -1)
-      ) {
-        matched.add(el);
-      }
-    }
-    const matchBelow = new Set<Node>();
-    matched.forEach(function (el) {
+    const nameHasNeedle = function (el: Element): boolean {
+      return getAccessibleName(el, getRole(el)).toLowerCase().indexOf(textNeedle) !== -1;
+    };
+    const markAncestors = function (el: Element, into: Set<Node>): void {
       let n = flatParent(el);
-      for (let up = 0; n && !matchBelow.has(n) && up < WALK_MAX; up++) {
-        matchBelow.add(n);
+      for (let up = 0; n && !into.has(n) && up < WALK_MAX; up++) {
+        into.add(n);
         n = flatParent(n);
       }
-    });
-    candidates = candidates.filter(function (el) {
-      return matched.has(el) && !matchBelow.has(el);
-    });
+    };
+
+    if (selectorMode) {
+      // Exactly the selector's matches that contain the needle; deepest-wins
+      // among THOSE only (a matching <span> inside a selected <button> must not
+      // hide the button), and a hidden match hides nothing.
+      const hits = candidates.filter(function (el) {
+        return textHasNeedle(el) || nameHasNeedle(el);
+      });
+      const hitBelow = new Set<Node>();
+      for (let i = 0; i < hits.length; i++) {
+        if (!isHidden(hits[i])) {
+          markAncestors(hits[i], hitBelow);
+        }
+      }
+      candidates = hits.filter(function (el) {
+        return !hitBelow.has(el);
+      });
+    } else {
+      // Each occurrence is owned by the deepest element containing it, unless
+      // that element cannot be a target: see ownerFor.
+      const deepest = new Set<Element>();
+      const len = textNeedle.length;
+      let t = 0;
+      for (let k = 0; k < occurrences.length; k++) {
+        const p = occurrences[k];
+        while (t + 1 < textStarts.length && textStarts[t + 1] <= p) {
+          t++;
+        }
+        if (t >= textStarts.length || textStarts[t] > p) {
+          continue;
+        }
+        let d: Node | null = textParents[t];
+        const end = t + 1 < textStarts.length ? textStarts[t + 1] : textLower.length;
+        if (p + len > end) {
+          // Straddles text nodes: climb to the element whose span covers it.
+          for (let up = 0; d && up < WALK_MAX; up++) {
+            const span = d.nodeType === 1 ? spanOf(d as Element) : undefined;
+            if (span && span[2] <= p && p + len <= span[3]) {
+              break;
+            }
+            d = flatParent(d);
+          }
+        }
+        if (d && d.nodeType === 1) {
+          deepest.add(d as Element);
+        }
+      }
+      const textOwners = new Set<Element>();
+      deepest.forEach(function (d) {
+        const owner = ownerFor(d);
+        if (owner) {
+          textOwners.add(owner);
+        }
+      });
+      // Name matches, minus the noise of a name-only match inside a matching
+      // control (the <img alt> of a link or button that is the real target).
+      const nameOwners = new Set<Element>();
+      for (let i = 0; i < all.length; i++) {
+        const el = all[i];
+        if (!el.matches(nameCarrier) || isHidden(el) || !nameHasNeedle(el)) {
+          continue;
+        }
+        if (!textOwners.has(el) && insideMatchingControl(el)) {
+          continue;
+        }
+        nameOwners.add(el);
+      }
+      // Deepest wins: a text owner hides every ancestor; a name-only owner
+      // hides only ancestors that are name-only matches themselves.
+      const belowText = new Set<Node>();
+      const belowName = new Set<Node>();
+      textOwners.forEach(function (el) {
+        markAncestors(el, belowText);
+      });
+      nameOwners.forEach(function (el) {
+        markAncestors(el, belowName);
+      });
+      candidates = all.filter(function (el) {
+        if (belowText.has(el)) {
+          return false;
+        }
+        return textOwners.has(el) || (nameOwners.has(el) && !belowName.has(el));
+      });
+    }
+
+    // A name-only match is noise when a control around it (below root) matches
+    // too: that control is the target.
+    function insideMatchingControl(el: Element): boolean {
+      let n = flatParent(el);
+      for (let up = 0; n && n !== root && n.nodeType === 1 && up < WALK_MAX; up++, n = flatParent(n)) {
+        const a = n as Element;
+        if (isInteractiveControl(a) && (textHasNeedle(a) || nameHasNeedle(a))) {
+          return true;
+        }
+      }
+      return false;
+    }
+  }
+
+  // Who owns an occurrence whose deepest element is d. d itself when it has a
+  // box and is visible. A box-less d (a slot, display:contents) whose content
+  // still renders passes it to the first control between d and its component's
+  // host (the host included), else to the nearest element with a box. A hidden
+  // d passes it only to a visible control right above it — never to a bare
+  // container such as body, which would drown the reply.
+  function ownerFor(d: Element): Element | null {
+    const boxless = isBoxless(d);
+    if (!boxless && !isHidden(d)) {
+      return d;
+    }
+    const rendered = boxless && !computeHidden(d, true);
+    const r: Node | null = rendered && d.getRootNode ? d.getRootNode() : null;
+    const hostEl = r && r.nodeType === 11 ? ((r as any).host as Element | null) : null;
+    let nearestBox: Element | null = null;
+    let passedHost = !hostEl;
+    let n = flatParent(d);
+    for (let up = 0; n && n.nodeType === 1 && up < WALK_MAX; up++, n = flatParent(n)) {
+      const el = n as Element;
+      if (!isBoxless(el) && !isHidden(el)) {
+        if (!rendered) {
+          return isInteractiveControl(el) ? el : null;
+        }
+        if (!passedHost && isInteractiveControl(el)) {
+          return el;
+        }
+        if (!nearestBox) {
+          nearestBox = el;
+        }
+      }
+      if (el === hostEl) {
+        passedHost = true;
+      }
+      if (passedHost && nearestBox) {
+        return nearestBox;
+      }
+    }
+    return rendered ? nearestBox : null;
   }
 
   // Default mode: settle the role-wrapper collapses up front — a wrapper row
@@ -1311,6 +1490,7 @@ export function buildSnapshot(
   const lines: string[] = [];
   let uidCounter = 0;
   const stamped: Element[] = [];
+  const rowed = new Set<Element>();
 
   // Stamp a fresh uid (+ signature), or return the one el already got in this
   // run — a selector-mode hint can stamp an inner control before its own row.
@@ -1360,6 +1540,12 @@ export function buildSnapshot(
         }
       }
     }
+    // One row per target: a text-mode wrapper and its inner control can both
+    // match and resolve to the same row.
+    if (rowed.has(uidEl)) {
+      continue;
+    }
+    rowed.add(uidEl);
 
     const role = getRole(rowEl);
     let name = getAccessibleName(rowEl, role);
