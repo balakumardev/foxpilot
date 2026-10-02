@@ -436,7 +436,7 @@ describe("performInputAction", () => {
   });
 
   describe("type", () => {
-    it("appends text to the focused input and fires input", () => {
+    it("appends text to the focused input and fires input", async () => {
       document.body.innerHTML = `<input type="text" value="ab" />`;
       const input = document.querySelector("input")!;
       stamp(input, "e1");
@@ -444,7 +444,7 @@ describe("performInputAction", () => {
       const onInput = jest.fn();
       input.addEventListener("input", onInput);
 
-      const res = performInputAction(document, { action: "type", text: "cd" });
+      const res = await performInputAction(document, { action: "type", text: "cd" });
 
       expect(res.ok).toBe(true);
       expect(input.value).toBe("abcd");
@@ -464,7 +464,7 @@ describe("performInputAction", () => {
       expect(keys).toEqual(["h", "i"]);
     });
 
-    it("submits the enclosing form when submit is true", () => {
+    it("submits the enclosing form when submit is true", async () => {
       document.body.innerHTML = `
         <form><input type="text" /></form>
       `;
@@ -476,7 +476,7 @@ describe("performInputAction", () => {
       const submitSpy = jest.fn();
       (form as unknown as { requestSubmit?: () => void }).requestSubmit = submitSpy;
 
-      const res = performInputAction(document, {
+      const res = await performInputAction(document, {
         action: "type",
         text: "x",
         submit: true,
@@ -486,7 +486,7 @@ describe("performInputAction", () => {
       expect(submitSpy).toHaveBeenCalled();
     });
 
-    it("returns ok:false when there is no suitable focused element", () => {
+    it("returns ok:false when there is no suitable focused element", async () => {
       document.body.innerHTML = `<div>nothing focusable</div>`;
       if (
         document.activeElement &&
@@ -495,7 +495,7 @@ describe("performInputAction", () => {
         (document.activeElement as HTMLElement).blur();
       }
 
-      const res = performInputAction(document, { action: "type", text: "x" });
+      const res = await performInputAction(document, { action: "type", text: "x" });
 
       expect(res.ok).toBe(false);
       expect(res.error).toContain("No focused element");
@@ -969,7 +969,7 @@ describe("synthetic covert parity", () => {
   });
 
   describe("A5: type into a focused contenteditable host", () => {
-    it("routes a contenteditable through beforeinput/input (insertText+data) instead of rejecting", () => {
+    it("routes a contenteditable through beforeinput/input (insertText+data) instead of rejecting", async () => {
       document.body.innerHTML = `<div contenteditable="true" data-bcmcp-uid="e1"></div>`;
       const ce = document.querySelector("[contenteditable]") as HTMLElement;
       ce.focus();
@@ -981,7 +981,7 @@ describe("synthetic covert parity", () => {
       ce.addEventListener("input", (e) =>
         input.push(e as unknown as { inputType?: string; data?: string })
       );
-      const res = performInputAction(document, { action: "type", text: "hi" });
+      const res = await performInputAction(document, { action: "type", text: "hi" });
       expect(res.ok).toBe(true);
       expect(ce.textContent).toBe("hi");
       expect(beforeinput.length).toBe(1);
@@ -1067,9 +1067,10 @@ describe("A5 refinement: contenteditable respects a canceled beforeinput", () =>
     document.body.innerHTML = "";
   });
 
-  it("fires NO input and leaves textContent unchanged when beforeinput is preventDefault-ed", () => {
+  it("fires NO input and leaves textContent unchanged when beforeinput is preventDefault-ed", async () => {
     // Lexical/ProseMirror cancel beforeinput to drive their own model — the extra
-    // input would be a spurious signal, and no insertion should happen.
+    // input would be a spurious signal, and no insertion should happen. This
+    // editor then inserts nothing itself, so the text was not kept: ok:false.
     document.body.innerHTML = `<div contenteditable="true" data-bcmcp-uid="e1"></div>`;
     const ce = document.querySelector("[contenteditable]") as HTMLElement;
     ce.focus();
@@ -1077,14 +1078,15 @@ describe("A5 refinement: contenteditable respects a canceled beforeinput", () =>
     const onInput = jest.fn();
     ce.addEventListener("input", onInput);
 
-    const res = performInputAction(document, { action: "type", text: "hi" });
+    const res = await performInputAction(document, { action: "type", text: "hi" });
 
-    expect(res.ok).toBe(true);
+    expect(res.ok).toBe(false);
+    expect(res.error).toMatch(/^The editor did not keep the typed text: <div> /);
     expect(ce.textContent).toBe(""); // insertion skipped
     expect(onInput).not.toHaveBeenCalled(); // input suppressed
   });
 
-  it("normal (uncanceled) path still inserts and fires input with inputType insertText + data", () => {
+  it("normal (uncanceled) path still inserts and fires input with inputType insertText + data", async () => {
     document.body.innerHTML = `<div contenteditable="true" data-bcmcp-uid="e1"></div>`;
     const ce = document.querySelector("[contenteditable]") as HTMLElement;
     ce.focus();
@@ -1093,7 +1095,7 @@ describe("A5 refinement: contenteditable respects a canceled beforeinput", () =>
       inputs.push(e as unknown as { inputType?: string; data?: string })
     );
 
-    const res = performInputAction(document, { action: "type", text: "hi" });
+    const res = await performInputAction(document, { action: "type", text: "hi" });
 
     expect(res.ok).toBe(true);
     expect(ce.textContent).toBe("hi");
@@ -1914,13 +1916,13 @@ describe("shadow DOM + role-wrapper click retargeting", () => {
   });
 
   describe("focused-element paths pierce shadow roots", () => {
-    it("type appends into an input focused inside an OPEN shadow root", () => {
+    it("type appends into an input focused inside an OPEN shadow root", async () => {
       const root = openHost("amp-search", `<input id="q" type="search" value="i" />`);
       const q = root.getElementById("q") as HTMLInputElement;
       q.focus();
       expect(document.activeElement).toBe(hostOf(root)); // what the old code read
 
-      const res = performInputAction(document, { action: "type", text: "os" });
+      const res = await performInputAction(document, { action: "type", text: "os" });
 
       expect(res.ok).toBe(true);
       expect(q.value).toBe("ios");
@@ -1940,23 +1942,23 @@ describe("shadow DOM + role-wrapper click retargeting", () => {
       expect(targets).toEqual([q]);
     });
 
-    it("type reaches an input focused inside a CLOSED root (Firefox property)", () => {
+    it("type reaches an input focused inside a CLOSED root (Firefox property)", async () => {
       const root = closedHost("amp-search", `<input id="q" />`);
       const q = root.getElementById("q") as HTMLInputElement;
       q.focus();
       exposeClosedViaProperty();
 
-      expect(performInputAction(document, { action: "type", text: "tv" }).ok).toBe(true);
+      expect((await performInputAction(document, { action: "type", text: "tv" })).ok).toBe(true);
       expect(q.value).toBe("tv");
     });
 
-    it("type reaches an input focused inside a CLOSED root (chrome.dom)", () => {
+    it("type reaches an input focused inside a CLOSED root (chrome.dom)", async () => {
       const root = closedHost("amp-search", `<input id="q" />`);
       const q = root.getElementById("q") as HTMLInputElement;
       q.focus();
       exposeClosedViaChromeDom();
 
-      expect(performInputAction(document, { action: "type", text: "tv" }).ok).toBe(true);
+      expect((await performInputAction(document, { action: "type", text: "tv" })).ok).toBe(true);
       expect(q.value).toBe("tv");
     });
   });
@@ -2205,13 +2207,13 @@ describe("review fixes: retarget scope, label content, composed input, cover nam
       expect(onOk).not.toHaveBeenCalled();
     });
 
-    it("a contenteditable uid keeps focus when a link sits at its centre, so type-text still works", () => {
+    it("a contenteditable uid keeps focus when a link sits at its centre, so type-text still works", async () => {
       document.body.innerHTML = `<div contenteditable="true" id="ed" data-bcmcp-uid="e1">Hello <a id="lnk" href="#x">link</a> world</div>`;
       const onLink = jest.fn();
       byId("lnk").addEventListener("click", onLink);
 
       clickWithHit("e1", byId("lnk"));
-      const typed = performInputAction(document, { action: "type", text: "!" });
+      const typed = await performInputAction(document, { action: "type", text: "!" });
 
       expect(onLink).not.toHaveBeenCalled();
       expect(document.activeElement).toBe(byId("ed"));
@@ -2408,13 +2410,13 @@ describe("review fixes: retarget scope, label content, composed input, cover nam
       expect(seen).toEqual(["input"]);
     });
 
-    it("type into an input focused inside a shadow root is seen by a listener on the host", () => {
+    it("type into an input focused inside a shadow root is seen by a listener on the host", async () => {
       const root = openHost("x-field", `<input id="q" />`);
       (root.getElementById("q") as HTMLInputElement).focus();
       const seen: string[] = [];
       root.host.addEventListener("input", () => seen.push("input"));
 
-      const res = performInputAction(document, { action: "type", text: "ab" });
+      const res = await performInputAction(document, { action: "type", text: "ab" });
 
       expect(res.ok).toBe(true);
       expect(seen).toContain("input");
@@ -2649,4 +2651,146 @@ describe("snapshot → click through a form whose control shadows a traversal pr
       expect(res.dispatchedTo).toMatchObject({ tag: "button", name: "Rename" });
     }
   );
+});
+
+/**
+ * type-text into a contenteditable: typed through the editing host at its
+ * caret, and ok only when the editor kept the text, checked before any Enter.
+ * jsdom has no execCommand, so the Text-node fallback runs unless a test stubs
+ * it. Identical block in the Firefox and Chrome suites.
+ */
+describe("type-text into a contenteditable: caret and kept-text check", () => {
+  const NOT_KEPT =
+    /^The editor did not keep the typed text: <div role="textbox"> ignores or undoes synthetic input, so nothing was entered\. /;
+
+  afterEach(() => {
+    delete (document as any).execCommand;
+    document.body.innerHTML = "";
+  });
+
+  function byId(id: string): HTMLElement {
+    return document.getElementById(id) as HTMLElement;
+  }
+
+  it("leaves a caret that is already inside the host where it is", async () => {
+    document.body.innerHTML = `<div id="ed" contenteditable="true">helloworld</div>`;
+    const ed = byId("ed");
+    ed.focus();
+    window.getSelection()!.collapse(ed.firstChild!, 5);
+
+    const res = await performInputAction(document, { action: "type", text: " " });
+
+    expect(res).toEqual({ ok: true });
+    expect(ed.textContent).toBe("hello world");
+  });
+
+  it("moves a caret that is outside the host to the end of the host, inside an empty editor's <p>", async () => {
+    document.body.innerHTML = `<p id="out">outside</p><div id="ed" contenteditable="true" role="textbox"><p id="para"><br></p></div>`;
+    const ed = byId("ed");
+    ed.focus();
+    window.getSelection()!.collapse(byId("out").firstChild!, 3);
+
+    const res = await performInputAction(document, { action: "type", text: "hi" });
+
+    expect(res).toEqual({ ok: true });
+    expect(byId("para").textContent).toBe("hi");
+    expect(byId("out").textContent).toBe("outside");
+  });
+
+  it("reports ok:false and does not submit when the editor cancels beforeinput and inserts nothing", async () => {
+    document.body.innerHTML = `<div id="ed" contenteditable="true" role="textbox"></div>`;
+    const ed = byId("ed");
+    ed.focus();
+    ed.addEventListener("beforeinput", (e) => e.preventDefault());
+    const keys: string[] = [];
+    ed.addEventListener("keydown", (e) => keys.push((e as KeyboardEvent).key));
+
+    const res = await performInputAction(document, { action: "type", text: "hi", submit: true });
+
+    expect(res.ok).toBe(false);
+    expect(res.error).toMatch(NOT_KEPT);
+    expect(ed.textContent).toBe("");
+    expect(keys).toEqual(["h", "i"]); // the typed keys, and no Enter
+  });
+
+  it("reports ok:false when the editor undoes the inserted text (a MutationObserver restoring its DOM)", async () => {
+    document.body.innerHTML = `<div id="ed" contenteditable="true" role="textbox">kept</div>`;
+    const ed = byId("ed");
+    ed.focus();
+    const undo = new MutationObserver(() => {
+      if (ed.textContent !== "kept") {
+        ed.textContent = "kept";
+      }
+    });
+    undo.observe(ed, { childList: true, characterData: true, subtree: true });
+    try {
+      const res = await performInputAction(document, { action: "type", text: "x" });
+
+      expect(res.ok).toBe(false);
+      expect(res.error).toMatch(NOT_KEPT);
+      expect(ed.textContent).toBe("kept");
+    } finally {
+      undo.disconnect();
+    }
+  });
+
+  it("reports ok when the editor cancels beforeinput and inserts through its own model", async () => {
+    document.body.innerHTML = `<div id="ed" contenteditable="true" role="textbox"><p><br></p></div>`;
+    const ed = byId("ed");
+    ed.focus();
+    ed.addEventListener("beforeinput", (e) => {
+      e.preventDefault();
+      const data = (e as InputEvent).data || "";
+      // Like Lexical: the model update reaches the DOM in a microtask.
+      queueMicrotask(() => {
+        ed.innerHTML = "<p><span>" + data + "</span></p>";
+      });
+    });
+    const inputs = jest.fn();
+    ed.addEventListener("input", inputs);
+
+    const res = await performInputAction(document, { action: "type", text: "hello" });
+
+    expect(res).toEqual({ ok: true });
+    expect(ed.textContent).toBe("hello");
+    expect(inputs).not.toHaveBeenCalled();
+  });
+
+  it("fires no input event of its own when execCommand inserted the text", async () => {
+    document.body.innerHTML = `<div id="ed" contenteditable="true"></div>`;
+    const ed = byId("ed");
+    ed.focus();
+    // Stands in for the browser's insertText (which also fires the real input
+    // event itself; this stub leaves that out so any input seen is ours).
+    (document as any).execCommand = jest.fn((_cmd: string, _ui: boolean, value: string) => {
+      ed.appendChild(document.createTextNode(value));
+      return true;
+    });
+    const inputs = jest.fn();
+    ed.addEventListener("input", inputs);
+
+    const res = await performInputAction(document, { action: "type", text: "hey" });
+
+    expect((document as any).execCommand).toHaveBeenCalledWith("insertText", false, "hey");
+    expect(res).toEqual({ ok: true });
+    expect(ed.textContent).toBe("hey");
+    expect(inputs).not.toHaveBeenCalled();
+  });
+
+  it("with empty text and submit (the humanized path's last step), presses Enter without inserting or checking", async () => {
+    document.body.innerHTML = `<div id="ed" contenteditable="true">done</div>`;
+    const ed = byId("ed");
+    ed.focus();
+    const beforeinput = jest.fn();
+    ed.addEventListener("beforeinput", beforeinput);
+    const keys: string[] = [];
+    ed.addEventListener("keydown", (e) => keys.push((e as KeyboardEvent).key));
+
+    const res = await performInputAction(document, { action: "type", text: "", submit: true });
+
+    expect(res).toEqual({ ok: true }); // nothing changed, and nothing was checked
+    expect(beforeinput).not.toHaveBeenCalled();
+    expect(keys).toEqual(["Enter"]);
+    expect(ed.textContent).toBe("done");
+  });
 });

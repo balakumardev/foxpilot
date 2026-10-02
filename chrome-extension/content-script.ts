@@ -270,11 +270,13 @@ if ((window as any).__bcmcpContentScriptLoaded) {
       mouseMove: async (x, y) => {
         dispatchMouseMoveStep(document, x, y);
       },
+      // Typing into a contenteditable resolves later (the editor is checked
+      // for the text), so both of these can hand back a Promise.
       typeChar: async (ch) => {
-        return typeCharStep(document, ch);
+        return await typeCharStep(document, ch);
       },
       instant: async (a) => {
-        return performInputAction(document, a);
+        return await performInputAction(document, a);
       },
     };
 
@@ -308,14 +310,16 @@ if ((window as any).__bcmcpContentScriptLoaded) {
             break;
           }
 
+          // type / type-at into a contenteditable resolve asynchronously;
+          // sendResponse(promise) would reach the background as {}.
           case "performInputAction": {
-            const result = performInputAction(document, message.args);
+            const result = await performInputAction(document, message.args);
             sendResponse(result);
             break;
           }
 
           case "performPointAction": {
-            const result = performPointAction(document, message.args);
+            const result = await performPointAction(document, message.args);
             sendResponse(result);
             break;
           }
@@ -354,7 +358,7 @@ if ((window as any).__bcmcpContentScriptLoaded) {
           }
 
           case "typeCharStep": {
-            const result = typeCharStep(document, message.char);
+            const result = await typeCharStep(document, message.char);
             sendResponse(result);
             break;
           }

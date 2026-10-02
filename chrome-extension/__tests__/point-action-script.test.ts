@@ -77,14 +77,14 @@ describe("performPointAction (chrome)", () => {
       (document as any).elementFromPoint = jest.fn(() => el);
     }
 
-    it("types into an <input> via the native setter and fires input", () => {
+    it("types into an <input> via the native setter and fires input", async () => {
       document.body.innerHTML = `<input type="text" />`;
       const el = document.querySelector("input")!;
       stubPoint(el);
       const onInput = jest.fn();
       el.addEventListener("input", onInput);
 
-      const res = performPointAction(document, { action: "type-at", x: 3, y: 4, text: "hi" });
+      const res = await performPointAction(document, { action: "type-at", x: 3, y: 4, text: "hi" });
 
       expect(res.ok).toBe(true);
       expect(el.value).toBe("hi");
@@ -92,12 +92,12 @@ describe("performPointAction (chrome)", () => {
       expect(res.element!.editable).toBe(true);
     });
 
-    it("types into a contenteditable div (textContent fallback when execCommand is absent)", () => {
+    it("types into a contenteditable div (Text-node fallback when execCommand is absent)", async () => {
       document.body.innerHTML = `<div contenteditable="true"></div>`;
       const el = document.querySelector("[contenteditable]")!;
       // jsdom has no execCommand — the fallback path runs.
       stubPoint(el);
-      const res = performPointAction(document, { action: "type-at", x: 1, y: 1, text: "yo" });
+      const res = await performPointAction(document, { action: "type-at", x: 1, y: 1, text: "yo" });
       expect(res.ok).toBe(true);
       expect(el.textContent).toBe("yo");
     });
@@ -113,19 +113,19 @@ describe("performPointAction (chrome)", () => {
       expect(keys).toContain("Enter");
     });
 
-    it("returns ok:false for a non-typable element", () => {
+    it("returns ok:false for a non-typable element", async () => {
       document.body.innerHTML = `<div>plain</div>`;
       const el = document.querySelector("div")!;
       stubPoint(el);
-      const res = performPointAction(document, { action: "type-at", x: 1, y: 1, text: "z" });
+      const res = await performPointAction(document, { action: "type-at", x: 1, y: 1, text: "z" });
       expect(res.ok).toBe(false);
       expect(res.error).toMatch(/not typable/);
       expect(res.element!.tag).toBe("div");
     });
 
-    it("returns ok:false when no element is at the point", () => {
+    it("returns ok:false when no element is at the point", async () => {
       stubPoint(null);
-      const res = performPointAction(document, { action: "type-at", x: 9, y: 9, text: "q" });
+      const res = await performPointAction(document, { action: "type-at", x: 9, y: 9, text: "q" });
       expect(res.ok).toBe(false);
       expect(res.error).toMatch(/No element at point/);
       expect(res.element).toBeUndefined();
@@ -352,7 +352,7 @@ describe("synthetic covert parity (point tools)", () => {
   });
 
   describe("A5: type-at into contenteditable uses beforeinput/input (insertText)", () => {
-    it("fires beforeinput+input carrying inputType insertText and data", () => {
+    it("fires beforeinput+input carrying inputType insertText and data", async () => {
       document.body.innerHTML = `<div contenteditable="true"></div>`;
       const el = document.querySelector("[contenteditable]") as HTMLElement;
       stubPoint(el);
@@ -365,7 +365,7 @@ describe("synthetic covert parity (point tools)", () => {
         inp.push(e as unknown as { inputType?: string; data?: string })
       );
 
-      const res = performPointAction(document, { action: "type-at", x: 1, y: 1, text: "yo" });
+      const res = await performPointAction(document, { action: "type-at", x: 1, y: 1, text: "yo" });
 
       expect(res.ok).toBe(true);
       expect(el.textContent).toBe("yo");
@@ -563,13 +563,13 @@ describe("point tools pierce shadow roots", () => {
     expect(res.element!.tag).toBe("button");
   });
 
-  it("type-at types into an input inside a shadow root (was 'not typable' on the host)", () => {
+  it("type-at types into an input inside a shadow root (was 'not typable' on the host)", async () => {
     const root = openHost("amp-search", `<input id="q" type="search" />`);
     const q = root.getElementById("q") as HTMLInputElement;
     stubDocHit(root.host);
     stubRootHit(root, q);
 
-    const res = performPointAction(document, { action: "type-at", x: 3, y: 4, text: "ios" });
+    const res = await performPointAction(document, { action: "type-at", x: 3, y: 4, text: "ios" });
 
     expect(res.ok).toBe(true);
     expect(q.value).toBe("ios");
@@ -765,7 +765,7 @@ describe("point tools: label content, composed input, lookup cost, bounded walks
     expect((byId("agree") as HTMLInputElement).checked).toBe(false);
   });
 
-  it("type-at into an input inside a shadow root fires a composed input the host sees", () => {
+  it("type-at into an input inside a shadow root fires a composed input the host sees", async () => {
     const host = document.createElement("x-field");
     document.body.appendChild(host);
     const root = host.attachShadow({ mode: "open" });
@@ -776,7 +776,7 @@ describe("point tools: label content, composed input, lookup cost, bounded walks
     const seen: string[] = [];
     host.addEventListener("input", () => seen.push("input"));
 
-    const res = performPointAction(document, { action: "type-at", x: 1, y: 1, text: "ab" });
+    const res = await performPointAction(document, { action: "type-at", x: 1, y: 1, text: "ab" });
 
     expect(res.ok).toBe(true);
     expect(q.value).toBe("ab");
@@ -855,5 +855,242 @@ describe("a form's named controls cannot trap scroll-at in a cycle", () => {
     expect((panel as any).scrollBy).toHaveBeenCalledWith(0, 120);
     expect((window as any).scrollBy).not.toHaveBeenCalled();
     expect(res.element!.id).toBe("panel");
+  });
+});
+
+/**
+ * type-at into a contenteditable goes through the editing host and reports ok
+ * only when the editor kept the text. Reproduced against a real Lexical editor:
+ * the point landed on the editor's <p>, focus() on it did nothing, Lexical saw
+ * no caret and ignored the beforeinput, the textContent fallback was undone,
+ * and type-at still replied ok:true. jsdom has no layout, no execCommand, no
+ * caret-from-point and no isContentEditable, so each test stubs what it needs.
+ * Identical block in the Firefox and Chrome suites.
+ */
+describe("type-at into a contenteditable: editing host, caret and kept-text check", () => {
+  const NOT_KEPT =
+    /^The editor did not keep the typed text: <div role="textbox"> ignores or undoes synthetic input, so nothing was entered\. /;
+
+  afterEach(() => {
+    delete (HTMLElement.prototype as any).isContentEditable;
+    delete (document as any).elementFromPoint;
+    delete (document as any).caretPositionFromPoint;
+    delete (document as any).caretRangeFromPoint;
+    delete (document as any).execCommand;
+    document.body.innerHTML = "";
+  });
+
+  function byId(id: string): HTMLElement {
+    return document.getElementById(id) as HTMLElement;
+  }
+  function stubPoint(el: Element) {
+    (document as any).elementFromPoint = jest.fn(() => el);
+  }
+  // A real browser reports isContentEditable for every element inside an
+  // editing host; jsdom does not implement it.
+  function emulateIsContentEditable() {
+    Object.defineProperty(HTMLElement.prototype, "isContentEditable", {
+      configurable: true,
+      get(this: HTMLElement) {
+        const owner = this.closest("[contenteditable]");
+        const v = owner ? (owner.getAttribute("contenteditable") || "").toLowerCase() : "false";
+        return v === "" || v === "true" || v === "plaintext-only";
+      },
+    });
+  }
+
+  it("types through the editing host when the point lands on a <p> inside it", async () => {
+    emulateIsContentEditable();
+    document.body.innerHTML = `<div id="ed" contenteditable="true" role="textbox"><p id="para"><br></p></div>`;
+    const ed = byId("ed");
+    const para = byId("para");
+    stubPoint(para);
+    const seen: { caret: Node | null; inputTargets: EventTarget[]; keyTargets: EventTarget[] } = {
+      caret: null,
+      inputTargets: [],
+      keyTargets: [],
+    };
+    ed.addEventListener("beforeinput", (e) => {
+      seen.inputTargets.push(e.target as EventTarget);
+      seen.caret = window.getSelection()!.anchorNode;
+    });
+    ed.addEventListener("keydown", (e) => seen.keyTargets.push(e.target as EventTarget));
+
+    const res = await performPointAction(document, { action: "type-at", x: 5, y: 5, text: "hello" });
+
+    expect(res.ok).toBe(true);
+    expect(res.element!.tag).toBe("p");
+    expect(document.activeElement).toBe(ed);
+    expect(seen.inputTargets).toEqual([ed]);
+    expect(seen.keyTargets.length).toBe(5);
+    expect(seen.keyTargets.every((t) => t === ed)).toBe(true);
+    // No caret-from-point in jsdom, so the caret goes to the end of the host:
+    // inside the <p> of an empty Lexical-shaped editor, not beside it.
+    expect(seen.caret).toBe(para);
+    expect(para.textContent).toBe("hello");
+    expect(para.lastElementChild!.localName).toBe("br"); // the editor's own nodes stay
+  });
+
+  it("puts the caret where a click at the point would (caretPositionFromPoint)", async () => {
+    document.body.innerHTML = `<div id="ed" contenteditable="true">hello world</div>`;
+    const ed = byId("ed");
+    stubPoint(ed);
+    const text = ed.firstChild as Text;
+    (document as any).caretPositionFromPoint = jest.fn(() => ({ offsetNode: text, offset: 5 }));
+
+    const res = await performPointAction(document, { action: "type-at", x: 40, y: 8, text: "," });
+
+    expect((document as any).caretPositionFromPoint).toHaveBeenCalledWith(40, 8);
+    expect(res.ok).toBe(true);
+    expect(ed.textContent).toBe("hello, world");
+  });
+
+  it("falls back to caretRangeFromPoint, and to the end of the host when that caret is outside it", async () => {
+    document.body.innerHTML = `<p id="out">outside</p><div id="ed" contenteditable="true">abc</div>`;
+    const ed = byId("ed");
+    stubPoint(ed);
+    const outside = byId("out").firstChild!;
+    (document as any).caretRangeFromPoint = jest.fn(() => ({ startContainer: outside, startOffset: 2 }));
+
+    const res = await performPointAction(document, { action: "type-at", x: 1, y: 1, text: "d" });
+
+    expect((document as any).caretRangeFromPoint).toHaveBeenCalledWith(1, 1);
+    expect(res.ok).toBe(true);
+    expect(ed.textContent).toBe("abcd");
+    expect(byId("out").textContent).toBe("outside");
+  });
+
+  it("reports ok:false and does not submit when the editor cancels beforeinput and inserts nothing", async () => {
+    document.body.innerHTML = `<div id="ed" contenteditable="true" role="textbox"></div>`;
+    const ed = byId("ed");
+    stubPoint(ed);
+    ed.addEventListener("beforeinput", (e) => e.preventDefault());
+    const keys: string[] = [];
+    ed.addEventListener("keydown", (e) => keys.push((e as KeyboardEvent).key));
+
+    const res = await performPointAction(document, {
+      action: "type-at",
+      x: 1,
+      y: 1,
+      text: "hi",
+      submit: true,
+    });
+
+    expect(res.ok).toBe(false);
+    expect(res.error).toMatch(NOT_KEPT);
+    expect(res.element!.tag).toBe("div");
+    expect(ed.textContent).toBe("");
+    expect(keys).toEqual(["h", "i"]); // the typed keys, and no Enter
+  });
+
+  it("reports ok:false when the editor undoes the inserted text (a MutationObserver restoring its DOM)", async () => {
+    document.body.innerHTML = `<div id="ed" contenteditable="true" role="textbox">kept</div>`;
+    const ed = byId("ed");
+    stubPoint(ed);
+    const undo = new MutationObserver(() => {
+      if (ed.textContent !== "kept") {
+        ed.textContent = "kept";
+      }
+    });
+    undo.observe(ed, { childList: true, characterData: true, subtree: true });
+    try {
+      const res = await performPointAction(document, { action: "type-at", x: 1, y: 1, text: "x" });
+
+      expect(res.ok).toBe(false);
+      expect(res.error).toMatch(NOT_KEPT);
+      expect(ed.textContent).toBe("kept");
+    } finally {
+      undo.disconnect();
+    }
+  });
+
+  it("reports ok when the editor cancels beforeinput and inserts through its own model", async () => {
+    document.body.innerHTML = `<div id="ed" contenteditable="true" role="textbox"><p><br></p></div>`;
+    const ed = byId("ed");
+    stubPoint(ed);
+    ed.addEventListener("beforeinput", (e) => {
+      e.preventDefault();
+      const data = (e as InputEvent).data || "";
+      // Like Lexical: the model update reaches the DOM in a microtask.
+      queueMicrotask(() => {
+        ed.innerHTML = "<p><span>" + data + "</span></p>";
+      });
+    });
+    const inputs = jest.fn();
+    ed.addEventListener("input", inputs);
+
+    const res = await performPointAction(document, { action: "type-at", x: 1, y: 1, text: "hello" });
+
+    expect(res.ok).toBe(true);
+    expect(ed.textContent).toBe("hello");
+    expect(inputs).not.toHaveBeenCalled();
+  });
+
+  it("fires no input event of its own when execCommand inserted the text", async () => {
+    document.body.innerHTML = `<div id="ed" contenteditable="true"></div>`;
+    const ed = byId("ed");
+    stubPoint(ed);
+    // Stands in for the browser's insertText (which also fires the real input
+    // event itself; this stub leaves that out so any input seen is ours).
+    (document as any).execCommand = jest.fn((_cmd: string, _ui: boolean, value: string) => {
+      ed.appendChild(document.createTextNode(value));
+      return true;
+    });
+    const inputs = jest.fn();
+    ed.addEventListener("input", inputs);
+
+    const res = await performPointAction(document, { action: "type-at", x: 1, y: 1, text: "hey" });
+
+    expect((document as any).execCommand).toHaveBeenCalledWith("insertText", false, "hey");
+    expect(res.ok).toBe(true);
+    expect(ed.textContent).toBe("hey");
+    expect(inputs).not.toHaveBeenCalled();
+  });
+
+  it("checks the text BEFORE pressing Enter, so a chat box that clears on Enter still reports ok", async () => {
+    document.body.innerHTML = `<div id="ed" contenteditable="true" role="textbox"></div>`;
+    const ed = byId("ed");
+    stubPoint(ed);
+    const sent: string[] = [];
+    ed.addEventListener("keydown", (e) => {
+      if ((e as KeyboardEvent).key === "Enter") {
+        sent.push(ed.textContent || "");
+        ed.textContent = "";
+      }
+    });
+
+    const res = await performPointAction(document, {
+      action: "type-at",
+      x: 1,
+      y: 1,
+      text: "ping",
+      submit: true,
+    });
+
+    expect(res.ok).toBe(true);
+    expect(sent).toEqual(["ping"]);
+    expect(ed.textContent).toBe("");
+  });
+
+  it("with empty text and submit, presses Enter without inserting or checking", async () => {
+    document.body.innerHTML = `<div id="ed" contenteditable="true"></div>`;
+    const ed = byId("ed");
+    stubPoint(ed);
+    const beforeinput = jest.fn();
+    ed.addEventListener("beforeinput", beforeinput);
+    const keys: string[] = [];
+    ed.addEventListener("keydown", (e) => keys.push((e as KeyboardEvent).key));
+
+    const res = await performPointAction(document, {
+      action: "type-at",
+      x: 1,
+      y: 1,
+      text: "",
+      submit: true,
+    });
+
+    expect(res.ok).toBe(true); // nothing changed, and nothing was checked
+    expect(beforeinput).not.toHaveBeenCalled();
+    expect(keys).toEqual(["Enter"]);
   });
 });

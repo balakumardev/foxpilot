@@ -18,18 +18,18 @@
  * `buildSnapshot`. uids are reassigned on every snapshot, so a stale uid is a
  * normal, recoverable error: the caller is told to take a fresh snapshot.
  */
-export function performInputAction(
-  doc: Document,
-  args:
-    | { action: "click"; uid: string; doubleClick?: boolean; failIfIntercepted?: boolean }
-    | { action: "hover"; uid: string }
-    | { action: "fill"; uid: string; value: string }
-    | { action: "fill-form"; fields: { uid: string; value: string }[] }
-    | { action: "type"; text: string; submit?: boolean }
-    | { action: "press-key"; key: string; modifiers?: string[] }
-    | { action: "drag"; fromUid: string; toUid: string }
-    | { action: "classify-intercept"; uid: string }
-): {
+
+type InputActionArgs =
+  | { action: "click"; uid: string; doubleClick?: boolean; failIfIntercepted?: boolean }
+  | { action: "hover"; uid: string }
+  | { action: "fill"; uid: string; value: string }
+  | { action: "fill-form"; fields: { uid: string; value: string }[] }
+  | { action: "type"; text: string; submit?: boolean }
+  | { action: "press-key"; key: string; modifiers?: string[] }
+  | { action: "drag"; fromUid: string; toUid: string }
+  | { action: "classify-intercept"; uid: string };
+
+interface InputActionResult {
   ok: boolean;
   error?: string;
   intercepted?: {
@@ -43,7 +43,27 @@ export function performInputAction(
   // uid element (see activationTargetFor), never when it went to the uid
   // element itself.
   dispatchedTo?: { tag: string; name?: string };
-} {
+}
+
+// type into a contenteditable waits for the editor before it answers (see
+// typeIntoEditor), so it can return a Promise; every other action answers
+// synchronously.
+export function performInputAction(
+  doc: Document,
+  args: Extract<InputActionArgs, { action: "type" }>
+): InputActionResult | Promise<InputActionResult>;
+export function performInputAction(
+  doc: Document,
+  args: Exclude<InputActionArgs, { action: "type" }>
+): InputActionResult;
+export function performInputAction(
+  doc: Document,
+  args: InputActionArgs
+): InputActionResult | Promise<InputActionResult>;
+export function performInputAction(
+  doc: Document,
+  args: InputActionArgs
+): InputActionResult | Promise<InputActionResult> {
   const UID_ATTR = "data-bcmcp-uid";
 
   try {
@@ -1021,69 +1041,304 @@ export function performInputAction(
       return ce === "" || ce === "true" || ce === "plaintext-only";
     }
 
-    // Inserts text into a contenteditable host the way a real edit does: a
-    // cancelable beforeinput, then (if not prevented) the insertion, then input —
-    // both as InputEvent carrying inputType:"insertText" + data. Falls back to a
-    // plain Event with the same props where InputEvent is unavailable.
-    function insertIntoContentEditable(el: Element, text: string): void {
-      const IE = (win as { InputEvent?: typeof InputEvent } | null) &&
-        (win as { InputEvent?: typeof InputEvent }).InputEvent;
-      let beforeEv: Event;
-      if (typeof IE === "function") {
-        beforeEv = new (IE as typeof InputEvent)("beforeinput", {
-          inputType: "insertText",
-          data: text,
-          bubbles: true,
-          cancelable: true,
-          composed: true,
-        });
-      } else {
-        beforeEv = new Event("beforeinput", { bubbles: true, cancelable: true });
+    // --- contenteditable typing helpers. The same bodies are inlined in every
+    //     injected module that types into an editor; keep the copies identical. ---
+
+    // The editing host: the outermost ancestor in the element's own tree that is
+    // still editable. Only the host takes focus and holds a caret, and it is
+    // where an editor listens for beforeinput: focus() on a <p> inside it does
+    // nothing, so typing aimed at that <p> never reached the editor. The walk
+    // reads the native parentElement getter (a form control named
+    // "parentElement" shadows the form's own), stops at a shadow root and is
+    // capped.
+    function editingHost(el: Element): Element {
+      const parentOf = Object.getOwnPropertyDescriptor(Node.prototype, "parentElement")!.get!;
+      let host = el;
+      for (let steps = 0; steps < 4096; steps++) {
+        const p = parentOf.call(host) as Element | null;
+        if (!p || !contentEditableHost(p)) {
+          break;
+        }
+        host = p;
+      }
+      return host;
+    }
+
+    // The text the editor shows. innerText follows rendering (line breaks
+    // included); jsdom has no innerText, so tests read textContent.
+    function renderedText(host: Element): string {
+      const shown = (host as { innerText?: unknown }).innerText;
+      return typeof shown === "string" ? shown : host.textContent || "";
+    }
+
+    // Chrome scopes a shadow tree's selection to its root
+    // (ShadowRoot.getSelection); elsewhere the window's selection reaches it.
+    function editorSelection(host: Element): Selection | null {
+      const root = host.getRootNode() as unknown as {
+        host?: unknown;
+        getSelection?: () => Selection | null;
+      };
+      if (root.host && typeof root.getSelection === "function") {
+        return root.getSelection();
+      }
+      return win && typeof win.getSelection === "function" ? win.getSelection() : null;
+    }
+
+    // The caret a click at (x, y) leaves: caretPositionFromPoint (Firefox,
+    // Chrome 128+), else caretRangeFromPoint (older Chrome, Safari).
+    function caretAtPoint(x: number, y: number): { node: Node; offset: number } | null {
+      const d = doc as unknown as {
+        caretPositionFromPoint?: (x: number, y: number) => { offsetNode: Node; offset: number } | null;
+        caretRangeFromPoint?: (x: number, y: number) => Range | null;
+      };
+      if (typeof d.caretPositionFromPoint === "function") {
         try {
-          Object.defineProperty(beforeEv, "inputType", { value: "insertText" });
-          Object.defineProperty(beforeEv, "data", { value: text });
+          const p = d.caretPositionFromPoint(x, y);
+          if (p && p.offsetNode) {
+            return { node: p.offsetNode, offset: p.offset };
+          }
         } catch (e) {
-          /* best effort */
+          /* fall through to caretRangeFromPoint */
         }
       }
-      // A canceled beforeinput means the editor (Lexical/ProseMirror) is driving
-      // its own model: perform NEITHER the insertion NOR the input — firing input
-      // anyway would be a spurious signal. dispatchEvent returns false = canceled.
-      const notPrevented = el.dispatchEvent(beforeEv);
-      if (notPrevented) {
-        let inserted = false;
-        const doExec = (doc as {
-          execCommand?: (c: string, s?: boolean, v?: string) => boolean;
-        }).execCommand;
-        if (typeof doExec === "function") {
-          try {
-            inserted = doExec.call(doc, "insertText", false, text);
-          } catch (e) {
-            inserted = false;
+      if (typeof d.caretRangeFromPoint === "function") {
+        try {
+          const r = d.caretRangeFromPoint(x, y);
+          if (r && r.startContainer) {
+            return { node: r.startContainer, offset: r.startOffset };
           }
+        } catch (e) {
+          /* no caret at the point */
         }
-        if (!inserted) {
-          (el as { textContent?: string }).textContent =
-            (el.textContent || "") + text;
+      }
+      return null;
+    }
+
+    // The end of the editor's text: after its last text node, else inside its
+    // innermost last element short of a <br>. An empty Lexical editor is
+    // <div><p><br></p></div>, so the caret goes into the <p> and the text lands
+    // in the paragraph, not beside it.
+    function endOfHost(host: Element): { node: Node; offset: number } {
+      const walker = doc.createTreeWalker(host, 4 /* NodeFilter.SHOW_TEXT */);
+      let last: Node | null = null;
+      for (let t = walker.nextNode(); t; t = walker.nextNode()) {
+        last = t;
+      }
+      if (last) {
+        return { node: last, offset: (last.nodeValue || "").length };
+      }
+      let n: Element = host;
+      for (let steps = 0; steps < 4096; steps++) {
+        const c: Element | null = n.lastElementChild;
+        if (!c || c.localName === "br") {
+          break;
         }
-        let inputEv: Event;
+        n = c;
+      }
+      return { node: n, offset: 0 };
+    }
+
+    // Puts the caret where the text should go. type-at passes its point: the
+    // caret goes where a real click there leaves it, when that is inside the
+    // host. type-text and the humanized step pass null: a caret already in the
+    // host stays put (a click placed it, or typing is under way). Anything else
+    // goes to the end of the host.
+    function placeCaret(host: Element, at: { x: number; y: number } | null): void {
+      const sel = editorSelection(host);
+      if (!sel) {
+        return;
+      }
+      let pos: { node: Node; offset: number } | null = null;
+      if (at) {
+        pos = caretAtPoint(at.x, at.y);
+        if (pos && !host.contains(pos.node)) {
+          pos = null;
+        }
+      } else if (sel.anchorNode && host.contains(sel.anchorNode)) {
+        return;
+      }
+      if (!pos) {
+        pos = endOfHost(host);
+      }
+      try {
+        sel.collapse(pos.node, pos.offset);
+      } catch (e) {
+        /* the selection refused the node; typing goes wherever the caret is */
+      }
+    }
+
+    // Inserts text into the editing host the way a real edit does: a
+    // cancelable beforeinput, then (if not prevented) the browser's own
+    // insertText, which fires the real input event itself. Only where
+    // execCommand is missing or refuses (no caret in an editable region) does a
+    // Text node go in at the caret, followed by an input event. textContent is
+    // never reassigned: that wipes the editor's own nodes, and an editor that
+    // owns its DOM (Lexical) puts them straight back. A canceled beforeinput
+    // means the editor drives its own model; whether it inserted anything is
+    // for the caller's check to find out.
+    function insertIntoContentEditable(host: Element, text: string): void {
+      const IE = (win as { InputEvent?: typeof InputEvent } | null) &&
+        (win as { InputEvent?: typeof InputEvent }).InputEvent;
+      // An InputEvent carrying inputType:"insertText" + data, or a plain Event
+      // with the same props where InputEvent is unavailable.
+      function inputEvt(type: string, cancelable: boolean): Event {
         if (typeof IE === "function") {
-          inputEv = new (IE as typeof InputEvent)("input", {
+          return new (IE as typeof InputEvent)(type, {
             inputType: "insertText",
             data: text,
             bubbles: true,
+            cancelable: cancelable,
             composed: true,
           });
-        } else {
-          inputEv = new Event("input", { bubbles: true, composed: true });
-          try {
-            Object.defineProperty(inputEv, "inputType", { value: "insertText" });
-            Object.defineProperty(inputEv, "data", { value: text });
-          } catch (e) {
-            /* best effort */
+        }
+        const ev = new Event(type, { bubbles: true, cancelable: cancelable, composed: true });
+        try {
+          Object.defineProperty(ev, "inputType", { value: "insertText" });
+          Object.defineProperty(ev, "data", { value: text });
+        } catch (e) {
+          /* best effort */
+        }
+        return ev;
+      }
+      // dispatchEvent returns false = canceled.
+      if (!host.dispatchEvent(inputEvt("beforeinput", true))) {
+        return;
+      }
+      const doExec = (doc as {
+        execCommand?: (c: string, s?: boolean, v?: string) => boolean;
+      }).execCommand;
+      if (typeof doExec === "function") {
+        try {
+          if (doExec.call(doc, "insertText", false, text)) {
+            // Inserted, and the browser fired the real input event. A second,
+            // synthetic one makes an editor that inserts on input do it twice.
+            return;
+          }
+        } catch (e) {
+          /* fall back to inserting the node */
+        }
+      }
+      const node = doc.createTextNode(text);
+      const sel = editorSelection(host);
+      let placed = false;
+      try {
+        const range = sel && sel.rangeCount > 0 ? sel.getRangeAt(0) : null;
+        if (range && host.contains(range.startContainer)) {
+          range.insertNode(node);
+          placed = true;
+          sel!.collapse(node, text.length);
+        }
+      } catch (e) {
+        /* no usable caret; append below */
+      }
+      if (!placed) {
+        host.appendChild(node);
+      }
+      host.dispatchEvent(inputEvt("input", false));
+    }
+
+    // Whether the editor kept what was typed: its text differs from `before`
+    // and, after a bulk insertion (settleMs > 0), still differs settleMs later,
+    // since an editor that undoes a change it did not make (a MutationObserver
+    // putting its own DOM back) does so within that window. Polled every 20 ms
+    // for up to 600 ms. The first look waits one task, so the editor's own
+    // microtask work and any such undo have run. "Differs", not "contains the
+    // text": editors rewrite input (a Markdown shortcut turns *abc* into an
+    // italic "abc").
+    function keptAfter(host: Element, before: string, settleMs: number): Promise<boolean> {
+      const deadline = Date.now() + 600;
+      function differs(): boolean {
+        try {
+          return renderedText(host) !== before;
+        } catch (e) {
+          return false;
+        }
+      }
+      return new Promise(function (resolve) {
+        function again(): void {
+          if (Date.now() >= deadline) {
+            resolve(false);
+          } else {
+            setTimeout(look, 20);
           }
         }
-        el.dispatchEvent(inputEv);
+        function look(): void {
+          if (!differs()) {
+            again();
+          } else if (settleMs <= 0) {
+            resolve(true);
+          } else {
+            setTimeout(function () {
+              if (differs()) {
+                resolve(true);
+              } else {
+                again();
+              }
+            }, settleMs);
+          }
+        }
+        setTimeout(look, 0);
+      });
+    }
+
+    // The error for text the editor did not keep, naming the editing host.
+    function notKeptError(host: Element): string {
+      const role = host.getAttribute("role");
+      return (
+        "The editor did not keep the typed text: <" +
+        host.localName +
+        (role ? ' role="' + role + '"' : "") +
+        '> ignores or undoes synthetic input, so nothing was entered. Trusted input works where synthetic input does not: on Chrome/Edge retry type-at with engine:"cdp"; on Firefox set Input Realism to Native in the FoxPilot options (needs the input sidecar), then click-element and type-text.'
+      );
+    }
+
+    // Types text into a contenteditable for type-at and type-text: focus the
+    // editing host, put the caret where the keys should land, yield once so the
+    // page sees the focus and selectionchange (editors sync their own selection
+    // there, and a placeholder that drops out on focus is gone before the
+    // baseline), insert, press the keys on the host (keys go to the focused
+    // element), then check that the editor kept the text BEFORE any Enter: a
+    // chat box that sends on Enter clears itself. Empty text (the humanized path
+    // submitting after typing char by char) skips the insertion and the check.
+    // Never rejects.
+    async function typeIntoEditor(
+      host: Element,
+      text: string,
+      submit: boolean,
+      at: { x: number; y: number } | null
+    ): Promise<{ ok: boolean; error?: string }> {
+      try {
+        try {
+          (host as { focus?: () => void }).focus?.();
+        } catch (e) {
+          /* not focusable */
+        }
+        placeCaret(host, at);
+        if (text !== "") {
+          await new Promise(function (resolve) {
+            setTimeout(resolve, 0);
+          });
+          const before = renderedText(host);
+          insertIntoContentEditable(host, text);
+          for (let i = 0; i < text.length; i++) {
+            const ch = text.charAt(i);
+            host.dispatchEvent(keyEvt("keydown", ch));
+            if (isPrintableKey(ch)) {
+              host.dispatchEvent(keyEvt("keypress", ch));
+            }
+            host.dispatchEvent(keyEvt("keyup", ch));
+          }
+          if (!(await keptAfter(host, before, 40))) {
+            return { ok: false, error: notKeptError(host) };
+          }
+        }
+        if (submit) {
+          host.dispatchEvent(keyEvt("keydown", "Enter"));
+          host.dispatchEvent(keyEvt("keyup", "Enter"));
+        }
+        return { ok: true };
+      } catch (e) {
+        return { ok: false, error: String(e) };
       }
     }
 
@@ -1269,9 +1524,10 @@ export function performInputAction(
         nativeSetValue(el, current + text);
         el.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
       } else {
-        // contenteditable host — insert via a real beforeinput/input pair rather
-        // than rejecting it (the SPA rich-text-editor case).
-        insertIntoContentEditable(el, text);
+        // contenteditable (the SPA rich-text-editor case): typed through its
+        // editing host at the caret, and ok only when the editor kept the text
+        // (see typeIntoEditor).
+        return typeIntoEditor(editingHost(el), text, !!args.submit, null);
       }
       for (let i = 0; i < text.length; i++) {
         const ch = text.charAt(i);

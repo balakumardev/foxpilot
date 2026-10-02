@@ -26,7 +26,7 @@ describe("humanize-steps (injected, jsdom)", () => {
   });
 
   describe("typeCharStep", () => {
-    it("appends one char to the focused field and fires keydown/input/keyup", () => {
+    it("appends one char to the focused field and fires keydown/input/keyup", async () => {
       document.body.innerHTML = `<input type="text" value="ab" />`;
       const input = document.querySelector("input")!;
       input.focus();
@@ -35,16 +35,16 @@ describe("humanize-steps (injected, jsdom)", () => {
         input.addEventListener(t, () => events.push(t))
       );
 
-      const res = typeCharStep(document, "c");
+      const res = await typeCharStep(document, "c");
 
       expect(res.ok).toBe(true);
       expect(input.value).toBe("abc");
       expect(events).toEqual(expect.arrayContaining(["keydown", "input", "keyup"]));
     });
 
-    it("returns ok:false when no input/textarea is focused", () => {
+    it("returns ok:false when no input/textarea is focused", async () => {
       document.body.innerHTML = `<div>not a field</div>`;
-      const res = typeCharStep(document, "x");
+      const res = await typeCharStep(document, "x");
       expect(res.ok).toBe(false);
       expect(typeof res.error).toBe("string");
     });
@@ -69,7 +69,7 @@ describe("humanize typeCharStep — key identity + contenteditable (A1/A5)", () 
     document.body.innerHTML = "";
   });
 
-  it("carries code/keyCode/which and emits keydown→keypress→keyup for a printable char", () => {
+  it("carries code/keyCode/which and emits keydown→keypress→keyup for a printable char", async () => {
     document.body.innerHTML = `<input type="text" />`;
     const input = document.querySelector("input")!;
     input.focus();
@@ -82,7 +82,7 @@ describe("humanize typeCharStep — key identity + contenteditable (A1/A5)", () 
     input.addEventListener("keypress", () => seq.push("keypress"));
     input.addEventListener("keyup", () => seq.push("keyup"));
 
-    const res = typeCharStep(document, "b");
+    const res = await typeCharStep(document, "b");
 
     expect(res.ok).toBe(true);
     expect(seq).toEqual(["keydown", "keypress", "keyup"]);
@@ -91,7 +91,7 @@ describe("humanize typeCharStep — key identity + contenteditable (A1/A5)", () 
     expect(kd!.which).toBe(66);
   });
 
-  it("types one char into a focused contenteditable via beforeinput/input (insertText)", () => {
+  it("types one char into a focused contenteditable via beforeinput/input (insertText)", async () => {
     document.body.innerHTML = `<div contenteditable="true"></div>`;
     const ce = document.querySelector("[contenteditable]") as HTMLElement;
     ce.focus();
@@ -100,7 +100,7 @@ describe("humanize typeCharStep — key identity + contenteditable (A1/A5)", () 
       bi.push(e as unknown as { inputType?: string; data?: string })
     );
 
-    const res = typeCharStep(document, "x");
+    const res = await typeCharStep(document, "x");
 
     expect(res.ok).toBe(true);
     expect(ce.textContent).toBe("x");
@@ -190,28 +190,28 @@ describe("humanize steps pierce shadow roots", () => {
     expect(seen).toEqual([btn]);
   });
 
-  it("typeCharStep appends to an input focused inside an open shadow root", () => {
+  it("typeCharStep appends to an input focused inside an open shadow root", async () => {
     const root = openHost("amp-search", `<input id="q" value="io" />`);
     const q = root.getElementById("q") as HTMLInputElement;
     q.focus();
 
-    const res = typeCharStep(document, "s");
+    const res = await typeCharStep(document, "s");
 
     expect(res.ok).toBe(true);
     expect(q.value).toBe("ios");
   });
 
-  it("typeCharStep reaches an input focused inside a CLOSED root (Firefox property, then chrome.dom)", () => {
+  it("typeCharStep reaches an input focused inside a CLOSED root (Firefox property, then chrome.dom)", async () => {
     const root = closedHost("amp-search", `<input id="q" />`);
     const q = root.getElementById("q") as HTMLInputElement;
     q.focus();
 
-    expect(typeCharStep(document, "x").ok).toBe(false); // page world: the host is all it sees
+    expect((await typeCharStep(document, "x")).ok).toBe(false); // page world: the host is all it sees
     exposeClosedViaProperty();
-    expect(typeCharStep(document, "t").ok).toBe(true);
+    expect((await typeCharStep(document, "t")).ok).toBe(true);
     restoreClosed!();
     exposeClosedViaChromeDom();
-    expect(typeCharStep(document, "v").ok).toBe(true);
+    expect((await typeCharStep(document, "v")).ok).toBe(true);
     expect(q.value).toBe("tv");
   });
 
@@ -268,7 +268,7 @@ describe("humanize steps: lookup cost and composed fallback input", () => {
     expect(probe.calls).toBe(0);
   });
 
-  it("typeCharStep's fallback input event (no InputEvent) is composed, so a host listener sees it", () => {
+  it("typeCharStep's fallback input event (no InputEvent) is composed, so a host listener sees it", async () => {
     const host = document.createElement("x-field");
     document.body.appendChild(host);
     const root = host.attachShadow({ mode: "open" });
@@ -279,12 +279,124 @@ describe("humanize steps: lookup cost and composed fallback input", () => {
     const saved = (window as any).InputEvent;
     (window as any).InputEvent = undefined;
     try {
-      expect(typeCharStep(document, "x").ok).toBe(true);
+      expect((await typeCharStep(document, "x")).ok).toBe(true);
     } finally {
       (window as any).InputEvent = saved;
     }
 
     expect((root.getElementById("q") as HTMLInputElement).value).toBe("x");
     expect(seen).toEqual(["input"]);
+  });
+});
+
+/**
+ * typeCharStep into a contenteditable: the per-character step of the default
+ * (humanized) type-text path. Typed through the editing host at its caret, and
+ * ok only when the editor kept the character, so the humanized path falls back
+ * to instant type-text (which reports the failure) instead of answering ok for
+ * text that never landed. Identical block in the Firefox and Chrome suites.
+ */
+describe("typeCharStep into a contenteditable: caret and kept-text check", () => {
+  const NOT_KEPT =
+    /^The editor did not keep the typed text: <div role="textbox"> ignores or undoes synthetic input, so nothing was entered\. /;
+
+  afterEach(() => {
+    document.body.innerHTML = "";
+  });
+
+  function byId(id: string): HTMLElement {
+    return document.getElementById(id) as HTMLElement;
+  }
+
+  it("types at the caret and fires keydown, beforeinput, input, keypress, keyup on the host", async () => {
+    document.body.innerHTML = `<div id="ed" contenteditable="true">ab</div>`;
+    const ed = byId("ed");
+    ed.focus();
+    window.getSelection()!.collapse(ed.firstChild!, 1);
+    const seq: string[] = [];
+    ["keydown", "beforeinput", "input", "keypress", "keyup"].forEach((t) =>
+      ed.addEventListener(t, (e) => seq.push(e.target === ed ? t : t + "@other"))
+    );
+
+    const res = await typeCharStep(document, "x");
+
+    expect(res).toEqual({ ok: true });
+    expect(ed.textContent).toBe("axb");
+    expect(seq).toEqual(["keydown", "beforeinput", "input", "keypress", "keyup"]);
+  });
+
+  it("reports ok:false when the editor cancels beforeinput and inserts nothing", async () => {
+    document.body.innerHTML = `<div id="ed" contenteditable="true" role="textbox"></div>`;
+    const ed = byId("ed");
+    ed.focus();
+    ed.addEventListener("beforeinput", (e) => e.preventDefault());
+
+    const res = await typeCharStep(document, "x");
+
+    expect(res.ok).toBe(false);
+    expect(res.error).toMatch(NOT_KEPT);
+    expect(ed.textContent).toBe("");
+  });
+
+  it("reports ok:false when the editor undoes the character (a MutationObserver restoring its DOM)", async () => {
+    document.body.innerHTML = `<div id="ed" contenteditable="true" role="textbox">kept</div>`;
+    const ed = byId("ed");
+    ed.focus();
+    const undo = new MutationObserver(() => {
+      if (ed.textContent !== "kept") {
+        ed.textContent = "kept";
+      }
+    });
+    undo.observe(ed, { childList: true, characterData: true, subtree: true });
+    try {
+      const res = await typeCharStep(document, "x");
+
+      expect(res.ok).toBe(false);
+      expect(res.error).toMatch(NOT_KEPT);
+      expect(ed.textContent).toBe("kept");
+    } finally {
+      undo.disconnect();
+    }
+  });
+
+  it("reports ok when the editor cancels beforeinput and inserts through its own model", async () => {
+    document.body.innerHTML = `<div id="ed" contenteditable="true" role="textbox"><p><br></p></div>`;
+    const ed = byId("ed");
+    ed.focus();
+    ed.addEventListener("beforeinput", (e) => {
+      e.preventDefault();
+      const data = (e as InputEvent).data || "";
+      queueMicrotask(() => {
+        ed.innerHTML = "<p><span>" + data + "</span></p>";
+      });
+    });
+
+    const res = await typeCharStep(document, "h");
+
+    expect(res).toEqual({ ok: true });
+    expect(ed.textContent).toBe("h");
+  });
+
+  it("answers from the editor's microtasks, without waiting on a timer, when it keeps the character", async () => {
+    // It runs once per character, and a background tab throttles each timer to
+    // about a second.
+    jest.useFakeTimers();
+    try {
+      document.body.innerHTML = `<div id="ed" contenteditable="true" role="textbox"></div>`;
+      const ed = byId("ed");
+      ed.focus();
+      let res: { ok: boolean; error?: string } | null = null;
+      Promise.resolve(typeCharStep(document, "x")).then((r) => {
+        res = r;
+      });
+      for (let i = 0; i < 50 && !res; i++) {
+        await Promise.resolve();
+      }
+
+      expect(res).toEqual({ ok: true });
+      expect(ed.textContent).toBe("x");
+    } finally {
+      jest.useRealTimers();
+    }
   });
 });
