@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Composer fixture</title>
+    <style>
+      * { box-sizing: border-box; }
+      body { margin: 0; padding: 16px; font-family: system-ui, sans-serif; max-width: 880px; }
+      cx-composer, cx-composer-form, cx-textarea-input, cx-rte-composer { display: block; }
+      .editor { display: block; min-height: 64px; padding: 8px 12px; border: 1px solid #888; border-radius: 8px; margin: 8px 0; outline: 0; }
+      #state { background: #111; color: #6f6; padding: 8px; border-radius: 6px; font-size: 12px; white-space: pre-wrap; }
+    </style>
+  </head>
+  <body>
+    <!-- The title <textarea> lives in <cx-textarea-input>'s open root, which is
+         slotted into <cx-composer-form>'s root, which is slotted into
+         <cx-composer>'s root. The rich-text editor is light DOM slotted into
+         <cx-rte-composer>; its Markdown <textarea> is two open roots deeper,
+         inside <cx-rte-composer>'s own root. -->
+    <cx-composer>
+      <cx-composer-form>
+        <cx-textarea-input slot="title" id="post-title"></cx-textarea-input>
+        <cx-rte-composer slot="body" id="post-body">
+          <div slot="rte" id="rte" contenteditable="true" role="textbox" aria-multiline="true" aria-label="Post body" spellcheck="true"></div>
+        </cx-rte-composer>
+      </cx-composer-form>
+    </cx-composer>
+
+    <section id="other-editors">
+      <h2>Other editors</h2>
+      <!-- The browser's own editing, no framework. -->
+      <div id="plain-ce" class="editor" contenteditable="true" role="textbox" aria-label="Plain notes"></div>
+      <!-- Accepts only trusted input and undoes every other change. -->
+      <div id="locked-ce" class="editor" contenteditable="true" role="textbox" aria-label="Locked notes"></div>
+    </section>
+
+    <pre id="state"></pre>
+    <script src="vendor/lexical.min.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>

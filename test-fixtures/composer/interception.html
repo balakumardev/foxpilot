@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Click interception fixture</title>
+    <style>
+      * { box-sizing: border-box; }
+      body { margin: 0; font-family: system-ui, sans-serif; }
+      .flex { display: flex; }
+      .items-center { align-items: center; }
+      .justify-center { justify-content: center; }
+      .gap-xs { gap: 4px; }
+      .mr-xs { margin-right: 4px; }
+      #site-header { position: fixed; top: 0; left: 0; right: 0; height: 56px; z-index: 10; background: #fff; border-bottom: 1px solid #ccc; display: flex; align-items: center; gap: 16px; padding: 0 16px; }
+      main { padding: 72px 16px 16px; max-width: 880px; }
+      a.button, button { display: inline-flex; align-items: center; padding: 8px 14px; border: 1px solid #888; border-radius: 999px; color: #111; text-decoration: none; background: #f4f4f4; font: inherit; }
+      cx-tooltip, cx-header-buttons, cx-button, cx-scrim-card { display: inline-block; vertical-align: middle; }
+      .row { display: flex; gap: 12px; align-items: center; margin: 16px 0; }
+      #overlay-row { position: relative; }
+      .toast { position: absolute; left: 0; top: 0; width: 200px; height: 44px; background: rgba(30, 30, 30, 0.92); color: #fff; border-radius: 8px; }
+      .toast > span { height: 100%; align-items: center; justify-content: center; }
+      #state { background: #111; color: #6f6; padding: 8px; border-radius: 6px; font-size: 12px; white-space: pre-wrap; }
+    </style>
+  </head>
+  <body>
+    <header id="site-header">
+      <a id="home-link" href="https://example.com/home">Home</a>
+      <!-- A tooltip wrapper of the rpl-tooltip / rpl-popper shape: the anchor is
+           light DOM slotted through two open roots, and the popper draws its
+           own popup and safe-area span inside its root. -->
+      <cx-tooltip>
+        <a id="header-create" class="button" href="https://example.com/submit"><span class="flex items-center justify-center"><span class="flex mr-xs">+</span><span class="flex items-center gap-xs">Create</span></span></a>
+        <span slot="content">Create a post</span>
+      </cx-tooltip>
+    </header>
+    <main>
+      <h1>Community</h1>
+      <!-- The community buttons drawn inside an open root, the way the
+           community header renders them: the link and its spans all live in
+           the root. -->
+      <div class="row"><cx-header-buttons></cx-header-buttons></div>
+      <div class="row">
+        <!-- Light DOM: the point at the link's centre is one of its own spans. -->
+        <a id="create-post-light" class="button" href="https://example.com/r/fixture/submit"><span class="flex items-center justify-center"><span class="flex mr-xs">+</span><span class="flex items-center gap-xs">Create Post (light)</span></span></a>
+        <!-- A web-component button whose label is a slotted light-DOM span. -->
+        <cx-button id="cx-create"><span class="flex">Create Post (slotted)</span></cx-button>
+      </div>
+      <!-- Genuine covers: a light-DOM toast laid over a button, and a scrim a
+           component draws inside its own root over its slotted button. -->
+      <div class="row" id="overlay-row">
+        <button type="button" id="covered-btn">Save draft</button>
+        <div id="toast" class="toast"><span class="flex">Draft saved</span></div>
+      </div>
+      <div class="row"><cx-scrim-card><button type="button" id="scrim-btn">Publish</button></cx-scrim-card></div>
+      <pre id="state"></pre>
+    </main>
+    <script src="interception.js"></script>
+  </body>
+</html>
