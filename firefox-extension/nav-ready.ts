@@ -133,7 +133,11 @@ export interface NavigationWatch {
  *
  * Without Chrome's pendingUrl, three gaps remain:
  * - Once our load has started, a same-document url change the old page makes
- *   arrives exactly like our commit and is taken as it.
+ *   arrives exactly like our commit and is taken as it. navigateTab corrects
+ *   that before it replies: when the tab still shows the document it marked
+ *   before the navigation (plantDocumentToken), nothing has committed. The
+ *   mark needs a page the extension can script; on any other page this gap
+ *   stays.
  * - A navigation that reports neither a start nor a url change can only end
  *   at the deadline, reported as not committed — recorded on Firefox 151 for
  *   one a beforeunload prompt blocked: no onUpdated event at all, and tabs.get
@@ -236,6 +240,109 @@ export async function navigateAndSettle(
     });
   }
   return watch;
+}
+
+// The global, in the extension's own isolated world of a page, that holds the
+// token marking that document (see plantDocumentToken).
+const DOC_TOKEN_KEY = "__foxpilotDocToken";
+// A frozen or half torn-down frame may never answer; navigate-tab must not
+// wait on it.
+const DOC_TOKEN_TIMEOUT_MS = 500;
+
+// Runs in the page (stringified): this document's token, created on first use.
+function plantToken(key: string): string {
+  const w = window as unknown as Record<string, unknown>;
+  if (typeof w[key] !== "string") {
+    w[key] = Math.random().toString(36).slice(2) + Date.now().toString(36);
+  }
+  return w[key] as string;
+}
+
+// Runs in the page (stringified): this document's token, or "" when it has none.
+function readToken(key: string): string {
+  const token = (window as unknown as Record<string, unknown>)[key];
+  return typeof token === "string" ? token : "";
+}
+
+// undefined ("cannot tell") when the injection fails, does not answer within
+// DOC_TOKEN_TIMEOUT_MS, or returns anything but a string.
+async function runTokenScript(run: () => Promise<unknown>): Promise<string | undefined> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const value = await Promise.race([
+      run(),
+      new Promise<undefined>((resolve) => {
+        timer = setTimeout(() => resolve(undefined), DOC_TOKEN_TIMEOUT_MS);
+      }),
+    ]);
+    return typeof value === "string" ? value : undefined;
+  } catch {
+    return undefined;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Marks the document the tab shows now, so navigateTab can tell later whether
+ * the tab still shows that same document, whatever url it has moved to since.
+ * The token is a global in the extension's own isolated world: it lasts across
+ * injections into the same document, a new document starts without it, and
+ * the page cannot see it. Recorded on Firefox 151: it survived pushState and a
+ * fragment jump, and was gone after a commit or a reload. runAt
+ * "document_start" runs it at once, even while the page is still loading
+ * (the default waits for that load to finish).
+ *
+ * Resolves the token (an existing one is reused), or undefined when the page
+ * cannot be scripted or does not answer in time.
+ */
+export function plantDocumentToken(tabId: number): Promise<string | undefined> {
+  return runTokenScript(async () => {
+    const r = await browser.tabs.executeScript(tabId, {
+      code: `(${plantToken.toString()})(${JSON.stringify(DOC_TOKEN_KEY)})`,
+      runAt: "document_start",
+    });
+    return r && r[0];
+  });
+}
+
+/**
+ * Reads the token plantDocumentToken left in the document the tab shows now:
+ * "" when that document has none (it is a new one), undefined when it cannot
+ * tell. Never plants one.
+ */
+export function readDocumentToken(tabId: number): Promise<string | undefined> {
+  return runTokenScript(async () => {
+    const r = await browser.tabs.executeScript(tabId, {
+      code: `(${readToken.toString()})(${JSON.stringify(DOC_TOKEN_KEY)})`,
+      runAt: "document_start",
+    });
+    return r && r[0];
+  });
+}
+
+/**
+ * Whether a tab showing `url` is at `targetUrl`: the same url once both are
+ * normalized, or, when the target has a fragment, the same url apart from the
+ * fragment. Navigating to a fragment of the page being left is a same-document
+ * jump, so the tab keeps its document, and a hash router may then move it on
+ * within that document (#/settings to #/settings/general).
+ */
+export function isAtTarget(url: string | undefined, targetUrl: string): boolean {
+  if (!url) return false;
+  let at: URL;
+  let target: URL;
+  try {
+    at = new URL(url);
+    target = new URL(targetUrl);
+  } catch {
+    return url === targetUrl;
+  }
+  if (at.href === target.href) return true;
+  if (!target.href.includes("#")) return false;
+  at.hash = "";
+  target.hash = "";
+  return at.href === target.href;
 }
 
 // Firefox analog of the Chrome sendMessageToTab harden: run an injected probe,

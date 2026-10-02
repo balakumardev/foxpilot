@@ -24,7 +24,14 @@ import {
   buildIsolatedEvalCode,
 } from "./injected/page-world";
 import { raceInputAgainstNavigation } from "./nav-race";
-import { waitForTabReady, execWithReadyRetry, navigateAndSettle } from "./nav-ready";
+import {
+  waitForTabReady,
+  execWithReadyRetry,
+  navigateAndSettle,
+  plantDocumentToken,
+  readDocumentToken,
+  isAtTarget,
+} from "./nav-ready";
 import { performFileUpload, FileUploadResult } from "./injected/upload-script";
 import { setTabUserAgent } from "./emulate";
 import {
@@ -1884,6 +1891,9 @@ export class MessageHandler {
     const OVERALL_CAP_MS = 28000;
     const budget = Math.min(Math.max(opts?.timeoutMs ?? 15000, 0), 29000);
     const settleBudget = Math.min(budget, 8000);
+    // Mark the document the tab shows before the navigation starts, for the
+    // check before the reply. undefined when the page cannot be scripted.
+    const leaving = await plantDocumentToken(tabId);
     // The navigation wait and the readiness probe share the settle budget.
     const settleDeadline = Date.now() + settleBudget;
     const nav = await navigateAndSettle(tabId, start, {
@@ -1918,6 +1928,16 @@ export class MessageHandler {
       // Read while the watch is still listening: a commit that lands after the
       // settle window, during a waitFor* poll, still counts.
       committed = nav.committed();
+      // Once our load has started, a url change the page being left makes
+      // (pushState, say) is reported exactly like our commit. A commit replaces
+      // the document, so if the tab still shows the one marked above, ours has
+      // not committed, whatever url that document shows now; at the target
+      // itself it has, since a same-document jump commits in place. A new
+      // document (""), no answer, or a page that could not be marked leaves
+      // the events' verdict as it is.
+      if (committed && leaving !== undefined && finalTab && !isAtTarget(finalTab.url, url)) {
+        if ((await readDocumentToken(tabId)) === leaving) committed = false;
+      }
     } finally {
       nav.dispose();
     }

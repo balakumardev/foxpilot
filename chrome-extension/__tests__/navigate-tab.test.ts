@@ -1,12 +1,16 @@
 // The settle itself is covered against realistic tab events by
 // navigate-tab-final-url.test.ts; here it simply issues the navigation and
 // reports that it committed, so these tests isolate the budget/condition logic.
+// The document mark answers "cannot tell", which leaves that verdict alone.
 jest.mock("../nav-ready", () => ({
   waitForTabReady: jest.fn().mockResolvedValue(undefined),
   navigateAndSettle: jest.fn(async (_tabId: number, start: () => Promise<unknown>) => {
     await start();
     return { committed: () => true, gone: () => false, replacedBy: () => undefined, dispose: jest.fn() };
   }),
+  plantDocumentToken: jest.fn().mockResolvedValue(undefined),
+  readDocumentToken: jest.fn().mockResolvedValue(undefined),
+  isAtTarget: jest.requireActual("../nav-ready").isAtTarget,
 }));
 // Defensive module-load mocks (mirror message-handler.test.ts header).
 jest.mock("../native-input-client", () => ({

@@ -13,6 +13,11 @@
  *  - A redirect commits straight to the final url.
  *  - A navigation that never commits (204, download) fires NO event at all: the
  *    tab just drops pendingUrl and goes back to status:"complete" on the old url.
+ *  - A url the page being left gives itself (pushState) while ours is in
+ *    flight can drop pendingUrl, so its event looks like our commit.
+ *  - A global the extension sets in its own isolated world of a page lasts as
+ *    long as that document: through pushState and a fragment jump, but not
+ *    across a commit or a reload (`isolatedWorlds` below models it).
  */
 jest.mock("../native-input-client", () => ({
   NativeInputClient: jest.fn().mockImplementation(() => ({ sendGesture: jest.fn() })),
@@ -28,7 +33,9 @@ const TAB = 7;
 const OLD = "https://app.example.com/dashboard";
 const NEW = "https://app.example.com/settings";
 
-type TabState = { url: string; status: "loading" | "complete"; pendingUrl?: string };
+// `doc` is a test-only marker for WHICH document is live; the fake never puts
+// it in what tabs.get returns.
+type TabState = { url: string; status: "loading" | "complete"; pendingUrl?: string; doc?: string };
 // `close` makes the tab disappear (tabs.get rejects from then on); `replacedBy`
 // additionally fires tabs.onReplaced(replacedBy, TAB) first, as Chrome does when
 // it swaps a tab's contents into a new tab id.
@@ -121,6 +128,32 @@ function navigate(extra: Record<string, unknown> = {}): ServerMessageRequest {
 // what matters.
 function renderedByOldServer(requested: string, reply: { tabId: number; url?: string }): string {
   return `Navigated tab ${reply.tabId} to ${reply.url ?? requested}`;
+}
+
+type Injection = { files?: string[]; func?: (...args: any[]) => unknown; args?: unknown[] };
+
+// Runs an injected func the way chrome.scripting.executeScript does (from its
+// source, with `args`), with `win` standing in for the page's window as the
+// extension's isolated world sees it.
+function runInWindow(d: Injection, win: Record<string, unknown>): unknown {
+  return new Function("window", "args", `return (${d.func!.toString()}).apply(null, args);`)(win, d.args || []);
+}
+
+// Gives every document of the fake tab (`doc`) its own isolated-world window,
+// so a token planted in one document is still there while that document is
+// shown and absent from the next. The content-script injection (`files`)
+// always succeeds. `funcs` lists every func run, in order.
+function isolatedWorlds(state: TabState) {
+  const windows = new Map<string, Record<string, unknown>>();
+  const funcs: Injection[] = [];
+  (mockBrowser.scripting.executeScript as jest.Mock).mockImplementation(async (d: Injection) => {
+    if (!d.func) return [];
+    funcs.push(d);
+    const doc = state.doc ?? "";
+    if (!windows.has(doc)) windows.set(doc, {});
+    return [{ frameId: 0, result: runInWindow(d, windows.get(doc)!) }];
+  });
+  return { funcs };
 }
 
 describe("chrome navigate-tab reports the navigated-to url, never the old one", () => {
@@ -488,6 +521,203 @@ describe("chrome navigate-tab reports the navigated-to url, never the old one", 
       url: OLD,
       committed: false,
       pendingUrl: NEW,
+    });
+  });
+
+  describe("when the page being left moves itself while our navigation is in flight", () => {
+    // Recorded on Chromium 149: 1.5 s after loading, the page being left
+    // pushState-ed itself to another url while navigate-tab's navigation to a
+    // slow page was in flight. pendingUrl was gone right after that pushState,
+    // so its url change counted as our commit and the reply said the tab had
+    // navigated to that url; the requested page committed about 2 s later.
+    const MOVED = "https://app.example.com/dashboard/activity";
+    const pageMovesItself = (): Step[] => [
+      { at: 60, set: { url: MOVED, pendingUrl: undefined }, event: { url: MOVED } },
+      // Ours commits long after the reply.
+      { at: 5000, set: { url: NEW, doc: "new" }, event: { status: "loading", url: NEW } },
+    ];
+
+    it("says it has not committed, naming the url that page moved to, when the tab still shows the document it left", async () => {
+      const tab = fakeTab({ url: OLD, status: "complete", doc: "old" }, pageMovesItself());
+      const scripts = isolatedWorlds(tab.state);
+
+      await handler.handleDecodedMessage(navigate({ timeoutMs: 300 }));
+
+      expect(transport.sendResourceToServer).toHaveBeenCalledWith({
+        resource: "navigated",
+        correlationId: "c1",
+        tabId: TAB,
+        url: MOVED,
+        committed: false,
+      });
+      // Marked before the navigation, read back before the reply.
+      expect(scripts.funcs).toHaveLength(2);
+    });
+
+    it("still reports the same events as navigated when they come with a new document", async () => {
+      // e.g. a redirect that committed but is still loading at the deadline.
+      const LANDED = "https://app.example.com/login";
+      const tab = fakeTab({ url: OLD, status: "complete", doc: "old" }, [
+        { at: 60, set: { url: LANDED, pendingUrl: undefined, doc: "new" }, event: { status: "loading", url: LANDED } },
+      ]);
+      const scripts = isolatedWorlds(tab.state);
+
+      await handler.handleDecodedMessage(navigate({ timeoutMs: 300 }));
+
+      expect(transport.sendResourceToServer).toHaveBeenCalledWith({
+        resource: "navigated",
+        correlationId: "c1",
+        tabId: TAB,
+        url: LANDED,
+      });
+      expect(scripts.funcs).toHaveLength(2);
+    });
+
+    it("reports where a redirect landed: the tab shows a new document", async () => {
+      const FINAL = "https://app.example.com/login";
+      const tab = fakeTab({ url: OLD, status: "complete", doc: "old" }, [
+        { at: 20, set: { url: FINAL, pendingUrl: undefined, doc: "new" }, event: { status: "loading", url: FINAL } },
+        { at: 30, set: { status: "complete" }, event: { status: "complete" } },
+      ]);
+      const scripts = isolatedWorlds(tab.state);
+
+      await handler.handleDecodedMessage(navigate());
+
+      expect(transport.sendResourceToServer).toHaveBeenCalledWith({
+        resource: "navigated",
+        correlationId: "c1",
+        tabId: TAB,
+        url: FINAL,
+      });
+      // The url is not the target, so the document was checked, and was new.
+      expect(scripts.funcs).toHaveLength(2);
+    });
+
+    it("leaves the verdict to the events on a page the extension cannot script", async () => {
+      fakeTab({ url: OLD, status: "complete", doc: "old" }, pageMovesItself());
+      (mockBrowser.scripting.executeScript as jest.Mock).mockImplementation(async (d: Injection) => {
+        if (!d.func) return [];
+        throw new Error("Cannot access contents of the page.");
+      });
+
+      await handler.handleDecodedMessage(navigate({ timeoutMs: 300 }));
+
+      // As before the document check: there the old page's move still reads
+      // as our commit.
+      expect(transport.sendResourceToServer).toHaveBeenCalledWith({
+        resource: "navigated",
+        correlationId: "c1",
+        tabId: TAB,
+        url: MOVED,
+      });
+    });
+
+    it("waits no more than 500ms for a page that does not answer the mark, and then does not check", async () => {
+      const FINAL = "https://app.example.com/login";
+      fakeTab({ url: OLD, status: "complete", doc: "old" }, [
+        { at: 20, set: { url: FINAL, pendingUrl: undefined, doc: "new" }, event: { status: "loading", url: FINAL } },
+        { at: 30, set: { status: "complete" }, event: { status: "complete" } },
+      ]);
+      const funcs: Injection[] = [];
+      (mockBrowser.scripting.executeScript as jest.Mock).mockImplementation((d: Injection) => {
+        if (!d.func) return Promise.resolve([]);
+        funcs.push(d);
+        return new Promise(() => {}); // a frozen frame
+      });
+
+      const started = Date.now();
+      await handler.handleDecodedMessage(navigate());
+
+      expect(transport.sendResourceToServer).toHaveBeenCalledWith({
+        resource: "navigated",
+        correlationId: "c1",
+        tabId: TAB,
+        url: FINAL,
+      });
+      expect(funcs).toHaveLength(1);
+      expect(Date.now() - started).toBeLessThan(1300);
+    });
+
+    it("waits no more than 500ms for a page that does not answer the read, and keeps the events' verdict", async () => {
+      const FINAL = "https://app.example.com/login";
+      fakeTab({ url: OLD, status: "complete", doc: "old" }, [
+        { at: 20, set: { url: FINAL, pendingUrl: undefined, doc: "new" }, event: { status: "loading", url: FINAL } },
+        { at: 30, set: { status: "complete" }, event: { status: "complete" } },
+      ]);
+      const funcs: Injection[] = [];
+      (mockBrowser.scripting.executeScript as jest.Mock).mockImplementation((d: Injection) => {
+        if (!d.func) return Promise.resolve([]);
+        funcs.push(d);
+        // The mark is planted; the read never comes back.
+        return funcs.length === 1
+          ? Promise.resolve([{ frameId: 0, result: runInWindow(d, {}) }])
+          : new Promise(() => {});
+      });
+
+      const started = Date.now();
+      await handler.handleDecodedMessage(navigate());
+
+      expect(transport.sendResourceToServer).toHaveBeenCalledWith({
+        resource: "navigated",
+        correlationId: "c1",
+        tabId: TAB,
+        url: FINAL,
+      });
+      expect(funcs).toHaveLength(2);
+      expect(Date.now() - started).toBeLessThan(1300);
+    });
+
+    it("does not check the document after a same-document jump to the target", async () => {
+      const TARGET = OLD + "#settings";
+      const tab = fakeTab({ url: OLD, status: "complete", doc: "old" }, [
+        { at: 5, set: { url: TARGET, pendingUrl: undefined, status: "complete" }, event: { url: TARGET } },
+      ]);
+      const scripts = isolatedWorlds(tab.state);
+
+      await handler.handleDecodedMessage(navigate({ url: TARGET }));
+
+      expect(transport.sendResourceToServer).toHaveBeenCalledWith({
+        resource: "navigated",
+        correlationId: "c1",
+        tabId: TAB,
+        url: TARGET,
+      });
+      // Marked, never read.
+      expect(scripts.funcs).toHaveLength(1);
+    });
+
+    it("does not check the document when a hash router moves a same-document jump on within its fragment", async () => {
+      // #/settings is routed on to #/settings/general before the tab is read.
+      const TARGET = OLD + "#/settings";
+      const ROUTED = OLD + "#/settings/general";
+      const tab = fakeTab({ url: OLD, status: "complete", doc: "old" }, [
+        { at: 5, set: { url: ROUTED, pendingUrl: undefined, status: "complete" }, event: { url: TARGET } },
+      ]);
+      const scripts = isolatedWorlds(tab.state);
+
+      await handler.handleDecodedMessage(navigate({ url: TARGET }));
+
+      expect(transport.sendResourceToServer).toHaveBeenCalledWith({
+        resource: "navigated",
+        correlationId: "c1",
+        tabId: TAB,
+        url: ROUTED,
+      });
+      expect(scripts.funcs).toHaveLength(1);
+    });
+
+    it("plants nothing and checks nothing for waitUntil:'none'", async () => {
+      fakeTab({ url: OLD, status: "complete", doc: "old" }, pageMovesItself());
+
+      await handler.handleDecodedMessage(navigate({ waitUntil: "none" }));
+
+      expect(transport.sendResourceToServer).toHaveBeenCalledWith({
+        resource: "navigated",
+        correlationId: "c1",
+        tabId: TAB,
+        url: NEW,
+      });
+      expect(mockBrowser.scripting.executeScript).not.toHaveBeenCalled();
     });
   });
 });

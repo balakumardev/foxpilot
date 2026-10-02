@@ -47,6 +47,9 @@ jest.mock("../nav-ready", () => ({
     await start();
     return { committed: () => true, gone: () => false, dispose: jest.fn() };
   }),
+  plantDocumentToken: jest.fn().mockResolvedValue(undefined),
+  readDocumentToken: jest.fn().mockResolvedValue(undefined),
+  isAtTarget: jest.requireActual("../nav-ready").isAtTarget,
 }));
 
 // The shared setup mock (__tests__/setup.ts) does not include

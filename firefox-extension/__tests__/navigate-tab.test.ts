@@ -1,6 +1,7 @@
 // The settle itself is covered against realistic tab events by
 // navigate-tab-final-url.test.ts; here it simply issues the navigation and
 // reports that it committed, so these tests isolate the budget/condition logic.
+// The document mark answers "cannot tell", which leaves that verdict alone.
 jest.mock("../nav-ready", () => ({
   waitForTabReady: jest.fn().mockResolvedValue(undefined),
   execWithReadyRetry: jest.fn(),
@@ -8,6 +9,9 @@ jest.mock("../nav-ready", () => ({
     await start();
     return { committed: () => true, gone: () => false, dispose: jest.fn() };
   }),
+  plantDocumentToken: jest.fn().mockResolvedValue(undefined),
+  readDocumentToken: jest.fn().mockResolvedValue(undefined),
+  isAtTarget: jest.requireActual("../nav-ready").isAtTarget,
 }));
 
 import { mockBrowser } from "./setup";

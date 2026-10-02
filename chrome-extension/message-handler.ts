@@ -54,7 +54,13 @@ import {
 } from "./cdp-input";
 import { cdpEval } from "./cdp-eval";
 import { raceInputAgainstNavigation } from "./nav-race";
-import { waitForTabReady, navigateAndSettle } from "./nav-ready";
+import {
+  waitForTabReady,
+  navigateAndSettle,
+  plantDocumentToken,
+  readDocumentToken,
+  isAtTarget,
+} from "./nav-ready";
 
 type InputActionArgs =
   | { action: "click"; uid: string; doubleClick?: boolean; failIfIntercepted?: boolean }
@@ -1906,6 +1912,9 @@ export class MessageHandler {
     const OVERALL_CAP_MS = 28000;
     const budget = Math.min(Math.max(opts?.timeoutMs ?? 15000, 0), 29000);
     const settleBudget = Math.min(budget, 8000);
+    // Mark the document the tab shows before the navigation starts, for the
+    // check before the reply. undefined when the page cannot be scripted.
+    const leaving = await plantDocumentToken(tabId);
     // The navigation wait and the readiness probe share the settle budget.
     const settleDeadline = Date.now() + settleBudget;
     const nav = await navigateAndSettle(tabId, start, { timeoutMs: settleBudget });
@@ -1939,6 +1948,17 @@ export class MessageHandler {
       // settle window, during a waitFor* poll, still counts.
       committed = nav.committed();
       replacedBy = nav.replacedBy();
+      // A url change the page being left makes while ours is in flight
+      // (pushState, say) can be reported exactly like our commit once Chrome
+      // drops pendingUrl (see navigateAndSettle). A commit replaces the
+      // document, so if the tab still shows the one marked above, ours has not
+      // committed, whatever url that document shows now; at the target itself
+      // it has, since a same-document jump commits in place. A new document
+      // (""), no answer, or a page that could not be marked leaves the events'
+      // verdict as it is.
+      if (committed && leaving !== undefined && finalTab && !isAtTarget(finalTab.url, url)) {
+        if ((await readDocumentToken(tabId)) === leaving) committed = false;
+      }
     } finally {
       nav.dispose();
     }

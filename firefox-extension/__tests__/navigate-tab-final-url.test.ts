@@ -17,6 +17,11 @@
  *    url, and the tab stays on the old page.
  *  - Navigating while the previous load is still in flight first fires a
  *    {status:"complete"} for that aborted load, THEN the new {status:"loading"}.
+ *  - Once our load has started, a url the page being left gives itself
+ *    (pushState) arrives as {status:"loading", url}, exactly like our commit.
+ *  - A global the extension sets in its own isolated world of a page lasts as
+ *    long as that document: through pushState and a fragment jump, but not
+ *    across a commit or a reload (`isolatedWorlds` below models it).
  */
 import { mockBrowser } from "./setup";
 import { MessageHandler } from "../message-handler";
@@ -95,6 +100,30 @@ function navigate(extra: Record<string, unknown> = {}): ServerMessageRequest {
 // what matters.
 function renderedByOldServer(requested: string, reply: { tabId: number; url?: string }): string {
   return `Navigated tab ${reply.tabId} to ${reply.url ?? requested}`;
+}
+
+// Runs injected code the way tabs.executeScript does (the value is the code's
+// completion value), with `win` standing in for the page's window as the
+// extension's isolated world sees it.
+function runInWindow(code: string, win: Record<string, unknown>): unknown {
+  return new Function("window", "code", "return eval(code);")(win, code);
+}
+
+// Gives every document of the fake tab (`doc`) its own isolated-world window,
+// so a token planted in one document is still there while that document is
+// shown and absent from the next. The readiness probe ("1") always answers.
+// `codes` lists every other script run, in order.
+function isolatedWorlds(state: TabState) {
+  const windows = new Map<string, Record<string, unknown>>();
+  const codes: string[] = [];
+  (mockBrowser.tabs.executeScript as jest.Mock).mockImplementation(async (_id: number, d: { code: string }) => {
+    if (d.code === "1") return [1];
+    codes.push(d.code);
+    const doc = state.doc ?? "";
+    if (!windows.has(doc)) windows.set(doc, {});
+    return [runInWindow(d.code, windows.get(doc)!)];
+  });
+  return { codes };
 }
 
 describe("firefox navigate-tab reports the navigated-to url, never the old one", () => {
@@ -445,5 +474,204 @@ describe("firefox navigate-tab reports the navigated-to url, never the old one",
     });
     // The browser said the load was over; there is nothing left to wait for.
     expect(Date.now() - started).toBeLessThan(1500);
+  });
+
+  describe("when the page being left moves itself while our load is in flight", () => {
+    // Recorded on Firefox 151: 1.5 s after loading, the page being left
+    // pushState-ed itself to another url while navigate-tab's load of a slow
+    // page was in flight. The reply said the tab had navigated to that url;
+    // the requested page committed about 2 s later.
+    const MOVED = "https://app.example.com/dashboard/activity";
+    const pageMovesItself = (): Step[] => [
+      { at: 10, set: { status: "loading" }, event: { status: "loading" } },
+      { at: 60, set: { url: MOVED }, event: { status: "loading", url: MOVED } },
+      // Ours commits long after the reply.
+      { at: 5000, set: { url: NEW, doc: "new" }, event: { status: "loading", url: NEW } },
+    ];
+
+    it("says it has not committed, naming the url that page moved to, when the tab still shows the document it left", async () => {
+      const tab = fakeTab({ url: OLD, status: "complete", doc: "old" }, pageMovesItself());
+      const scripts = isolatedWorlds(tab.state);
+
+      await handler.handleDecodedMessage(navigate({ timeoutMs: 300 }));
+
+      expect(transport.sendResourceToServer).toHaveBeenCalledWith({
+        resource: "navigated",
+        correlationId: "c1",
+        tabId: TAB,
+        url: MOVED,
+        committed: false,
+      });
+      // Marked before the navigation, read back before the reply.
+      expect(scripts.codes).toHaveLength(2);
+    });
+
+    it("still reports the same events as navigated when they come with a new document", async () => {
+      // e.g. a redirect that committed but is still loading at the deadline.
+      const LANDED = "https://app.example.com/login";
+      const tab = fakeTab({ url: OLD, status: "complete", doc: "old" }, [
+        { at: 10, set: { status: "loading" }, event: { status: "loading" } },
+        { at: 60, set: { url: LANDED, doc: "new" }, event: { status: "loading", url: LANDED } },
+      ]);
+      const scripts = isolatedWorlds(tab.state);
+
+      await handler.handleDecodedMessage(navigate({ timeoutMs: 300 }));
+
+      expect(transport.sendResourceToServer).toHaveBeenCalledWith({
+        resource: "navigated",
+        correlationId: "c1",
+        tabId: TAB,
+        url: LANDED,
+      });
+      expect(scripts.codes).toHaveLength(2);
+    });
+
+    it("reports where a redirect landed: the tab shows a new document", async () => {
+      const FINAL = "https://app.example.com/login";
+      const tab = fakeTab({ url: OLD, status: "complete", doc: "old" }, [
+        { at: 10, set: { status: "loading" }, event: { status: "loading" } },
+        { at: 30, set: { url: FINAL, doc: "new" }, event: { status: "loading", url: FINAL } },
+        { at: 40, set: { status: "complete" }, event: { status: "complete" } },
+      ]);
+      const scripts = isolatedWorlds(tab.state);
+
+      await handler.handleDecodedMessage(navigate());
+
+      expect(transport.sendResourceToServer).toHaveBeenCalledWith({
+        resource: "navigated",
+        correlationId: "c1",
+        tabId: TAB,
+        url: FINAL,
+      });
+      // The url is not the target, so the document was checked, and was new.
+      expect(scripts.codes).toHaveLength(2);
+    });
+
+    it("leaves the verdict to the events on a page the extension cannot script", async () => {
+      fakeTab({ url: OLD, status: "complete", doc: "old" }, pageMovesItself());
+      (mockBrowser.tabs.executeScript as jest.Mock).mockImplementation(async (_id: number, d: { code: string }) => {
+        if (d.code === "1") return [1];
+        throw new Error("Missing host permission for the tab");
+      });
+
+      await handler.handleDecodedMessage(navigate({ timeoutMs: 300 }));
+
+      // As before the document check: there the old page's move still reads
+      // as our commit.
+      expect(transport.sendResourceToServer).toHaveBeenCalledWith({
+        resource: "navigated",
+        correlationId: "c1",
+        tabId: TAB,
+        url: MOVED,
+      });
+    });
+
+    it("waits no more than 500ms for a page that does not answer the mark, and then does not check", async () => {
+      const FINAL = "https://app.example.com/login";
+      fakeTab({ url: OLD, status: "complete", doc: "old" }, [
+        { at: 10, set: { status: "loading" }, event: { status: "loading" } },
+        { at: 30, set: { url: FINAL, doc: "new" }, event: { status: "loading", url: FINAL } },
+        { at: 40, set: { status: "complete" }, event: { status: "complete" } },
+      ]);
+      const codes: string[] = [];
+      (mockBrowser.tabs.executeScript as jest.Mock).mockImplementation((_id: number, d: { code: string }) => {
+        if (d.code === "1") return Promise.resolve([1]);
+        codes.push(d.code);
+        return new Promise(() => {}); // a frozen frame
+      });
+
+      const started = Date.now();
+      await handler.handleDecodedMessage(navigate());
+
+      expect(transport.sendResourceToServer).toHaveBeenCalledWith({
+        resource: "navigated",
+        correlationId: "c1",
+        tabId: TAB,
+        url: FINAL,
+      });
+      expect(codes).toHaveLength(1);
+      expect(Date.now() - started).toBeLessThan(1300);
+    });
+
+    it("waits no more than 500ms for a page that does not answer the read, and keeps the events' verdict", async () => {
+      const FINAL = "https://app.example.com/login";
+      fakeTab({ url: OLD, status: "complete", doc: "old" }, [
+        { at: 10, set: { status: "loading" }, event: { status: "loading" } },
+        { at: 30, set: { url: FINAL, doc: "new" }, event: { status: "loading", url: FINAL } },
+        { at: 40, set: { status: "complete" }, event: { status: "complete" } },
+      ]);
+      const codes: string[] = [];
+      (mockBrowser.tabs.executeScript as jest.Mock).mockImplementation((_id: number, d: { code: string }) => {
+        if (d.code === "1") return Promise.resolve([1]);
+        codes.push(d.code);
+        // The mark is planted; the read never comes back.
+        return codes.length === 1 ? Promise.resolve([runInWindow(d.code, {})]) : new Promise(() => {});
+      });
+
+      const started = Date.now();
+      await handler.handleDecodedMessage(navigate());
+
+      expect(transport.sendResourceToServer).toHaveBeenCalledWith({
+        resource: "navigated",
+        correlationId: "c1",
+        tabId: TAB,
+        url: FINAL,
+      });
+      expect(codes).toHaveLength(2);
+      expect(Date.now() - started).toBeLessThan(1300);
+    });
+
+    it("does not check the document after a same-document jump to the target", async () => {
+      const TARGET = OLD + "#settings";
+      const tab = fakeTab({ url: OLD, status: "complete", doc: "old" }, [
+        { at: 5, set: { url: TARGET }, event: { status: "complete", url: TARGET } },
+      ]);
+      const scripts = isolatedWorlds(tab.state);
+
+      await handler.handleDecodedMessage(navigate({ url: TARGET }));
+
+      expect(transport.sendResourceToServer).toHaveBeenCalledWith({
+        resource: "navigated",
+        correlationId: "c1",
+        tabId: TAB,
+        url: TARGET,
+      });
+      // Marked, never read.
+      expect(scripts.codes).toHaveLength(1);
+    });
+
+    it("does not check the document when a hash router moves a same-document jump on within its fragment", async () => {
+      // #/settings is routed on to #/settings/general before the tab is read.
+      const TARGET = OLD + "#/settings";
+      const ROUTED = OLD + "#/settings/general";
+      const tab = fakeTab({ url: OLD, status: "complete", doc: "old" }, [
+        { at: 5, set: { url: ROUTED }, event: { status: "complete", url: TARGET } },
+      ]);
+      const scripts = isolatedWorlds(tab.state);
+
+      await handler.handleDecodedMessage(navigate({ url: TARGET }));
+
+      expect(transport.sendResourceToServer).toHaveBeenCalledWith({
+        resource: "navigated",
+        correlationId: "c1",
+        tabId: TAB,
+        url: ROUTED,
+      });
+      expect(scripts.codes).toHaveLength(1);
+    });
+
+    it("plants nothing and checks nothing for waitUntil:'none'", async () => {
+      fakeTab({ url: OLD, status: "complete", doc: "old" }, pageMovesItself());
+
+      await handler.handleDecodedMessage(navigate({ waitUntil: "none" }));
+
+      expect(transport.sendResourceToServer).toHaveBeenCalledWith({
+        resource: "navigated",
+        correlationId: "c1",
+        tabId: TAB,
+        url: NEW,
+      });
+      expect(mockBrowser.tabs.executeScript).not.toHaveBeenCalled();
+    });
   });
 });

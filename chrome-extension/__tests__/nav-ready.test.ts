@@ -1,5 +1,12 @@
 import { mockBrowser } from "./setup";
-import { waitForTabReady, navigateAndSettle, type NavigationWatch } from "../nav-ready";
+import {
+  waitForTabReady,
+  navigateAndSettle,
+  plantDocumentToken,
+  readDocumentToken,
+  isAtTarget,
+  type NavigationWatch,
+} from "../nav-ready";
 
 describe("chrome nav-ready", () => {
   beforeEach(() => {
@@ -225,5 +232,94 @@ describe("chrome navigateAndSettle", () => {
     } finally {
       jest.useRealTimers();
     }
+  });
+});
+
+describe("chrome document token", () => {
+  type Injection = { func: (...args: any[]) => unknown; args?: unknown[] };
+  // Runs an injected func the way chrome.scripting.executeScript does (from
+  // its source, with `args`), with `win` standing in for the page's window as
+  // the extension's isolated world sees it.
+  function runInWindow(d: Injection, win: Record<string, unknown>): unknown {
+    return new Function("window", "args", `return (${d.func.toString()}).apply(null, args);`)(win, d.args || []);
+  }
+  const scriptWindow = (win: Record<string, unknown>) =>
+    (mockBrowser.scripting.executeScript as jest.Mock).mockImplementation(async (d: Injection) => [
+      { frameId: 0, result: runInWindow(d, win) },
+    ]);
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it("plants a token at once and hands back the same one while the document lasts", async () => {
+    const win: Record<string, unknown> = {};
+    scriptWindow(win);
+    const token = await plantDocumentToken(5);
+    expect(typeof token).toBe("string");
+    expect(token).not.toBe("");
+    expect(await plantDocumentToken(5)).toBe(token);
+    expect(await readDocumentToken(5)).toBe(token);
+    // At once, even on a page that is still loading.
+    expect(mockBrowser.scripting.executeScript).toHaveBeenCalledWith({
+      target: { tabId: 5 },
+      injectImmediately: true,
+      func: expect.any(Function),
+      args: [expect.any(String)],
+    });
+    expect(
+      (mockBrowser.scripting.executeScript as jest.Mock).mock.calls.every(([d]) => d.injectImmediately === true)
+    ).toBe(true);
+  });
+
+  it("reads '' from a document without a token, and does not plant one", async () => {
+    const win: Record<string, unknown> = {};
+    scriptWindow(win);
+    expect(await readDocumentToken(5)).toBe("");
+    expect(Object.keys(win)).toHaveLength(0);
+  });
+
+  it("cannot tell (undefined) when the page refuses the script or answers with something else", async () => {
+    (mockBrowser.scripting.executeScript as jest.Mock).mockRejectedValue(new Error("Cannot access a chrome:// URL"));
+    expect(await plantDocumentToken(5)).toBeUndefined();
+    expect(await readDocumentToken(5)).toBeUndefined();
+    for (const answer of [[{ frameId: 0, result: 1 }], [{ frameId: 0 }], [], undefined]) {
+      (mockBrowser.scripting.executeScript as jest.Mock).mockResolvedValue(answer);
+      expect(await plantDocumentToken(5)).toBeUndefined();
+      expect(await readDocumentToken(5)).toBeUndefined();
+    }
+  });
+
+  it("gives up after 500ms on a frame that does not answer", async () => {
+    jest.useFakeTimers();
+    try {
+      (mockBrowser.scripting.executeScript as jest.Mock).mockImplementation(() => new Promise(() => {}));
+      for (const probe of [plantDocumentToken, readDocumentToken]) {
+        let result: string | undefined | null = null;
+        probe(5).then((r) => {
+          result = r;
+        });
+        await jest.advanceTimersByTimeAsync(499);
+        expect(result).toBeNull();
+        await jest.advanceTimersByTimeAsync(1);
+        expect(result).toBeUndefined();
+      }
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it("isAtTarget: the target url once normalized, or the target's own document when the target has a fragment", () => {
+    expect(isAtTarget("https://app.example/", "https://app.example")).toBe(true);
+    expect(isAtTarget("https://app.example/a", "https://app.example/b")).toBe(false);
+    // A hash router moving a same-document jump on.
+    expect(isAtTarget("https://app.example/#/settings/general", "https://app.example/#/settings")).toBe(true);
+    expect(isAtTarget("https://app.example/b#/settings", "https://app.example/a#/settings")).toBe(false);
+    // A target without a fragment loads a new document; a fragment on the
+    // tab's url does not make it the target.
+    expect(isAtTarget("https://app.example/a#top", "https://app.example/a")).toBe(false);
+    // Chrome reports url "" for a tab that has not committed any page yet.
+    expect(isAtTarget("", "https://app.example/")).toBe(false);
+    expect(isAtTarget(undefined, "https://app.example/")).toBe(false);
   });
 });
