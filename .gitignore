@@ -7,8 +7,11 @@ yarn-error.log*
 lerna-debug.log*
 .pnpm-debug.log*
 
-# Dependency directories
+# Dependency directories. The slash-less entry also covers a node_modules
+# SYMLINK (git worktrees often link the main checkout's install), which the
+# directory-only "node_modules/" pattern does not match.
 node_modules/
+node_modules
 jspm_packages/
 
 # TypeScript cache
