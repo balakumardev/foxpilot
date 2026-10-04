@@ -1,6 +1,6 @@
 # Privacy Policy — FoxPilot
 
-**Last updated:** June 2026
+**Last updated:** October 2026
 
 ## What this extension does
 
@@ -20,6 +20,10 @@ FoxPilot connects your browser to a **Model Context Protocol (MCP) server runnin
 2. Commands originate from your local MCP client (the AI assistant you run). In response, the extension may read tab information, browsing history, or page content, and perform automation actions.
 3. Any such data is returned **only to your local server**. Nothing leaves your computer beyond the normal web requests the pages you visit would make anyway.
 4. The extension has no remote backend operated by the developer.
+
+## Optional remote link
+
+The extension itself still connects only to the local server running on your own computer. If you turn on the optional remote link, your local FoxPilot server forwards commands and results end-to-end encrypted through a relay to a FoxPilot server you set up on another machine. The relay cannot read them and stores nothing. The remote link is off by default.
 
 ## Permissions
 
@@ -45,7 +49,7 @@ FoxPilot connects your browser to a **Model Context Protocol (MCP) server runnin
 
 ## Remote code
 
-The `evaluate-script` capability runs JavaScript supplied **at runtime by your own local MCP server** to automate pages on your explicit command. This code originates solely from your local machine (127.0.0.1) — never from a third-party or remote web server — and runs only when you issue such a command.
+The `evaluate-script` capability runs JavaScript supplied at runtime to automate pages on your explicit command. This code reaches the extension only from your local server (127.0.0.1), which may relay it from a remote FoxPilot session you linked. It runs only when you issue such a command.
 
 ## Local storage
 
