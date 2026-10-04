@@ -1,0 +1,20 @@
+{
+  "name": "foxpilot-relay-worker",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "smoke": "node test/smoke.mjs"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261004.1",
+    "@types/ws": "^8.5.14",
+    "typescript": "^5.9.0",
+    "vitest": "^3.0.0",
+    "wrangler": "^4.147.0",
+    "ws": "^8.18.0"
+  }
+}
