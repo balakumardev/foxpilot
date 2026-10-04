@@ -3,6 +3,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import * as fs from "fs";
 import { BrowserAPI } from "./browser-api";
+import { isCliInvocation, runCli } from "./cli";
 import { linkTokenFromEnv } from "./link-client";
 import { FOXPILOT_VERSION } from "./version";
 import { readFileForUpload } from "./file-upload";
@@ -1329,19 +1330,41 @@ mcpServer.tool(
 );
 
 const browserApi = new BrowserAPI();
-browserApi.init().catch((err) => {
-  console.error("Browser API init error", err);
-  process.exit(1);
-});
 
-const transport = new StdioServerTransport();
-mcpServer.connect(transport).catch((err) => {
-  console.error("MCP Server connection error", err);
-  process.exit(1);
-});
+/**
+ * Exits once stdout and stderr have drained. On macOS a pipe is asynchronous,
+ * so exiting straight after the last write can drop it — and the output that
+ * matters most is piped: `npx foxpilot-mcp link token | gh secret set ...`.
+ */
+function exitAfterFlush(code: number): void {
+  process.exitCode = code;
+  process.stdout.write("", () => {
+    process.stderr.write("", () => process.exit(code));
+  });
+}
 
-process.stdin.on("close", () => {
-  browserApi.close();
-  mcpServer.close();
-  process.exit(0);
-});
+if (isCliInvocation(process.argv.slice(2))) {
+  runCli(process.argv.slice(2))
+    .then((code) => exitAfterFlush(code))
+    .catch((err) => {
+      console.error(err instanceof Error ? err.message : String(err));
+      exitAfterFlush(1);
+    });
+} else {
+  browserApi.init().catch((err) => {
+    console.error("Browser API init error", err);
+    process.exit(1);
+  });
+
+  const transport = new StdioServerTransport();
+  mcpServer.connect(transport).catch((err) => {
+    console.error("MCP Server connection error", err);
+    process.exit(1);
+  });
+
+  process.stdin.on("close", () => {
+    browserApi.close();
+    mcpServer.close();
+    process.exit(0);
+  });
+}
