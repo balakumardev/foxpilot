@@ -3,6 +3,8 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import * as fs from "fs";
 import { BrowserAPI } from "./browser-api";
+import { linkTokenFromEnv } from "./link-client";
+import { FOXPILOT_VERSION } from "./version";
 import { readFileForUpload } from "./file-upload";
 import { formatPointResult } from "./point-format";
 import { formatNetworkHeaders } from "./network-format";
@@ -42,32 +44,40 @@ const navUrl = z
     "An http(s) URL. Must be https, or http only for localhost / 127.0.0.1 / [::1]."
   );
 
+const baseInstructions =
+  "FoxPilot drives a real browser tab (Chrome/Firefox) for AI automation. " +
+  "CORE LOOP for driving any page: (1) get-list-of-open-tabs to find the target tabId; " +
+  "(2) take-snapshot to see interactive elements — each is tagged [uid=eN]; " +
+  "(3) act on a uid with click-element / fill-element / select-option / hover-element; " +
+  "(4) take a FRESH snapshot before the next action. " +
+  "UIDS ARE EPHEMERAL: every take-snapshot reassigns all uids, so a uid from an earlier " +
+  "snapshot silently resolves to the wrong element or fails — never reuse a uid across snapshots. " +
+  "FIND ELEMENTS BY TEXT: pass textContains:'visible label' to take-snapshot to locate a control " +
+  "by its on-screen text (case-insensitive) instead of dumping the whole page; this is the reliable " +
+  "way to click nav items, tabs, and menu entries. " +
+  "BACKGROUND TABS: if the target tab is NOT the user's foreground tab, its content is frozen by " +
+  "Chrome Memory Saver / Edge Sleeping Tabs — take-snapshot returns empty and clicks time out. " +
+  "PASS activateTab:true on take-snapshot / click-element / fill-element / navigate-tab / etc. to " +
+  "briefly foreground the tab for that one call and restore the user's tab after. When a snapshot " +
+  "comes back empty or a call times out on a tab you did not just navigate, retry with activateTab:true. " +
+  "SPA NAVIGATION: after a click that expands a menu or changes the view, take a fresh snapshot before " +
+  "the next click; content may render lazily. Prefer take-snapshot over evaluate-script (many app pages " +
+  "have a strict CSP that blocks page-world script). Custom dropdowns (react-select/Radix) use select-option, " +
+  "not fill-element.";
+
+const instructions =
+  linkTokenFromEnv() !== null
+    ? baseInstructions +
+      " REMOTE LINK: this FoxPilot server runs on a different machine than the browser and drives the user's own browser through an end-to-end-encrypted FoxPilot relay. Calls take slightly longer, and file paths given to upload-file are read on THIS machine."
+    : baseInstructions;
+
 const mcpServer = new McpServer(
   {
     name: "FoxPilot",
-    version: "1.5.1",
+    version: FOXPILOT_VERSION,
   },
   {
-    instructions:
-      "FoxPilot drives a real browser tab (Chrome/Firefox) for AI automation. " +
-      "CORE LOOP for driving any page: (1) get-list-of-open-tabs to find the target tabId; " +
-      "(2) take-snapshot to see interactive elements — each is tagged [uid=eN]; " +
-      "(3) act on a uid with click-element / fill-element / select-option / hover-element; " +
-      "(4) take a FRESH snapshot before the next action. " +
-      "UIDS ARE EPHEMERAL: every take-snapshot reassigns all uids, so a uid from an earlier " +
-      "snapshot silently resolves to the wrong element or fails — never reuse a uid across snapshots. " +
-      "FIND ELEMENTS BY TEXT: pass textContains:'visible label' to take-snapshot to locate a control " +
-      "by its on-screen text (case-insensitive) instead of dumping the whole page; this is the reliable " +
-      "way to click nav items, tabs, and menu entries. " +
-      "BACKGROUND TABS: if the target tab is NOT the user's foreground tab, its content is frozen by " +
-      "Chrome Memory Saver / Edge Sleeping Tabs — take-snapshot returns empty and clicks time out. " +
-      "PASS activateTab:true on take-snapshot / click-element / fill-element / navigate-tab / etc. to " +
-      "briefly foreground the tab for that one call and restore the user's tab after. When a snapshot " +
-      "comes back empty or a call times out on a tab you did not just navigate, retry with activateTab:true. " +
-      "SPA NAVIGATION: after a click that expands a menu or changes the view, take a fresh snapshot before " +
-      "the next click; content may render lazily. Prefer take-snapshot over evaluate-script (many app pages " +
-      "have a strict CSP that blocks page-world script). Custom dropdowns (react-select/Radix) use select-option, " +
-      "not fill-element.",
+    instructions,
   }
 );
 

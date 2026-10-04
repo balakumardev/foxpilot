@@ -14,8 +14,7 @@
 
 import { WebSocket } from "ws";
 import { spawn } from "child_process";
-import * as fs from "fs";
-import * as path from "path";
+import * as os from "os";
 import type {
   ServerMessage,
   ExtensionMessage,
@@ -59,21 +58,22 @@ import {
   BrowserInfo,
 } from "./broker-protocol";
 import { createSignature, verifySignature } from "./signing";
-import { getControlSecret, ensureFoxpilotDir } from "./control-secret";
+import { getControlSecret } from "./control-secret";
+import { spawnBroker } from "./broker-launch";
+import {
+  LinkClientConnection,
+  LinkCloseReason,
+  linkTokenError,
+  linkTokenFromEnv,
+} from "./link-client";
+import { sanitizeLabel } from "./link-crypto";
+import { FOXPILOT_VERSION } from "./version";
 
 const WS_DEFAULT_PORT = 8089;
 const CONNECT_TIMEOUT_MS = 10000;
 const CONNECT_RETRY_INTERVAL_MS = 200;
 // Client-side safety net; the broker enforces its own per-command timeouts.
 const REQUEST_TIMEOUT_MS = 60000;
-/**
- * Size at which the broker log is rotated on open. Mirrored by broker-main.ts,
- * which caps the same file from the other end while the broker is running. The
- * two are independent checks rather than a shared contract — if they ever
- * diverge the smaller cap simply wins — but keeping them equal means the file
- * behaves the same whichever end trims it first.
- */
-const BROKER_LOG_MAX_BYTES = 5 * 1024 * 1024;
 
 interface RequestResolver {
   resolve: (msg: ExtensionMessage) => void;
@@ -91,50 +91,42 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/**
- * Opens the broker's log sink and returns an fd to hand the detached child as
- * its stdout AND stderr, or null when the caller should fall back to "ignore".
- *
- * The broker is a separate process, so its console.error is stderr and can
- * never corrupt this process's JSON-RPC stdout — but spawned with
- * stdio:"ignore" that stderr goes to a discarded fd, which is worse: the idle
- * shutdown notice, the EADDRINUSE race, and the late/unknown-reply diagnostics
- * are all written and then thrown away, so the failure classes they exist to
- * expose stay invisible.
- *
- * Opened in APPEND mode on purpose. The broker trims this same file in place
- * through its inherited fd (see broker-main.ts) and only O_APPEND makes a write
- * after a truncate land at offset 0; without it the fd would keep its old
- * offset and leave a sparse hole the size of everything just discarded.
- *
- * Growth is bounded at both ends. Here, by truncating on open once the file is
- * already over the cap — the broker idle-exits and respawns, so every spawn is
- * a rotation point. That alone is not enough: a broker that stays up for days
- * under a chatty failure mode would grow without limit *between* spawns, so
- * broker-main.ts re-checks the size periodically while it runs.
- *
- * Never throws. A log we cannot open must not stop the browser automation that
- * depends on the broker, so every failure degrades to a null fd.
- */
-function openBrokerLog(): { fd: number; file: string } | null {
-  try {
-    const file = path.join(ensureFoxpilotDir(), "broker.log");
-    let flags = "a";
+interface BrokerConnection {
+  isOpen(): boolean;
+  send(frame: BrokerClientFrame): void;
+  close(): void;
+}
+
+class LocalBrokerConnection implements BrokerConnection {
+  constructor(
+    private readonly ws: WebSocket,
+    private readonly secret: string
+  ) {}
+
+  isOpen(): boolean {
+    return this.ws.readyState === WebSocket.OPEN;
+  }
+
+  send(frame: BrokerClientFrame): void {
+    const payload = JSON.stringify(frame);
+    const signature = createSignature(this.secret, payload);
+    this.ws.send(JSON.stringify({ payload: frame, signature }));
+  }
+
+  close(): void {
     try {
-      if (fs.statSync(file).size >= BROKER_LOG_MAX_BYTES) {
-        flags = "w";
-      }
+      this.ws.close();
     } catch {
-      /* not created yet — "a" creates it */
+      /* ignore */
     }
-    return { fd: fs.openSync(file, flags, 0o600), file };
-  } catch {
-    return null;
   }
 }
 
 export class BrowserAPI {
   private ws: WebSocket | null = null;
+  private conn: BrokerConnection | null = null;
+  private linkMode: boolean = false;
+  private invalidTokenError: string | null = null;
   private secret: string | null = null;
   private port: number = WS_DEFAULT_PORT;
   private requestCounter = 0;
@@ -143,7 +135,24 @@ export class BrowserAPI {
   /** Dedupes concurrent reconnect attempts triggered from the send path. */
   private connecting: Promise<void> | null = null;
 
+  isLinkMode(): boolean {
+    return this.linkMode;
+  }
+
   async init() {
+    const linkToken = linkTokenFromEnv();
+    this.linkMode = linkToken !== null;
+    if (linkToken !== null) {
+      const err = linkTokenError(linkToken);
+      if (err) {
+        this.invalidTokenError = err;
+        return;
+      }
+      this.openLink().catch((error) => {
+        console.error("BrowserAPI link connect error:", error);
+      });
+      return;
+    }
     const { port } = readConfig();
     // The extension leg is origin-gated; this secret only authenticates the
     // control leg to the broker, and is auto-managed (env, else persisted file).
@@ -154,6 +163,10 @@ export class BrowserAPI {
 
   close() {
     this.rejectAllPending("MCP server shutting down");
+    if (this.conn) {
+      this.conn.close();
+      this.conn = null;
+    }
     if (this.ws) {
       try {
         this.ws.close();
@@ -176,7 +189,7 @@ export class BrowserAPI {
       return;
     }
     // No broker listening — spawn one (detached) and retry connecting.
-    this.spawnBroker();
+    spawnBroker({ port: this.port, secret: this.secret ?? "" });
     const deadline = Date.now() + CONNECT_TIMEOUT_MS;
     while (Date.now() < deadline) {
       await delay(CONNECT_RETRY_INTERVAL_MS);
@@ -199,7 +212,19 @@ export class BrowserAPI {
    * caller re-checks the socket and reports "Not connected" if still down.
    */
   private async ensureConnectedForSend(): Promise<void> {
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+    if (this.linkMode) {
+      if (this.invalidTokenError) {
+        throw new Error(this.invalidTokenError);
+      }
+      if (this.conn && this.conn.isOpen()) {
+        return;
+      }
+      // The LinkConnectError text explains what to fix; it becomes the tool error.
+      await this.openLink();
+      return;
+    }
+
+    if (this.conn && this.conn.isOpen()) {
       return;
     }
     if (!this.connecting) {
@@ -212,6 +237,69 @@ export class BrowserAPI {
     } catch {
       /* re-checked by the caller */
     }
+  }
+
+  /**
+   * Opens the link, or joins the attempt already in flight. Callers await the
+   * returned promise and see its error; the dedupe slot is cleared through a
+   * handler that swallows, so a failed attempt never surfaces as an unhandled
+   * rejection (which would take the whole MCP server down).
+   */
+  private openLink(): Promise<void> {
+    if (this.connecting) {
+      return this.connecting;
+    }
+    const promise = (async () => {
+      const token = linkTokenFromEnv() ?? "";
+      const label = sanitizeLabel(
+        process.env.FOXPILOT_LINK_LABEL || os.hostname()
+      );
+      const relayUrl = process.env.FOXPILOT_RELAY_URL || undefined;
+      const version = FOXPILOT_VERSION;
+
+      const conn = await LinkClientConnection.open({
+        token,
+        relayUrl,
+        label,
+        version,
+        onFrame: (frame) => this.dispatchServerFrame(frame),
+        onClose: (reason, detail) => this.handleLinkClose(reason, detail),
+      });
+      this.conn = conn;
+    })();
+
+    this.connecting = promise;
+    const clear = () => {
+      if (this.connecting === promise) {
+        this.connecting = null;
+      }
+    };
+    promise.then(clear, clear);
+    return promise;
+  }
+
+  private handleLinkClose(reason: LinkCloseReason, _detail: string): void {
+    let what = "network error";
+    switch (reason) {
+      case "host-offline":
+        what = "your computer went offline or stopped FoxPilot";
+        break;
+      case "kicked":
+        what = "the link was turned off or its token rotated on your computer";
+        break;
+      case "network":
+        what = "network error";
+        break;
+      case "protocol":
+        what = "protocol error";
+        break;
+      default:
+        what = "network error";
+        break;
+    }
+    const msg = `The link to your computer's FoxPilot dropped (${what}) before the reply arrived. This is a MISSING REPLY, not a confirmed failure — the command may already have run in the browser. Verify the page state before retrying.`;
+    this.rejectAllPending(msg);
+    this.conn = null;
   }
 
   /**
@@ -264,47 +352,14 @@ export class BrowserAPI {
     });
   }
 
-  private spawnBroker(): void {
-    const brokerEntry = path.join(__dirname, "broker-main.js");
-    const log = openBrokerLog();
-    const child = spawn(process.execPath, [brokerEntry], {
-      detached: true,
-      // Both streams go to the one file: the broker writes everything through
-      // console.error, and folding stdout in means a crash dump or a stray
-      // library write is captured too. A plain file fd is not a libuv handle,
-      // so this does not ref the event loop and detached + unref() below still
-      // lets the broker outlive this session exactly as before.
-      stdio: log ? ["ignore", log.fd, log.fd] : "ignore",
-      env: {
-        ...process.env,
-        EXTENSION_SECRET: this.secret ?? "",
-        EXTENSION_PORT: String(this.port),
-      },
-    });
-    child.unref();
-    if (log) {
-      // uv_spawn has already dup'd the fd into the child, so closing our copy
-      // here is safe and keeps a long-lived MCP server from leaking one fd per
-      // broker respawn.
-      try {
-        fs.closeSync(log.fd);
-      } catch {
-        /* already gone; nothing to reclaim */
-      }
-      // Surfaced on OUR stderr (never stdout — that is the JSON-RPC channel),
-      // which is where the MCP client tees server diagnostics. Printed at spawn
-      // because that is the moment the file starts; a human debugging FoxPilot
-      // needs to be told the path exists at all.
-      console.error(`BrowserAPI: broker log -> ${log.file}`);
-    }
-  }
-
   private attachSocket(ws: WebSocket): void {
     this.ws = ws;
+    this.conn = new LocalBrokerConnection(ws, this.secret!);
     ws.on("message", (data) => this.onMessage(data.toString()));
     ws.on("close", () => {
       if (this.ws === ws) {
         this.ws = null;
+        this.conn = null;
       }
       this.rejectAllPending("Broker connection closed");
     });
@@ -334,7 +389,10 @@ export class BrowserAPI {
       return;
     }
 
-    const frame = decoded.payload;
+    this.dispatchServerFrame(decoded.payload);
+  }
+
+  private dispatchServerFrame(frame: BrokerServerFrame): void {
     if (frame.kind === "tool-result") {
       const resolver = this.requestMap.get(frame.requestId);
       if (!resolver) {
@@ -378,11 +436,14 @@ export class BrowserAPI {
   private async sendTool<T extends ExtensionMessage>(
     message: ServerMessage
   ): Promise<T> {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+    if (this.invalidTokenError) {
+      throw new Error(this.invalidTokenError);
+    }
+    if (!this.conn || !this.conn.isOpen()) {
       await this.ensureConnectedForSend();
     }
     return new Promise<T>((resolve, reject) => {
-      if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      if (!this.conn || !this.conn.isOpen()) {
         reject(new Error("Not connected to the broker"));
         return;
       }
@@ -401,20 +462,27 @@ export class BrowserAPI {
       });
 
       const frame: BrokerClientFrame = { kind: "tool", requestId, message };
-      const payload = JSON.stringify(frame);
-      const signature = createSignature(this.secret!, payload);
-      this.ws.send(JSON.stringify({ payload: frame, signature }));
+      try {
+        this.conn.send(frame);
+      } catch (err) {
+        clearTimeout(timer);
+        this.requestMap.delete(requestId);
+        reject(err instanceof Error ? err : new Error(String(err)));
+      }
     });
   }
 
   private async sendControl(
     control: BrokerControlRequest
   ): Promise<BrokerControlResult> {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+    if (this.invalidTokenError) {
+      throw new Error(this.invalidTokenError);
+    }
+    if (!this.conn || !this.conn.isOpen()) {
       await this.ensureConnectedForSend();
     }
     return new Promise<BrokerControlResult>((resolve, reject) => {
-      if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      if (!this.conn || !this.conn.isOpen()) {
         reject(new Error("Not connected to the broker"));
         return;
       }
@@ -429,9 +497,13 @@ export class BrowserAPI {
       this.controlMap.set(requestId, { resolve, reject, timer });
 
       const frame: BrokerClientFrame = { kind: "control", requestId, control };
-      const payload = JSON.stringify(frame);
-      const signature = createSignature(this.secret!, payload);
-      this.ws.send(JSON.stringify({ payload: frame, signature }));
+      try {
+        this.conn.send(frame);
+      } catch (err) {
+        clearTimeout(timer);
+        this.controlMap.delete(requestId);
+        reject(err instanceof Error ? err : new Error(String(err)));
+      }
     });
   }
 
