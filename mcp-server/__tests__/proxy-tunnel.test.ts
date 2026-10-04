@@ -344,11 +344,18 @@ describe("tunnel integration (plain ws://)", () => {
     const srv = net.createServer((c) => {
       c.write("HTTP/1.1 200 OK\r\n\r\nEARLY");
       c.on("error", () => {});
+      // Read (and drop) the CONNECT request: a socket nobody reads never sees
+      // the client's FIN, and srv.close() would wait on it forever.
+      c.resume();
     });
     await new Promise<void>((r) => srv.listen(0, "127.0.0.1", r));
     const p = (srv.address() as net.AddressInfo).port;
     const sock = await openTunnel("ws://relay.test:80", `http://127.0.0.1:${p}`);
-    const got = await new Promise<string>((resolve) => sock.once("data", (d) => resolve(d.toString())));
+    // openTunnel hands the socket back paused; the early bytes wait for a reader.
+    const got = await new Promise<string>((resolve) => {
+      sock.once("data", (d) => resolve(d.toString()));
+      sock.resume();
+    });
     expect(got).toBe("EARLY");
     sock.destroy();
     await new Promise<void>((r) => srv.close(() => r()));
@@ -517,6 +524,7 @@ describe("openTunnel failure modes", () => {
   test("oversized response head is rejected", async () => {
     const srv = net.createServer((c) => {
       c.on("error", () => {});
+      c.resume(); // see the unshift test: lets srv.close() finish
       c.write("HTTP/1.1 200 OK\r\nX-Junk: " + "a".repeat(20 * 1024));
     });
     await new Promise<void>((r) => srv.listen(0, "127.0.0.1", r));

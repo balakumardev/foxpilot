@@ -145,7 +145,15 @@ function safeDecode(s: string): string {
   }
 }
 
-/** Open a CONNECT tunnel through `proxy` to target's host:port; resolves the raw connected socket (no TLS to the target yet). */
+/**
+ * Open a CONNECT tunnel through `proxy` to target's host:port; resolves the raw
+ * connected socket (no TLS to the target yet).
+ *
+ * The socket comes back PAUSED, with any bytes the proxy sent right behind its
+ * 200 pushed back into it: our reader is gone by then, and a flowing socket
+ * with no reader drops data. Whoever takes it over must resume() it once its
+ * own reader is attached (tunneledCreateConnection does).
+ */
 export function openTunnel(
   target: string,
   proxy: string,
@@ -283,7 +291,13 @@ export async function tunneledCreateConnection(
   return () => {
     if (used) throw new Error("tunneledCreateConnection: the returned createConnection is single-use");
     used = true;
-    if (!secure) return tunnel;
+    if (!secure) {
+      // ws/http attach their reader on a later tick than this call, so resume
+      // only after that; anything already buffered stays queued until then.
+      setImmediate(() => tunnel.resume());
+      return tunnel;
+    }
+    // TLS reads the tunnel itself, so the pause does not hold it back.
     return tls.connect({
       socket: tunnel,
       ...(net.isIP(host) ? {} : { servername: host }),
