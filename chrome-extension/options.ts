@@ -32,6 +32,8 @@ import {
   applyActiveStatus,
   selectThisBrowser,
   fetchInitialActiveStatus,
+  renderRemoteLink,
+  remoteLinkSummary,
 } from "./options-status";
 import type { HealthcheckResult } from "./transport";
 
@@ -128,6 +130,9 @@ const testConnectionButton = document.getElementById(
 const testConnectionStatus = document.getElementById(
   "test-connection-status"
 ) as HTMLDivElement | null;
+const remoteLinkOffButton = document.getElementById(
+  "remote-link-off-btn"
+) as HTMLButtonElement | null;
 
 // SVG markup for the secret reveal toggle (eye / eye-off).
 const EYE_ICON =
@@ -650,6 +655,7 @@ async function testConnection() {
       testConnectionStatus.textContent =
         "Server not running — start the FoxPilot MCP server (it launches the broker). This browser will connect automatically once it is up.";
       testConnectionStatus.style.color = "var(--danger)";
+      renderRemoteLink(undefined);
       return;
     }
     const connectedBrowsers = (result.browsers || []).filter(
@@ -666,16 +672,43 @@ async function testConnection() {
       testConnectionStatus.textContent =
         "Server reachable, but this browser is not admitted. If you set a custom secret, make sure it matches the broker's EXTENSION_SECRET.";
       testConnectionStatus.style.color = "var(--warning)";
+      renderRemoteLink(undefined);
       return;
     }
     const browserWord = count === 1 ? "browser" : "browsers";
-    testConnectionStatus.textContent = `Connected — server reachable, this browser admitted. ${count} ${browserWord} connected; this browser is ${activeWord}.`;
+    testConnectionStatus.textContent = `Connected — server reachable, this browser admitted. ${count} ${browserWord} connected; this browser is ${activeWord}.${remoteLinkSummary(result.link)}`;
     testConnectionStatus.style.color = "var(--success)";
+    renderRemoteLink(result.link);
   } catch (error) {
     console.error("Error testing connection:", error);
     testConnectionStatus.textContent =
       "Could not reach the background service worker. Try reloading the extension.";
     testConnectionStatus.style.color = "var(--danger)";
+    renderRemoteLink(undefined);
+  }
+}
+
+async function handleRemoteLinkOff(event: MouseEvent) {
+  if (!event.isTrusted) return;
+  try {
+    await browser.runtime.sendMessage({ type: "link-off" });
+  } catch (error) {
+    console.error("Error turning off remote link:", error);
+  }
+  await testConnection();
+}
+
+async function refreshRemoteLink() {
+  try {
+    const result: HealthcheckResult | undefined =
+      await browser.runtime.sendMessage({ type: "healthcheck" });
+    if (result && result.serverReachable && result.extensionConnected) {
+      renderRemoteLink(result.link);
+    } else {
+      renderRemoteLink(undefined);
+    }
+  } catch {
+    renderRemoteLink(undefined);
   }
 }
 
@@ -1264,6 +1297,9 @@ makeActiveButton.addEventListener("click", handleMakeActive);
 if (testConnectionButton) {
   testConnectionButton.addEventListener("click", testConnection);
 }
+if (remoteLinkOffButton) {
+  remoteLinkOffButton.addEventListener("click", handleRemoteLinkOff);
+}
 // The background relays broker active-status pushes to the options page so the
 // ACTIVE/STANDBY badge reflects the live "is this browser the active driver?"
 // state (independent of the topbar's Connected/Disconnected liveness).
@@ -1297,6 +1333,7 @@ document.addEventListener("DOMContentLoaded", () => {
   // Active-browser badge: reflect the real current ACTIVE/STANDBY state on open
   // (the live relay above keeps it updated thereafter). Self-guards; never throws.
   fetchInitialActiveStatus();
+  refreshRemoteLink();
 
   // Ensure modal is hidden by default
   const modal = document.getElementById("permission-modal") as HTMLDivElement;

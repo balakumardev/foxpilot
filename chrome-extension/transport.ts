@@ -41,6 +41,20 @@ export interface BrokerBrowserInfo {
   active: boolean;
 }
 
+/** Session info for a remote client connected through the relay. */
+export interface LinkSessionInfo {
+  label: string;
+  connectedAt: number;
+}
+
+/** Status info for the remote link (broker-to-relay tunnel). */
+export interface LinkStatusInfo {
+  enabled: boolean;
+  relayConnected: boolean;
+  relayUrl?: string;
+  sessions: LinkSessionInfo[];
+}
+
 /**
  * Result of a Test-Connection probe. `serverReachable` is true only when the
  * broker actually answered; the broker's own snapshot is surfaced as-is so the
@@ -52,6 +66,7 @@ export interface HealthcheckResult {
   extensionConnected: boolean;
   browsers: BrokerBrowserInfo[];
   activeBrowserId: string | null;
+  link?: LinkStatusInfo;
 }
 
 /**
@@ -66,6 +81,8 @@ export interface ExtensionTransport {
   addStatusListener?(callback: (active: boolean) => void): void;
   /** Optional: ask the broker to make THIS browser the active driver. */
   sendSelectActive?(browserId: string): Promise<void>;
+  /** Optional: turn off the remote link in the broker. */
+  sendLinkOff?(): Promise<void>;
   /**
    * Optional: probe the broker and resolve with its roster snapshot. Resolves
    * (never rejects) with `serverReachable:false` when the broker is not running

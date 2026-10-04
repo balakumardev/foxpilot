@@ -1,5 +1,5 @@
 import { getOrCreateBrowserId } from "./extension-config";
-import type { BrokerBrowserInfo } from "./transport";
+import type { BrokerBrowserInfo, LinkStatusInfo } from "./transport";
 
 /** Update the connection badge DOM to reflect ACTIVE/STANDBY. */
 export function applyActiveStatus(active: boolean): void {
@@ -93,4 +93,74 @@ export async function fetchInitialActiveStatus(): Promise<void> {
     // Background asleep or no receiver — leave the default STANDBY.
     applyActiveStatus(false);
   }
+}
+
+/**
+ * Render the remote link status into #remote-link-status and show/hide
+ * #remote-link-row and #remote-link-off-btn.
+ * - undefined => hide row (older broker)
+ * - enabled: false => show row, text "Remote link is off.", hide button
+ * - enabled: true => show row and button, describe relay and session count/labels
+ */
+export function renderRemoteLink(link: LinkStatusInfo | undefined): void {
+  const row = document.getElementById("remote-link-row");
+  const status = document.getElementById("remote-link-status");
+  const btn = document.getElementById("remote-link-off-btn");
+
+  if (!link) {
+    if (row) {
+      row.hidden = true;
+    }
+    return;
+  }
+
+  if (row) {
+    row.hidden = false;
+  }
+
+  if (!link.enabled) {
+    if (status) {
+      status.textContent = "Remote link is off.";
+    }
+    if (btn) {
+      btn.hidden = true;
+    }
+    return;
+  }
+
+  if (btn) {
+    btn.hidden = false;
+  }
+
+  const relayPart = link.relayConnected
+    ? " and connected to the relay"
+    : ", but the relay is not reachable right now";
+  const sessions = Array.isArray(link.sessions) ? link.sessions : [];
+  const n = sessions.length;
+  const labels = sessions.map((s) => s.label).join(", ");
+  const sessionPart =
+    n === 0
+      ? "No remote sessions are connected."
+      : `${n} remote session${n === 1 ? "" : "s"} connected: ${labels}.`;
+
+  if (status) {
+    status.textContent = `Remote link is on${relayPart}. ${sessionPart}`;
+  }
+}
+
+/**
+ * Summary string appended to the Test Connection result line.
+ * - undefined => ""
+ * - disabled => " Remote link: off."
+ * - enabled => " Remote link: on (N remote session(s))."
+ */
+export function remoteLinkSummary(link: LinkStatusInfo | undefined): string {
+  if (!link) {
+    return "";
+  }
+  if (!link.enabled) {
+    return " Remote link: off.";
+  }
+  const n = Array.isArray(link.sessions) ? link.sessions.length : 0;
+  return ` Remote link: on (${n} remote session(s)).`;
 }

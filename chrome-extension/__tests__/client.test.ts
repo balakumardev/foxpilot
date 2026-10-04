@@ -394,6 +394,51 @@ describe("WebsocketClient zero-config protocol", () => {
     expect(frame.signature).toBe(expected);
   });
 
+  it("sendLinkOff sends an UNSIGNED frame in origin mode", async () => {
+    const client = new WebsocketClient(8089, "");
+    client.connect();
+    const ws = lastInstance();
+    ws.open();
+    await flush();
+    ws.sent.length = 0;
+    await client.sendLinkOff();
+    expect(ws.sent).toHaveLength(1);
+    const frame = JSON.parse(ws.sent[0]);
+    expect(frame).toEqual({ payload: { type: "link-off" } });
+    expect("signature" in frame).toBe(false);
+  });
+
+  it("sendLinkOff signs the frame in signed mode", async () => {
+    const client = new WebsocketClient(8089, "shared");
+    client.connect();
+    const ws = lastInstance();
+    ws.open();
+    await flush();
+    ws.sent.length = 0;
+    await client.sendLinkOff();
+    expect(ws.sent).toHaveLength(1);
+    const frame = JSON.parse(ws.sent[0]);
+    expect(frame.payload).toEqual({ type: "link-off" });
+    const expected = await getMessageSignature(
+      JSON.stringify(frame.payload),
+      "shared"
+    );
+    expect(frame.signature).toBe(expected);
+  });
+
+  it("sendLinkOff on a closed socket does nothing", async () => {
+    const client = new WebsocketClient(8089, "");
+    client.connect();
+    const ws = lastInstance();
+    ws.open();
+    await flush();
+    ws.close();
+    await flush();
+    ws.sent.length = 0;
+    await client.sendLinkOff();
+    expect(ws.sent).toHaveLength(0);
+  });
+
   describe("healthcheck()", () => {
     it("sends {type:'healthcheck'} and resolves with the result snapshot", async () => {
       const client = new WebsocketClient(8089, "");
@@ -417,6 +462,109 @@ describe("WebsocketClient zero-config protocol", () => {
       expect(result.extensionConnected).toBe(true);
       expect(result.activeBrowserId).toBe(BROWSER_ID);
       expect(result.browsers).toHaveLength(1);
+    });
+
+    it("passes through a well-formed link object", async () => {
+      const client = new WebsocketClient(8089, "");
+      client.connect();
+      const ws = lastInstance();
+      ws.open();
+      await flush();
+      ws.sent.length = 0;
+
+      const promise = client.healthcheck();
+      ws.receive({
+        type: "healthcheck-result",
+        extensionConnected: true,
+        browsers: [],
+        activeBrowserId: null,
+        link: {
+          enabled: true,
+          relayConnected: true,
+          relayUrl: "wss://relay.example.com",
+          sessions: [{ label: "session-1", connectedAt: 1700000000 }],
+        },
+      });
+      const result = await promise;
+      expect(result.link).toEqual({
+        enabled: true,
+        relayConnected: true,
+        relayUrl: "wss://relay.example.com",
+        sessions: [{ label: "session-1", connectedAt: 1700000000 }],
+      });
+    });
+
+    it("leaves absent link absent", async () => {
+      const client = new WebsocketClient(8089, "");
+      client.connect();
+      const ws = lastInstance();
+      ws.open();
+      await flush();
+      ws.sent.length = 0;
+
+      const promise = client.healthcheck();
+      ws.receive({
+        type: "healthcheck-result",
+        extensionConnected: true,
+        browsers: [],
+        activeBrowserId: null,
+      });
+      const result = await promise;
+      expect(result.link).toBeUndefined();
+    });
+
+    it("drops or sanitizes a malformed link without throwing", async () => {
+      const client = new WebsocketClient(8089, "");
+      client.connect();
+      const ws = lastInstance();
+      ws.open();
+      await flush();
+      ws.sent.length = 0;
+
+      // Malformed top-level link properties -> dropped
+      let promise = client.healthcheck();
+      ws.receive({
+        type: "healthcheck-result",
+        extensionConnected: true,
+        browsers: [],
+        activeBrowserId: null,
+        link: { enabled: "yes", relayConnected: true, sessions: [] } as any,
+      });
+      let result = await promise;
+      expect(result.link).toBeUndefined();
+
+      // Malformed session entries -> dropped or sanitized (label capped to 64 chars)
+      promise = client.healthcheck();
+      ws.receive({
+        type: "healthcheck-result",
+        extensionConnected: true,
+        browsers: [],
+        activeBrowserId: null,
+        link: {
+          enabled: true,
+          relayConnected: false,
+          sessions: [
+            null,
+            { label: "x".repeat(100), connectedAt: 12345 },
+            { label: "bad-connected-at", connectedAt: "never" as any },
+            { label: "nan-connected-at", connectedAt: NaN },
+            { label: 42, connectedAt: 99999 },
+          ],
+        },
+      });
+      result = await promise;
+      expect(result.link).toBeDefined();
+      expect(result.link!.enabled).toBe(true);
+      expect(result.link!.relayConnected).toBe(false);
+      expect(result.link!.sessions).toHaveLength(2);
+      expect(result.link!.sessions[0]).toEqual({
+        label: "x".repeat(64),
+        connectedAt: 12345,
+      });
+      expect(result.link!.sessions[1]).toEqual({
+        label: "42",
+        connectedAt: 99999,
+      });
     });
 
     it("resolves with a not-reachable result when the socket is not open", async () => {

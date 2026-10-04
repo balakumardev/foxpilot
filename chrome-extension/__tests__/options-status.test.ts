@@ -4,6 +4,8 @@ import {
   selectThisBrowser,
   fetchInitialActiveStatus,
   renderConnectedBrowsers,
+  renderRemoteLink,
+  remoteLinkSummary,
 } from "../options-status";
 
 describe("options active-status UI", () => {
@@ -167,5 +169,139 @@ describe("renderConnectedBrowsers", () => {
     const list = document.getElementById("connected-browsers")!;
     expect(list.textContent).not.toContain("Stale FF");
     expect(list.textContent!.toLowerCase()).toContain("only this browser");
+  });
+});
+
+describe("renderRemoteLink", () => {
+  beforeEach(() => {
+    document.body.innerHTML = `
+      <div id="remote-link-row" hidden>
+        <div class="status" id="remote-link-status"></div>
+        <button class="btn btn-danger" id="remote-link-off-btn" type="button">Turn off remote link</button>
+      </div>
+    `;
+  });
+
+  it("hides the row when link is undefined", () => {
+    const row = document.getElementById("remote-link-row") as HTMLDivElement;
+    row.hidden = false; // start visible to prove it gets hidden
+    renderRemoteLink(undefined);
+    expect(row.hidden).toBe(true);
+  });
+
+  it("renders disabled state (enabled=false): shows row, sets text, hides button", () => {
+    const row = document.getElementById("remote-link-row") as HTMLDivElement;
+    const status = document.getElementById("remote-link-status") as HTMLDivElement;
+    const btn = document.getElementById("remote-link-off-btn") as HTMLButtonElement;
+    btn.hidden = false; // start visible to prove it gets hidden
+
+    renderRemoteLink({
+      enabled: false,
+      relayConnected: false,
+      sessions: [],
+    });
+
+    expect(row.hidden).toBe(false);
+    expect(btn.hidden).toBe(true);
+    expect(status.textContent).toBe("Remote link is off.");
+  });
+
+  it("renders enabled state with 0 sessions: shows row and button, describes relay reachable and no sessions", () => {
+    const row = document.getElementById("remote-link-row") as HTMLDivElement;
+    const status = document.getElementById("remote-link-status") as HTMLDivElement;
+    const btn = document.getElementById("remote-link-off-btn") as HTMLButtonElement;
+
+    renderRemoteLink({
+      enabled: true,
+      relayConnected: true,
+      sessions: [],
+    });
+
+    expect(row.hidden).toBe(false);
+    expect(btn.hidden).toBe(false);
+    expect(status.textContent).toBe(
+      "Remote link is on and connected to the relay. No remote sessions are connected."
+    );
+
+    // Also test when relay is not reachable
+    renderRemoteLink({
+      enabled: true,
+      relayConnected: false,
+      sessions: [],
+    });
+    expect(status.textContent).toBe(
+      "Remote link is on, but the relay is not reachable right now. No remote sessions are connected."
+    );
+  });
+
+  it("renders enabled state with 2 sessions: shows row and button, lists labels and plural count", () => {
+    const row = document.getElementById("remote-link-row") as HTMLDivElement;
+    const status = document.getElementById("remote-link-status") as HTMLDivElement;
+    const btn = document.getElementById("remote-link-off-btn") as HTMLButtonElement;
+
+    renderRemoteLink({
+      enabled: true,
+      relayConnected: true,
+      sessions: [
+        { label: "cloud-box", connectedAt: 100 },
+        { label: "macbook", connectedAt: 200 },
+      ],
+    });
+
+    expect(row.hidden).toBe(false);
+    expect(btn.hidden).toBe(false);
+    expect(status.textContent).toBe(
+      "Remote link is on and connected to the relay. 2 remote sessions connected: cloud-box, macbook."
+    );
+  });
+
+  it("renders labels containing HTML tags as plain text without creating elements", () => {
+    const status = document.getElementById("remote-link-status") as HTMLDivElement;
+
+    renderRemoteLink({
+      enabled: true,
+      relayConnected: true,
+      sessions: [{ label: "<img src=x onerror=alert(1)>", connectedAt: 100 }],
+    });
+
+    expect(status.textContent).toContain("<img src=x onerror=alert(1)>");
+    expect(status.querySelector("img")).toBeNull();
+  });
+});
+
+describe("remoteLinkSummary", () => {
+  it("returns an empty string when link is undefined", () => {
+    expect(remoteLinkSummary(undefined)).toBe("");
+  });
+
+  it("returns ' Remote link: off.' when link is disabled", () => {
+    expect(
+      remoteLinkSummary({
+        enabled: false,
+        relayConnected: false,
+        sessions: [],
+      })
+    ).toBe(" Remote link: off.");
+  });
+
+  it("returns summary with session count when enabled", () => {
+    expect(
+      remoteLinkSummary({
+        enabled: true,
+        relayConnected: true,
+        sessions: [],
+      })
+    ).toBe(" Remote link: on (0 remote session(s)).");
+
+    expect(
+      remoteLinkSummary({
+        enabled: true,
+        relayConnected: true,
+        sessions: [
+          { label: "s1", connectedAt: 1 },
+          { label: "s2", connectedAt: 2 },
+        ],
+      })
+    ).toBe(" Remote link: on (2 remote session(s)).");
   });
 });

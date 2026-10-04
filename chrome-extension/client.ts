@@ -9,6 +9,8 @@ import {
   ConnectionStateCallback,
   BrokerBrowserInfo,
   HealthcheckResult,
+  LinkSessionInfo,
+  LinkStatusInfo,
 } from "./transport";
 import { buildHello } from "./hello";
 
@@ -29,6 +31,45 @@ interface HealthcheckResultFrame {
   extensionConnected: boolean;
   browsers: BrokerBrowserInfo[];
   activeBrowserId: string | null;
+  link?: unknown;
+}
+
+function parseLinkStatus(raw: unknown): LinkStatusInfo | undefined {
+  if (!raw || typeof raw !== "object") {
+    return undefined;
+  }
+  const obj = raw as Record<string, unknown>;
+  if (
+    typeof obj.enabled !== "boolean" ||
+    typeof obj.relayConnected !== "boolean" ||
+    !Array.isArray(obj.sessions)
+  ) {
+    return undefined;
+  }
+  const sessions: LinkSessionInfo[] = [];
+  for (const s of obj.sessions) {
+    if (
+      s &&
+      typeof s === "object" &&
+      typeof (s as any).connectedAt === "number" &&
+      Number.isFinite((s as any).connectedAt)
+    ) {
+      const rawLabel = (s as any).label;
+      const label = (
+        typeof rawLabel === "string" ? rawLabel : String(rawLabel ?? "")
+      ).slice(0, 64);
+      sessions.push({
+        label,
+        connectedAt: (s as any).connectedAt,
+      });
+    }
+  }
+  return {
+    enabled: obj.enabled,
+    relayConnected: obj.relayConnected,
+    ...(typeof obj.relayUrl === "string" ? { relayUrl: obj.relayUrl } : {}),
+    sessions,
+  };
 }
 
 export class WebsocketClient implements ExtensionTransport {
@@ -307,6 +348,20 @@ export class WebsocketClient implements ExtensionTransport {
   }
 
   /**
+   * Turn off the remote link in the broker. Sends a `{ type: "link-off" }`
+   * frame on the extension->broker channel. In origin mode the frame is unsigned;
+   * in signed mode it is HMAC-signed.
+   */
+  public async sendLinkOff(): Promise<void> {
+    if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
+      console.error("Socket not open; cannot send link-off");
+      return;
+    }
+    const payload = { type: "link-off" };
+    this.socket.send(JSON.stringify(await this.frame(payload)));
+  }
+
+  /**
    * Probe the broker over the live socket and resolve with its roster snapshot.
    * Resolves (never rejects) with `serverReachable:false` when the socket is
    * not open or the broker does not answer within the timeout, so callers can
@@ -344,11 +399,18 @@ export class WebsocketClient implements ExtensionTransport {
     }
     const resolve = this.healthcheckResolver;
     this.clearHealthcheckState();
+    let link: LinkStatusInfo | undefined;
+    try {
+      link = parseLinkStatus(frame.link);
+    } catch {
+      link = undefined;
+    }
     resolve({
       serverReachable: true,
       extensionConnected: !!frame.extensionConnected,
       browsers: Array.isArray(frame.browsers) ? frame.browsers : [],
       activeBrowserId: frame.activeBrowserId ?? null,
+      ...(link ? { link } : {}),
     });
   }
 

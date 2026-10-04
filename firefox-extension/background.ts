@@ -166,6 +166,21 @@ browser.runtime.onMessage.addListener(
       }
       return true; // async reply
     }
+    if (msg?.type === "link-off") {
+      const client = activeClientRef;
+      if (client && client.sendLinkOff) {
+        client
+          .sendLinkOff()
+          .then(() => sendResponse({ ok: true }))
+          .catch((e) => {
+            console.error("link-off failed:", e);
+            sendResponse({ ok: false });
+          });
+      } else {
+        sendResponse({ ok: false });
+      }
+      return true; // async reply
+    }
   }
 );
 
