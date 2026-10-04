@@ -2,10 +2,11 @@ name: Release
 
 # Release on every push to main: bump the version, tag, cut a GitHub Release
 # with the DXT + extension zips attached, publish the MCP server to npm,
-# republish the Firefox add-on to AMO, and publish the Chrome extension to the
-# Chrome Web Store. The bot's own bump commit is tagged "[skip ci]" so it never
-# re-triggers this workflow. The npm / AMO / Chrome publish steps each self-skip
-# when their credentials are absent, so the release never fails for a missing key.
+# republish the Firefox add-on to AMO, publish the Chrome extension to the
+# Chrome Web Store, and deploy the remote-link relay Worker. The bot's own bump
+# commit is tagged "[skip ci]" so it never re-triggers this workflow. The npm /
+# AMO / Chrome / relay steps each self-skip when their credentials are absent,
+# so the release never fails for a missing key.
 
 on:
   push:
@@ -147,6 +148,50 @@ jobs:
           # Fallback: npm tries the trusted-publishing OIDC exchange first and
           # only uses this token when the exchange is refused.
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  deploy-relay:
+    # Deploy the remote-link relay (relay-worker/, a Cloudflare Worker + Durable
+    # Object) that `npx foxpilot-mcp link` uses by default. It only forwards
+    # end-to-end-encrypted frames, so redeploying it on every push is harmless.
+    # Skipped unless Cloudflare credentials are configured: a scoped API token
+    # (CLOUDFLARE_API_TOKEN, needs Workers Scripts:Edit on the account in
+    # relay-worker/wrangler.toml) or the account's global key
+    # (CLOUDFLARE_API_KEY + CLOUDFLARE_EMAIL).
+    runs-on: ubuntu-latest
+    if: "github.event_name == 'push' && !contains(github.event.head_commit.message, '[skip ci]')"
+    steps:
+      - name: Check Cloudflare credentials
+        id: cf
+        run: echo "ok=${{ secrets.CLOUDFLARE_API_TOKEN != '' || (secrets.CLOUDFLARE_API_KEY != '' && secrets.CLOUDFLARE_EMAIL != '') }}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        if: steps.cf.outputs.ok == 'true'
+
+      - uses: actions/setup-node@v4
+        if: steps.cf.outputs.ok == 'true'
+        with:
+          node-version: 22
+
+      - name: Install relay dependencies
+        if: steps.cf.outputs.ok == 'true'
+        run: npm ci --prefix relay-worker
+
+      - name: Test relay
+        if: steps.cf.outputs.ok == 'true'
+        run: npm test --prefix relay-worker
+
+      - name: Deploy relay Worker
+        if: steps.cf.outputs.ok == 'true'
+        working-directory: relay-worker
+        run: npx wrangler deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_API_KEY: ${{ secrets.CLOUDFLARE_API_KEY }}
+          CLOUDFLARE_EMAIL: ${{ secrets.CLOUDFLARE_EMAIL }}
+
+      - name: Check the relay answers
+        if: steps.cf.outputs.ok == 'true'
+        run: curl -fsS --retry 5 --retry-delay 3 https://foxpilot-relay.ghostwriter-api.workers.dev/v1/health
 
   publish-amo:
     # Republish the Firefox add-on to addons.mozilla.org on every commit.
