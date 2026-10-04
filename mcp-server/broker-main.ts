@@ -10,6 +10,9 @@ import * as fs from "fs";
 import { BrokerServer } from "./broker";
 import { BrokerLongPoll } from "./broker-longpoll";
 import { getControlSecret } from "./control-secret";
+import { readLinkConfig, writeLinkConfig } from "./link-config";
+import { LinkHost } from "./link-host";
+import { FOXPILOT_VERSION } from "./version";
 
 const WS_DEFAULT_PORT = 8089;
 /** Mirrors browser-api.ts's BROKER_LOG_MAX_BYTES; see startLogTrimmer. */
@@ -84,16 +87,37 @@ async function main() {
     readBrokerConfig();
 
   const host = envFlag(process.env.CONTAINERIZED) ? "0.0.0.0" : "localhost";
+
+  let linkHost: LinkHost | null = null;
+  const shutdown = () => {
+    try {
+      linkHost?.close();
+    } catch {
+      /* ignore */
+    }
+    try {
+      server.close();
+    } catch {
+      /* ignore */
+    }
+    process.exit(0);
+  };
+
+  process.on("SIGTERM", shutdown);
+  process.on("SIGINT", shutdown);
+
   const server = new BrokerServer({
     port,
     host,
     secret,
     requireSignature,
     strictExtensionIds,
+    onShutdown: shutdown,
     onIdle: () => {
       console.error(
         "Broker: idle with no clients or extension; shutting down."
       );
+      linkHost?.close();
       server.close();
       process.exit(0);
     },
@@ -105,6 +129,37 @@ async function main() {
   try {
     await server.listen();
     console.error(`Broker listening on ${host}:${port}`);
+
+    linkHost = new LinkHost({
+      broker: server,
+      version: FOXPILOT_VERSION,
+      log: console.error,
+    });
+
+    server.setLinkController({
+      status: () => linkHost!.status(),
+      reload: () => {
+        linkHost!.apply(readLinkConfig());
+        server.refreshIdle();
+        return linkHost!.status();
+      },
+      turnOff: () => {
+        const config = readLinkConfig();
+        if (config) {
+          try {
+            writeLinkConfig({ ...config, enabled: false });
+          } catch (err) {
+            console.error("Broker: failed to write link config on turn-off:", err);
+          }
+        }
+        linkHost!.apply(null);
+        server.refreshIdle();
+        return linkHost!.status();
+      },
+      isActive: () => linkHost!.isActive(),
+    });
+
+    linkHost.apply(readLinkConfig());
   } catch (err) {
     const e = err as NodeJS.ErrnoException;
     if (e.code === "EADDRINUSE") {

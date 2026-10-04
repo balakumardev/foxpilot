@@ -78,11 +78,42 @@ export interface SelectBrowserControl {
   browserId: string;
 }
 
+export interface LinkStatusControl {
+  control: "link-status";
+}
+
+export interface LinkReloadControl {
+  control: "link-reload";
+}
+
+export interface ShutdownControl {
+  control: "shutdown";
+}
+
 export type BrokerControlRequest =
   | AcquireLeaseControl
   | ReleaseLeaseControl
   | ListBrowsersControl
-  | SelectBrowserControl;
+  | SelectBrowserControl
+  | LinkStatusControl
+  | LinkReloadControl
+  | ShutdownControl;
+
+export interface LinkSessionStatus {
+  id: string;
+  label: string;
+  connectedAt: number;
+  version: string;
+}
+
+export interface LinkStatus {
+  enabled: boolean;
+  relayUrl?: string;
+  relayConnected: boolean;
+  lastError?: string;
+  sessions: LinkSessionStatus[];
+  roomHint?: string;
+}
 
 /** A connected (or known) browser as reported by `list-browsers`. */
 export interface BrowserInfo {
@@ -100,6 +131,8 @@ export interface BrokerControlResult {
   browsers?: BrowserInfo[];
   /** The active browser id after the control was applied, if any. */
   activeBrowserId?: string;
+  link?: LinkStatus;
+  version?: string;
 }
 
 // ===== Client -> broker frames =====

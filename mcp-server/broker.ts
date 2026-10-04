@@ -35,12 +35,15 @@ import {
   BrokerControlResult,
   BrokerServerFrame,
   BrowserInfo,
+  LinkStatus,
   MIN_SUPPORTED_PROTOCOL_VERSION,
   PROTOCOL_VERSION,
 } from "./broker-protocol";
 import type { HelloPayload } from "./broker-protocol";
+import type { RemoteClientSink } from "./link-host";
 import { createSignature, verifySignature } from "./signing";
 import { getCommandTimeout } from "./timeouts";
+import { FOXPILOT_VERSION } from "./version";
 
 const EXTENSION_ORIGIN_RE = /^(?:chrome|moz)-extension:\/\/([^/]+)\/?$/i;
 
@@ -119,12 +122,21 @@ interface ExtensionConn {
   lastSeen: number;
 }
 
+export interface LinkController {
+  status(): LinkStatus;
+  reload(): LinkStatus;
+  turnOff(): LinkStatus;
+  isActive(): boolean;
+}
+
 export interface BrokerServerOptions {
   port: number;
   host?: string;
   secret: string;
   /** Called once the broker has been idle (no clients, no extension) for idleTimeoutMs. */
   onIdle?: () => void;
+  /** Called when a local client requests shutdown via control. */
+  onShutdown?: () => void;
   idleTimeoutMs?: number;
   /**
    * How long a freshly-accepted `/extension` socket may stay anonymous (no valid
@@ -182,6 +194,13 @@ export class BrokerServer {
   private activeBrowserId: string | null = null;
   private readonly clients = new Map<string, WebSocket>();
   private clientCounter = 0;
+  private readonly remoteClients = new Map<
+    string,
+    { sink: RemoteClientSink; label: string; version: string; connectedAt: number }
+  >();
+  private remoteClientCounter = 0;
+  private linkController: LinkController | null = null;
+  private readonly onShutdown?: () => void;
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
 
   /** Hook for the long-poll transport to register the current extension request sink. */
@@ -192,6 +211,7 @@ export class BrokerServer {
     this.port = opts.port;
     this.secret = opts.secret;
     this.onIdle = opts.onIdle;
+    this.onShutdown = opts.onShutdown;
     this.idleTimeoutMs = opts.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS;
     this.handshakeTimeoutMs =
       opts.handshakeTimeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS;
@@ -338,6 +358,43 @@ export class BrokerServer {
       return addr.port;
     }
     return this.port;
+  }
+
+  attachRemoteClient(
+    sink: RemoteClientSink,
+    info: { label: string; version: string }
+  ): string {
+    const clientId = `r${++this.remoteClientCounter}`;
+    this.remoteClients.set(clientId, {
+      sink,
+      label: info.label,
+      version: info.version,
+      connectedAt: Date.now(),
+    });
+    this.clearIdleTimer();
+    return clientId;
+  }
+
+  deliverRemoteFrame(clientId: string, frame: BrokerClientFrame): void {
+    // A frame for a session that was already detached has nobody to answer.
+    if (!this.remoteClients.has(clientId)) {
+      return;
+    }
+    this.handleClientFrame(clientId, frame, "remote");
+  }
+
+  detachRemoteClient(clientId: string): void {
+    this.remoteClients.delete(clientId);
+    this.core.onClientDisconnect(clientId);
+    this.maybeScheduleIdle();
+  }
+
+  setLinkController(ctrl: LinkController | null): void {
+    this.linkController = ctrl;
+  }
+
+  refreshIdle(): void {
+    this.maybeScheduleIdle();
   }
 
   // ---- connection routing ----
@@ -661,14 +718,25 @@ export class BrokerServer {
     ) {
       if (conn?.ws && conn.ws.readyState === WebSocket.OPEN) {
         try {
-          conn.ws.send(
-            JSON.stringify({
-              type: "healthcheck-result",
-              extensionConnected: this.extensionConnected(),
-              browsers: this.listBrowserInfo(),
-              activeBrowserId: this.activeBrowserId,
-            })
-          );
+          const reply: Record<string, unknown> = {
+            type: "healthcheck-result",
+            extensionConnected: this.extensionConnected(),
+            browsers: this.listBrowserInfo(),
+            activeBrowserId: this.activeBrowserId,
+          };
+          if (this.linkController) {
+            const status = this.linkController.status();
+            reply.link = {
+              enabled: status.enabled,
+              relayConnected: status.relayConnected,
+              relayUrl: status.relayUrl,
+              sessions: status.sessions.map((s) => ({
+                label: s.label,
+                connectedAt: s.connectedAt,
+              })),
+            };
+          }
+          conn.ws.send(JSON.stringify(reply));
         } catch {
           /* ignore */
         }
@@ -726,6 +794,28 @@ export class BrokerServer {
       ) {
         this.activeBrowserId = maybeSelect.payload.browserId;
         this.broadcastActiveStatus();
+      }
+      return;
+    }
+
+    // "Turn off remote link" from the options page. Handled like select-active.
+    const maybeLinkOff = decoded as {
+      payload?: { type?: string };
+      signature?: string;
+    };
+    if (maybeLinkOff?.payload?.type === "link-off") {
+      const sigOk = signed
+        ? typeof maybeLinkOff.signature === "string" &&
+          verifySignature(
+            this.secret,
+            JSON.stringify(maybeLinkOff.payload),
+            maybeLinkOff.signature
+          )
+        : true;
+      if (sigOk && this.linkController) {
+        this.linkController.turnOff();
+        console.error("Link: turned off from the browser");
+        this.refreshIdle();
       }
       return;
     }
@@ -927,7 +1017,14 @@ export class BrokerServer {
       return;
     }
 
-    const frame = decoded.payload;
+    this.handleClientFrame(clientId, decoded.payload, "local");
+  }
+
+  private handleClientFrame(
+    clientId: string,
+    frame: BrokerClientFrame,
+    origin: "local" | "remote"
+  ): void {
     if (frame.kind === "tool") {
       if (this.extensions.size === 0 && !this.longPollSink) {
         this.sendToClient(clientId, {
@@ -982,6 +1079,60 @@ export class BrokerServer {
           }
           break;
         }
+        case "link-status": {
+          if (origin === "remote") {
+            result = {
+              ok: false,
+              error: "'link-status' is not allowed over a remote link",
+            };
+          } else if (!this.linkController) {
+            result = {
+              ok: false,
+              error: "This FoxPilot broker has no remote-link support",
+            };
+          } else {
+            result = {
+              ok: true,
+              link: this.linkController.status(),
+              version: FOXPILOT_VERSION,
+            };
+          }
+          break;
+        }
+        case "link-reload": {
+          if (origin === "remote") {
+            result = {
+              ok: false,
+              error: "'link-reload' is not allowed over a remote link",
+            };
+          } else if (!this.linkController) {
+            result = {
+              ok: false,
+              error: "This FoxPilot broker has no remote-link support",
+            };
+          } else {
+            result = {
+              ok: true,
+              link: this.linkController.reload(),
+              version: FOXPILOT_VERSION,
+            };
+          }
+          break;
+        }
+        case "shutdown": {
+          if (origin === "remote") {
+            result = {
+              ok: false,
+              error: "'shutdown' is not allowed over a remote link",
+            };
+          } else {
+            result = { ok: true, version: FOXPILOT_VERSION };
+            setTimeout(() => {
+              this.onShutdown?.();
+            }, 50);
+          }
+          break;
+        }
         default: {
           const _exhaustive: never = control;
           result = { ok: false, error: "Unknown control" };
@@ -996,6 +1147,11 @@ export class BrokerServer {
   }
 
   private sendToClient(clientId: string, frame: BrokerServerFrame): void {
+    const remote = this.remoteClients.get(clientId);
+    if (remote) {
+      remote.sink.send(frame);
+      return;
+    }
     const ws = this.clients.get(clientId);
     if (!ws || ws.readyState !== WebSocket.OPEN) {
       return;
@@ -1010,15 +1166,24 @@ export class BrokerServer {
   private handleHttp(req: http.IncomingMessage, res: http.ServerResponse): void {
     const path = (req.url ?? "/").split("?")[0];
     if (path === "/health" || path === "/") {
+      const body: Record<string, unknown> = {
+        status: "ok",
+        version: FOXPILOT_VERSION,
+        extensionConnected: this.extensionConnected(),
+        browsers: this.extensions.size,
+        clients: this.clients.size,
+        remoteClients: this.remoteClients.size,
+      };
+      if (this.linkController) {
+        const status = this.linkController.status();
+        body.link = {
+          enabled: status.enabled,
+          relayConnected: status.relayConnected,
+          sessions: status.sessions.length,
+        };
+      }
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(
-        JSON.stringify({
-          status: "ok",
-          extensionConnected: this.extensionConnected(),
-          browsers: this.extensions.size,
-          clients: this.clients.size,
-        })
-      );
+      res.end(JSON.stringify(body));
       return;
     }
     if (this.httpHandlers) {
@@ -1109,7 +1274,13 @@ export class BrokerServer {
   }
 
   private maybeScheduleIdle(): void {
-    if (this.clients.size === 0 && this.extensions.size === 0 && !this.longPollSink) {
+    if (
+      this.clients.size === 0 &&
+      this.remoteClients.size === 0 &&
+      this.extensions.size === 0 &&
+      !this.longPollSink &&
+      !(this.linkController && this.linkController.isActive())
+    ) {
       if (!this.idleTimer && this.onIdle) {
         this.idleTimer = setTimeout(() => {
           this.idleTimer = null;
