@@ -639,10 +639,14 @@ export class BrowserAPI {
     });
   }
 
-  async selectTab(tabId: number): Promise<TabSelectedExtensionMessage> {
+  async selectTab(
+    tabId: number,
+    focusWindow?: boolean
+  ): Promise<TabSelectedExtensionMessage> {
     return await this.sendTool<TabSelectedExtensionMessage>({
       cmd: "select-tab",
       tabId,
+      focusWindow,
     });
   }
 
@@ -690,6 +694,7 @@ export class BrowserAPI {
       name?: string;
     };
     dispatchedTo?: { tag: string; name?: string };
+    disabled?: boolean;
   }> {
     const message = await this.sendTool<ActionResultExtensionMessage>({
       cmd: "click-element",
@@ -710,6 +715,7 @@ export class BrowserAPI {
       navigated: message.navigated,
       intercepted: message.intercepted,
       dispatchedTo: message.dispatchedTo,
+      disabled: message.disabled,
     };
   }
 
@@ -742,7 +748,8 @@ export class BrowserAPI {
     y: number,
     text: string,
     submit?: boolean,
-    engine?: "synthetic" | "cdp"
+    engine?: "synthetic" | "cdp",
+    commit?: boolean
   ): Promise<PointActionResultExtensionMessage> {
     // Returned unchanged (NOT thrown on ok:false) so the tool can report the
     // element descriptor even when the point missed / hit a non-typable node.
@@ -754,6 +761,7 @@ export class BrowserAPI {
       text,
       submit,
       engine,
+      commit,
     });
   }
 
@@ -841,7 +849,8 @@ export class BrowserAPI {
     uid: string,
     value: string,
     activateTab?: boolean,
-    engine?: "synthetic" | "cdp"
+    engine?: "synthetic" | "cdp",
+    commit?: boolean
   ): Promise<void> {
     const message = await this.sendTool<ActionResultExtensionMessage>({
       cmd: "fill-element",
@@ -850,6 +859,7 @@ export class BrowserAPI {
       value,
       engine,
       activateTab,
+      commit,
     });
     if (!message.ok) {
       throw new Error(message.error ?? "Action failed");
@@ -888,7 +898,8 @@ export class BrowserAPI {
     tabId: number,
     fields: { uid: string; value: string }[],
     activateTab?: boolean,
-    engine?: "synthetic" | "cdp"
+    engine?: "synthetic" | "cdp",
+    commit?: boolean
   ): Promise<void> {
     const message = await this.sendTool<ActionResultExtensionMessage>({
       cmd: "fill-form",
@@ -896,6 +907,7 @@ export class BrowserAPI {
       fields,
       engine,
       activateTab,
+      commit,
     });
     if (!message.ok) {
       throw new Error(message.error ?? "Action failed");
@@ -906,7 +918,8 @@ export class BrowserAPI {
     tabId: number,
     text: string,
     submit?: boolean,
-    activateTab?: boolean
+    activateTab?: boolean,
+    commit?: boolean
   ): Promise<void> {
     const message = await this.sendTool<ActionResultExtensionMessage>({
       cmd: "type-text",
@@ -914,6 +927,7 @@ export class BrowserAPI {
       text,
       submit,
       activateTab,
+      commit,
     });
     if (!message.ok) {
       throw new Error(message.error ?? "Action failed");

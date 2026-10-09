@@ -76,6 +76,7 @@ export async function runHumanInput(
         action: "fill",
         uid: field.uid,
         value: field.value,
+        commit: args.commit,
       });
       if (!r.ok) {
         return r;
@@ -112,11 +113,20 @@ export async function runHumanInput(
           action: "type",
           text: text.slice(i),
           submit: args.submit,
+          commit: args.commit,
         });
       }
     }
     if (args.submit) {
-      return deps.instant({ action: "type", text: "", submit: true });
+      const r = await deps.instant({ action: "type", text: "", submit: true });
+      if (!r.ok || !args.commit) {
+        return r;
+      }
+    }
+    if (args.commit) {
+      // Leave the field once the text is in. The per-character steps set the
+      // value by script, which never fires change, so ask for one.
+      return deps.instant({ action: "commit", change: true });
     }
     return { ok: true };
   }

@@ -12,6 +12,7 @@ import { formatNetworkHeaders } from "./network-format";
 import { formatSnapshotResult } from "./snapshot-format";
 import { formatEvalResult } from "./eval-format";
 import { formatClickResult } from "./click-format";
+import { formatSelectTabResult } from "./select-tab-format";
 import { formatNavigateResult } from "./navigate-format";
 import { allowedNavUrl, NAV_URL_MESSAGE } from "./url-policy";
 import dayjs from "dayjs";
@@ -249,7 +250,7 @@ mcpServer.tool(
 
 mcpServer.tool(
   "find-highlight-in-browser-tab",
-  "Find and highlight text in a browser tab (use a query phrase that exists in the web content)",
+  "Find and highlight text in a browser tab (use a query phrase that exists in the web content). On Firefox the first use needs the optional \"find\" permission: the call opens the FoxPilot options page so the user can grant it once, and fails until they have; ask them, then retry.",
   { tabId: z.number(), queryPhrase: z.string() },
   async ({ tabId, queryPhrase }) => {
     const noOfResults = await browserApi.findHighlight(tabId, queryPhrase);
@@ -361,12 +362,12 @@ mcpServer.tool(
 
 mcpServer.tool(
   "select-tab",
-  "Focus/activate a browser tab and bring its window to the foreground.",
-  { tabId: z.number() },
-  async ({ tabId }) => {
-    const result = await browserApi.selectTab(tabId);
+  "Activate a browser tab and bring its window to the foreground. The focused window takes the keyboard from whatever app the user is typing into, so their keystrokes land in this page until they switch away. Pass focusWindow:false to only make it the active tab of its window and leave the keyboard alone. Fields that commit on blur do not need the window focused: FoxPilot's clicks and fills fire the focus and blur events a window without focus drops.",
+  { tabId: z.number(), focusWindow: z.boolean().optional() },
+  async ({ tabId, focusWindow }) => {
+    const result = await browserApi.selectTab(tabId, focusWindow);
     return {
-      content: [{ type: "text", text: `Selected tab ${result.tabId}` }],
+      content: [{ type: "text", text: formatSelectTabResult(result) }],
     };
   }
 );
@@ -482,7 +483,7 @@ mcpServer.tool(
 
 mcpServer.tool(
   "click-element",
-  "Click an element on a page. Pass a 'uid' from a recent take-snapshot (e.g. e12). Set doubleClick to fire a double-click. Set failIfIntercepted:true to FAIL (instead of clicking through) when a foreign overlay covers the target — the result then names the covering selector so you can dismiss-overlays first. If the uid is stale, this returns an error asking you to take a fresh snapshot. Runs covertly (synthetic) by default. Set engine:\"cdp\" (Chrome/Edge only) to dispatch a TRUSTED (isTrusted:true) click via the debugger for strict apps that ignore synthetic events — it shows a 'started debugging this browser' banner (detectable) and errors on Firefox.",
+  "Click an element on a page. Pass a 'uid' from a recent take-snapshot (e.g. e12). Set doubleClick to fire a double-click. Set failIfIntercepted:true to FAIL (instead of clicking through) when a foreign overlay covers the target — the result then names the covering selector so you can dismiss-overlays first. If the uid is stale, this returns an error asking you to take a fresh snapshot. The reply says when the element is disabled (the click did nothing). Like a real click, it moves focus: to the clicked element, or off the focused field when what you click cannot take focus. Runs covertly (synthetic) by default. Set engine:\"cdp\" (Chrome/Edge only) to dispatch a TRUSTED (isTrusted:true) click via the debugger for strict apps that ignore synthetic events — it shows a 'started debugging this browser' banner (detectable) and errors on Firefox.",
   {
     tabId: z.number(),
     uid: z.string(),
@@ -525,16 +526,17 @@ mcpServer.tool(
 
 mcpServer.tool(
   "fill-element",
-  "Set the value of a form field (text input, textarea, <select>, checkbox, or radio) on a page. Pass a 'uid' from a recent take-snapshot (e.g. e12) and the value. For checkboxes/radios, use \"true\"/\"false\". For <select>, use the option's value. Runs covertly (synthetic) by default. Set engine:\"cdp\" (Chrome/Edge only) to focus + type the value via TRUSTED events through the debugger for strict rich-text editors (Lexical/ProseMirror/Slate) that ignore synthetic input — it shows the debugger banner and errors on Firefox.",
+  "Set the value of a form field (text input, textarea, <select>, checkbox, or radio) on a page. Pass a 'uid' from a recent take-snapshot (e.g. e12) and the value. For checkboxes/radios, use \"true\"/\"false\". For <select>, use the option's value. Set commit:true to also leave the field the way a user moving on does: focus goes off it, so blur and focusout fire on it, in a background tab too. Use it for a form that only takes a value when you leave the field (its submit button stays disabled after filling). Without it, the field is left when your next click or fill moves focus elsewhere. Runs covertly (synthetic) by default. Set engine:\"cdp\" (Chrome/Edge only) to focus + type the value via TRUSTED events through the debugger for strict rich-text editors (Lexical/ProseMirror/Slate) that ignore synthetic input — it shows the debugger banner and errors on Firefox.",
   {
     tabId: z.number(),
     uid: z.string(),
     value: z.string(),
     engine: z.enum(["synthetic", "cdp"]).optional(),
+    commit: z.boolean().optional(),
     ...activateTabField,
   },
-  async ({ tabId, uid, value, engine, activateTab }) => {
-    await browserApi.fillElement(tabId, uid, value, activateTab, engine);
+  async ({ tabId, uid, value, engine, commit, activateTab }) => {
+    await browserApi.fillElement(tabId, uid, value, activateTab, engine, commit);
     return {
       content: [{ type: "text", text: `Filled element ${uid}` }],
     };
@@ -543,15 +545,16 @@ mcpServer.tool(
 
 mcpServer.tool(
   "fill-form",
-  "Fill multiple form fields in one step. Provide an array of { uid, value } pairs, each uid taken from a recent take-snapshot. Filling stops at the first uid that cannot be resolved and reports it. Runs covertly (synthetic) by default. Set engine:\"cdp\" (Chrome/Edge only) to fill each field via TRUSTED events through the debugger for strict apps that ignore synthetic input — it shows the debugger banner and errors on Firefox.",
+  "Fill multiple form fields in one step. Provide an array of { uid, value } pairs, each uid taken from a recent take-snapshot. Filling stops at the first uid that cannot be resolved and reports it. Each field gives up focus as the next one is filled, as when a user tabs through a form. Set commit:true to leave every field once filled, the last one too, for a form that only takes a value when you leave the field (blur and focusout fire on it, in a background tab too). Runs covertly (synthetic) by default. Set engine:\"cdp\" (Chrome/Edge only) to fill each field via TRUSTED events through the debugger for strict apps that ignore synthetic input — it shows the debugger banner and errors on Firefox.",
   {
     tabId: z.number(),
     fields: z.array(z.object({ uid: z.string(), value: z.string() })),
     engine: z.enum(["synthetic", "cdp"]).optional(),
+    commit: z.boolean().optional(),
     ...activateTabField,
   },
-  async ({ tabId, fields, engine, activateTab }) => {
-    await browserApi.fillForm(tabId, fields, activateTab, engine);
+  async ({ tabId, fields, engine, commit, activateTab }) => {
+    await browserApi.fillForm(tabId, fields, activateTab, engine, commit);
     return {
       content: [
         {
@@ -567,10 +570,16 @@ mcpServer.tool(
 
 mcpServer.tool(
   "type-text",
-  "Type text into the currently focused element on a page (click or fill an input first to focus it). Set submit to also press Enter and submit the enclosing form. Fails if no input/textarea is focused.",
-  { tabId: z.number(), text: z.string(), submit: z.boolean().optional(), ...activateTabField },
-  async ({ tabId, text, submit, activateTab }) => {
-    await browserApi.typeText(tabId, text, submit, activateTab);
+  "Type text into the currently focused element on a page (click or fill an input first to focus it). Set submit to also press Enter and submit the enclosing form. Fails if no input/textarea is focused. Set commit:true to leave the field after typing (after the Enter, with submit), the way a user moving on does: change, then blur and focusout, in a background tab too. Use it for a form that only takes a value when you leave the field.",
+  {
+    tabId: z.number(),
+    text: z.string(),
+    submit: z.boolean().optional(),
+    commit: z.boolean().optional(),
+    ...activateTabField,
+  },
+  async ({ tabId, text, submit, commit, activateTab }) => {
+    await browserApi.typeText(tabId, text, submit, activateTab, commit);
     return {
       content: [
         {
@@ -584,7 +593,7 @@ mcpServer.tool(
 
 mcpServer.tool(
   "press-key",
-  "Press a keyboard key on a page (e.g. 'Enter', 'Escape', 'ArrowDown', 'a'). Optionally hold modifiers (ctrl, shift, alt, meta). Targets the focused element, or the page body if nothing is focused. Runs covertly (synthetic) by default. Set engine:\"cdp\" (Chrome/Edge only) to dispatch a TRUSTED key event via the debugger for strict apps that ignore synthetic key events — it shows the debugger banner and errors on Firefox.",
+  "Press a keyboard key on a page (e.g. 'Enter', 'Escape', 'ArrowDown', 'a'). Optionally hold modifiers (ctrl, shift, alt, meta). Targets the focused element, or the page body if nothing is focused. A synthetic key has no browser default action: Tab does not move focus and Enter does not submit a form by itself, only the page's own key listeners react. To leave a field, pass commit:true to fill-element / type-text or click something else. Runs covertly (synthetic) by default. Set engine:\"cdp\" (Chrome/Edge only) to dispatch a TRUSTED key event via the debugger for strict apps that ignore synthetic key events — it shows the debugger banner and errors on Firefox.",
   {
     tabId: z.number(),
     key: z.string(),
@@ -732,17 +741,18 @@ mcpServer.tool(
 
 mcpServer.tool(
   "type-at",
-  "Type text into the element at viewport pixel coordinates {x,y}. Coordinates are CSS pixels — if you read them off a take-screenshot, that image is CSS-px × devicePixelRatio (typically 2 on Retina/HiDPI), so divide the screenshot pixel coordinates by the DPR first; the returned element descriptor reports what was actually under the point, so use it to confirm you targeted the intended field and re-aim if not. Clicks the point to focus it first, then types — works for <input>/<textarea> AND custom <div contenteditable> chat inputs that take-snapshot may not expose as textboxes. Set submit:true to press Enter afterward (and submit the form if there is one). Runs covertly (synthetic) by default. Set engine:\"cdp\" (Chrome/Edge only) to type via TRUSTED events through the debugger — this is the reliable path for strict rich-text editors (Lexical/ProseMirror/Slate) that ignore synthetic keystrokes; it shows a debugging banner and errors on Firefox. Returns a descriptor of the element that was typed into.",
+  "Type text into the element at viewport pixel coordinates {x,y}. Coordinates are CSS pixels — if you read them off a take-screenshot, that image is CSS-px × devicePixelRatio (typically 2 on Retina/HiDPI), so divide the screenshot pixel coordinates by the DPR first; the returned element descriptor reports what was actually under the point, so use it to confirm you targeted the intended field and re-aim if not. Clicks the point to focus it first, then types — works for <input>/<textarea> AND custom <div contenteditable> chat inputs that take-snapshot may not expose as textboxes. Set submit:true to press Enter afterward (and submit the form if there is one). Set commit:true to leave the field after typing, the way a user moving on does (change, then blur and focusout, in a background tab too), for a form that only takes a value when you leave the field. Runs covertly (synthetic) by default. Set engine:\"cdp\" (Chrome/Edge only) to type via TRUSTED events through the debugger — this is the reliable path for strict rich-text editors (Lexical/ProseMirror/Slate) that ignore synthetic keystrokes; it shows a debugging banner and errors on Firefox. Returns a descriptor of the element that was typed into.",
   {
     tabId: z.number(),
     x: z.number(),
     y: z.number(),
     text: z.string(),
     submit: z.boolean().optional(),
+    commit: z.boolean().optional(),
     engine: z.enum(["synthetic", "cdp"]).optional(),
   },
-  async ({ tabId, x, y, text, submit, engine }) => {
-    const result = await browserApi.typeAt(tabId, x, y, text, submit, engine);
+  async ({ tabId, x, y, text, submit, commit, engine }) => {
+    const result = await browserApi.typeAt(tabId, x, y, text, submit, engine, commit);
     return formatPointResult("Typed", tabId, x, y, result);
   }
 );
