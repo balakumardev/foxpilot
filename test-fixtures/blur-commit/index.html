@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Blur-commit fixture</title>
+    <!-- Must run before anything else adds a focus listener (see the file). -->
+    <script src="unfocused.js"></script>
+    <style>
+      * { box-sizing: border-box; }
+      body { margin: 0; padding: 16px; font-family: system-ui, sans-serif; max-width: 880px; }
+      h1 { font-size: 18px; }
+      section { border: 1px solid #ddd; border-radius: 8px; padding: 12px; margin: 12px 0; }
+      section h2 { font-size: 14px; margin: 0 0 8px; color: #333; }
+      button, input { font: inherit; }
+      material-input, console-form, console-form-row, console-button, user-editor { display: block; }
+      console-form-row { margin: 8px 0; }
+      .mdc-text-field { display: inline-flex; flex-direction: column; gap: 4px; }
+      .mdc-text-field__input { width: 320px; padding: 6px 8px; border: 1px solid #999; border-radius: 4px; }
+      .mdc-text-field--invalid .mdc-text-field__input { border-color: #b00; }
+      .mdc-text-field-helper-text { margin: 4px 0 0; min-height: 1em; font-size: 12px; color: #b00; }
+      [role="dialog"] { margin: 8px 0; padding: 8px; border: 1px solid #999; border-radius: 6px; width: 360px; }
+      [role="dialog"] label { display: block; margin: 4px 0; }
+      .bottom-bar { margin-top: 12px; }
+      #city-list { list-style: none; margin: 4px 0 0; padding: 4px 0; width: 220px; border: 1px solid #999; border-radius: 6px; }
+      #city-list:empty { display: none; }
+      [role="option"] { padding: 4px 8px; cursor: pointer; }
+      #state { background: #111; color: #6f6; padding: 8px; border-radius: 6px; font-size: 12px; white-space: pre-wrap; }
+    </style>
+  </head>
+  <body>
+    <h1>Blur-commit fixture</h1>
+    <div id="app">
+      <section>
+        <h2>Invite new users</h2>
+        <!-- The Play Console form: AngularDart / ACX custom elements, no <form>.
+             The email's material-input carries blurupdate, so its value reaches
+             the form model only on the inner input's blur (app.js). -->
+        <users-and-permissions-invite-page>
+          <user-editor>
+            <console-form>
+              <console-form-row>
+                <material-input blurupdate="" checkemailaddress="" debug-id="email-input" label="user@example.com" nativevalidation="true" required="" type="email">
+                  <label class="mdc-text-field">
+                    <span class="mdc-floating-label" id="email-label">Email address</span>
+                    <input id="email" class="mdc-text-field__input" type="email" inputmode="email" required="" aria-required="true" aria-label="user@example.com" aria-labelledby="email-label" aria-invalid="false" />
+                  </label>
+                  <div class="mdc-text-field-helper-line">
+                    <p class="mdc-text-field-helper-text" id="email-helper" aria-live="polite"></p>
+                  </div>
+                </material-input>
+              </console-form-row>
+              <console-form-row>
+                <button type="button" id="add-app">Add app</button>
+                <!-- Opened by "Add app", which moves focus into it. -->
+                <div role="dialog" id="app-dialog" aria-label="Permissions for Ember" hidden>
+                  <label><input type="checkbox" id="perm-testing" value="Release apps to testing tracks" /> Release apps to testing tracks</label>
+                  <label><input type="checkbox" id="perm-store" value="Manage store presence" /> Manage store presence</label>
+                  <button type="button" id="apply">Apply</button>
+                </div>
+              </console-form-row>
+            </console-form>
+          </user-editor>
+          <div class="bottom-bar">
+            <console-button debug-id="bottom-bar-primary-action-button">
+              <button type="button" id="invite" class="mdc-button" disabled>Invite user</button>
+            </console-button>
+            <!-- Plain text, not focusable: a place a user clicks to get out of a field. -->
+            <p id="invite-note">Users get an email with a link to accept the invitation.</p>
+          </div>
+        </users-and-permissions-invite-page>
+      </section>
+
+      <section>
+        <h2>Profile</h2>
+        <!-- Committed from a focusout listener on #app (React's onBlur shape). -->
+        <input id="display-name" type="text" aria-label="Display name" />
+      </section>
+
+      <section>
+        <h2>Suggestions</h2>
+        <!-- A combobox whose options keep focus in the input (mousedown
+             preventDefault). On blur it closes and drops an unpicked query,
+             the way MUI's clearOnBlur does. -->
+        <label for="city">City</label>
+        <input id="city" type="text" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="city-list" />
+        <ul id="city-list" role="listbox" aria-label="Cities"></ul>
+      </section>
+
+      <section>
+        <h2>Search</h2>
+        <!-- Searches on Enter from its own keydown listener. -->
+        <input id="search" type="text" aria-label="Search" />
+      </section>
+    </div>
+
+    <pre id="state"></pre>
+    <script src="app.js"></script>
+  </body>
+</html>
