@@ -19,6 +19,8 @@ export function formatClickResult(
     // (e.g. the <button> inside a role="menuitem" wrapper) instead of the uid
     // element itself.
     dispatchedTo?: { tag: string; name?: string };
+    // Set when the clicked control is disabled: the click activated nothing.
+    disabled?: boolean;
   }
 ): string {
   const verb = doubleClick ? "Double-clicked" : "Clicked";
@@ -33,6 +35,13 @@ export function formatClickResult(
   }
   if (result.navigated) {
     text += " (page navigated)";
+  }
+  if (result.disabled) {
+    // The press still took focus off the field being edited, as a real click
+    // does, and a form that registers a field when you leave it may enable
+    // the control because of that.
+    text +=
+      "\nThe element is disabled, so the click did nothing. It still took focus off the field you were editing, which can enable it: take a fresh snapshot and click again if it is enabled now.";
   }
   if (result.intercepted) {
     // Selector rule mirrors the injected selectorFor(): #id → tag.firstClass → tag.

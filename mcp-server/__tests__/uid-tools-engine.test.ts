@@ -194,6 +194,40 @@ describe("BrowserAPI uid tools forward engine over the broker", () => {
     expect((lastReq as any).engine).toBe("cdp");
   });
 
+  it("fillElement / fillForm / typeText / typeAt forward commit on the frame", async () => {
+    await api.fillElement(2, "e1", "v", undefined, undefined, true);
+    expect((lastReq as any).cmd).toBe("fill-element");
+    expect((lastReq as any).commit).toBe(true);
+
+    await api.fillForm(2, [{ uid: "e1", value: "v" }], undefined, undefined, true);
+    expect((lastReq as any).cmd).toBe("fill-form");
+    expect((lastReq as any).commit).toBe(true);
+
+    await api.typeText(2, "v", undefined, undefined, true);
+    expect((lastReq as any).cmd).toBe("type-text");
+    expect((lastReq as any).commit).toBe(true);
+
+    await api.typeAt(2, 5, 6, "v", undefined, undefined, true);
+    expect((lastReq as any).cmd).toBe("type-at");
+    expect((lastReq as any).commit).toBe(true);
+  });
+
+  it("omitting commit leaves it off the frame (back-compat)", async () => {
+    await api.fillElement(2, "e1", "v");
+    expect((lastReq as any).cmd).toBe("fill-element");
+    expect("commit" in (lastReq as any)).toBe(false);
+  });
+
+  it("selectTab forwards focusWindow, and omits it when not given", async () => {
+    await api.selectTab(2, false);
+    expect((lastReq as any).cmd).toBe("select-tab");
+    expect((lastReq as any).focusWindow).toBe(false);
+
+    await api.selectTab(2);
+    expect((lastReq as any).cmd).toBe("select-tab");
+    expect("focusWindow" in (lastReq as any)).toBe(false);
+  });
+
   it("omitting engine leaves it undefined on the frame (back-compat)", async () => {
     await api.clickElement(2, "e1");
     expect((lastReq as any).cmd).toBe("click-element");

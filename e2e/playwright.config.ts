@@ -7,11 +7,12 @@ const PORT = Number(process.env.FIXTURE_PORT || 8878);
 // The antd 4.x fixture runs alongside the spa-widgets one (default one port up)
 // so a spec can drive real antd components without tearing the other down.
 const ANTD_PORT = Number(process.env.ANTD_FIXTURE_PORT || 8879);
-// The shadow-DOM, role-wrapper and composer fixtures take the next three ports,
-// so every fixture server runs side by side.
+// The shadow-DOM, role-wrapper, composer and blur-commit fixtures take the next
+// four ports, so every fixture server runs side by side.
 const SHADOW_PORT = Number(process.env.SHADOW_FIXTURE_PORT || 8880);
 const ROLE_WRAPPER_PORT = Number(process.env.ROLE_WRAPPER_FIXTURE_PORT || 8881);
 const COMPOSER_PORT = Number(process.env.COMPOSER_FIXTURE_PORT || 8882);
+const BLUR_PORT = Number(process.env.BLUR_FIXTURE_PORT || 8883);
 
 // Real-browser (Chromium) regression harness for the spa-widgets fixture. This
 // project is deliberately outside the release-blocking test path (npm/jest/nx);
@@ -62,6 +63,12 @@ export default defineConfig({
     {
       command: `node ../test-fixtures/composer/server.mjs ${COMPOSER_PORT}`,
       url: `http://localhost:${COMPOSER_PORT}/`,
+      reuseExistingServer: true,
+      timeout: 10_000,
+    },
+    {
+      command: `node ../test-fixtures/blur-commit/server.mjs ${BLUR_PORT}`,
+      url: `http://localhost:${BLUR_PORT}/`,
       reuseExistingServer: true,
       timeout: 10_000,
     },

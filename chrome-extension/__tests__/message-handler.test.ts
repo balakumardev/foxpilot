@@ -95,6 +95,52 @@ describe("MessageHandler (chrome) — foreground-tab preservation", () => {
     });
   });
 
+  describe("select-tab command", () => {
+    beforeEach(() => {
+      (browser.storage.local.get as jest.Mock).mockResolvedValue({
+        config: { ...baseConfig, automationMode: true },
+      });
+      (browser.tabs.get as jest.Mock).mockResolvedValue({ id: 7, url: "https://example.com", windowId: 3 });
+      (browser.tabs.update as jest.Mock).mockResolvedValue(undefined);
+      (browser.windows.update as jest.Mock).mockResolvedValue(undefined);
+    });
+
+    it("activates the tab, focuses its window and says so", async () => {
+      await messageHandler.handleDecodedMessage({
+        cmd: "select-tab",
+        tabId: 7,
+        correlationId: "st1",
+      } as ServerMessageRequest);
+
+      expect(browser.tabs.update).toHaveBeenCalledWith(7, { active: true });
+      expect(browser.windows.update).toHaveBeenCalledWith(3, { focused: true });
+      expect(transport.sendResourceToServer).toHaveBeenCalledWith({
+        resource: "tab-selected",
+        correlationId: "st1",
+        tabId: 7,
+        windowFocused: true,
+      });
+    });
+
+    it("with focusWindow:false only activates the tab, leaving the keyboard with the user", async () => {
+      await messageHandler.handleDecodedMessage({
+        cmd: "select-tab",
+        tabId: 7,
+        focusWindow: false,
+        correlationId: "st2",
+      } as ServerMessageRequest);
+
+      expect(browser.tabs.update).toHaveBeenCalledWith(7, { active: true });
+      expect(browser.windows.update).not.toHaveBeenCalled();
+      expect(transport.sendResourceToServer).toHaveBeenCalledWith({
+        resource: "tab-selected",
+        correlationId: "st2",
+        tabId: 7,
+        windowFocused: false,
+      });
+    });
+  });
+
   describe("find-highlight command", () => {
     it("does NOT activate the tab — the highlight is applied via a content-script message", async () => {
       (browser.tabs.get as jest.Mock).mockResolvedValue({
@@ -1364,6 +1410,80 @@ describe("MessageHandler (chrome) — foreground-tab preservation", () => {
         (c: any[]) => c[0].correlationId === "uidff"
       );
       expect(call[0].ok).toBe(true);
+    });
+
+    it("fill-element engine:cdp with commit leaves the field from the isolated world after the trusted insert", async () => {
+      const order: string[] = [];
+      (dbg.sendCommand as jest.Mock).mockImplementation(async (_t: any, method: string) => {
+        if (method === "Input.insertText") order.push("insertText");
+        return {};
+      });
+      (browser.tabs.sendMessage as jest.Mock).mockImplementation((_id: number, msg: any) => {
+        if (msg && msg.type === "readElementRect") {
+          return Promise.resolve({ x: 10, y: 20, width: 100, height: 40, dpr: 2 });
+        }
+        if (msg && msg.type === "performInputAction" && msg.args.action === "commit") {
+          order.push("commit:" + JSON.stringify(msg.args));
+        }
+        return Promise.resolve({ ok: true });
+      });
+
+      await messageHandler.handleDecodedMessage({
+        cmd: "fill-element",
+        tabId: 8,
+        uid: "e7",
+        value: "a@b.co",
+        engine: "cdp",
+        commit: true,
+        correlationId: "uidfc",
+      } as ServerMessageRequest);
+
+      // Trusted typing gets the browser's own change on that blur, so none is asked for.
+      expect(order).toEqual(["insertText", 'commit:{"action":"commit","change":false}']);
+      const call = (transport.sendResourceToServer as jest.Mock).mock.calls.find(
+        (c: any[]) => c[0].correlationId === "uidfc"
+      );
+      expect(call[0].ok).toBe(true);
+    });
+
+    it("fill-element engine:cdp without commit sends no commit step", async () => {
+      await messageHandler.handleDecodedMessage({
+        cmd: "fill-element",
+        tabId: 8,
+        uid: "e7",
+        value: "a@b.co",
+        engine: "cdp",
+        correlationId: "uidfn",
+      } as ServerMessageRequest);
+      const commits = (browser.tabs.sendMessage as jest.Mock).mock.calls.filter(
+        (c: any[]) => c[1] && c[1].type === "performInputAction" && c[1].args.action === "commit"
+      );
+      expect(commits).toEqual([]);
+    });
+
+    it("click-element engine:cdp reports disabled:true when the probe found a disabled control", async () => {
+      (browser.tabs.sendMessage as jest.Mock).mockImplementation((_id: number, msg: any) => {
+        if (msg && msg.type === "readElementRect") {
+          return Promise.resolve({ x: 10, y: 20, width: 100, height: 40, dpr: 2 });
+        }
+        if (msg && msg.type === "performInputAction" && msg.args.action === "classify-intercept") {
+          return Promise.resolve({ ok: true, disabled: true });
+        }
+        return Promise.resolve({ ok: true });
+      });
+
+      await messageHandler.handleDecodedMessage({
+        cmd: "click-element",
+        tabId: 8,
+        uid: "e5",
+        engine: "cdp",
+        correlationId: "uidcd",
+      } as ServerMessageRequest);
+
+      const call = (transport.sendResourceToServer as jest.Mock).mock.calls.find(
+        (c: any[]) => c[0].correlationId === "uidcd"
+      );
+      expect(call[0]).toMatchObject({ ok: true, disabled: true });
     });
 
     it("hover-element engine:cdp dispatches a TRUSTED mouseMoved at the uid center", async () => {

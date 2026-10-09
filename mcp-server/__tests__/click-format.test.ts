@@ -55,3 +55,18 @@ describe("formatClickResult", () => {
     );
   });
 });
+
+describe("formatClickResult: a disabled control", () => {
+  it("says the click did nothing and that focus left the field, after the established first line", () => {
+    const text = formatClickResult("e9", undefined, { disabled: true });
+    expect(text.split("\n")[0]).toBe("Clicked element e9");
+    expect(text).toContain("The element is disabled, so the click did nothing.");
+    expect(text).toContain("took focus off the field you were editing");
+    expect(text).toContain("take a fresh snapshot and click again");
+  });
+
+  it("an enabled click reads exactly as before", () => {
+    expect(formatClickResult("e9", undefined, { disabled: undefined })).toBe("Clicked element e9");
+    expect(formatClickResult("e9", undefined, { disabled: false })).toBe("Clicked element e9");
+  });
+});
