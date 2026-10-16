@@ -19,15 +19,19 @@
  * normal, recoverable error: the caller is told to take a fresh snapshot.
  */
 
+// `commit` leaves the field once its value is in, the way a user moving on
+// does (see leaveField). "commit" alone leaves the focused field: the humanized
+// and CDP paths' last step after typing.
 type InputActionArgs =
   | { action: "click"; uid: string; doubleClick?: boolean; failIfIntercepted?: boolean }
   | { action: "hover"; uid: string }
-  | { action: "fill"; uid: string; value: string }
-  | { action: "fill-form"; fields: { uid: string; value: string }[] }
-  | { action: "type"; text: string; submit?: boolean }
+  | { action: "fill"; uid: string; value: string; commit?: boolean }
+  | { action: "fill-form"; fields: { uid: string; value: string }[]; commit?: boolean }
+  | { action: "type"; text: string; submit?: boolean; commit?: boolean }
   | { action: "press-key"; key: string; modifiers?: string[] }
   | { action: "drag"; fromUid: string; toUid: string }
-  | { action: "classify-intercept"; uid: string };
+  | { action: "classify-intercept"; uid: string }
+  | { action: "commit"; change?: boolean };
 
 interface InputActionResult {
   ok: boolean;
@@ -43,6 +47,9 @@ interface InputActionResult {
   // uid element (see activationTargetFor), never when it went to the uid
   // element itself.
   dispatchedTo?: { tag: string; name?: string };
+  // Set only when the clicked control is disabled, so the click activated
+  // nothing (the press still moved focus).
+  disabled?: boolean;
 }
 
 // type into a contenteditable waits for the editor before it answers (see
@@ -436,22 +443,23 @@ export function performInputAction(
       el.dispatchEvent(mouseEvt("pointerenter", { x: c.x, y: c.y }));
       el.dispatchEvent(mouseEvt("pointermove", { x: c.x, y: c.y }));
       el.dispatchEvent(mouseEvt("pointerdown", { x: c.x, y: c.y, buttons: 1 }));
-      el.dispatchEvent(mouseEvt("mousedown", { x: c.x, y: c.y, buttons: 1 }));
-      // Real clicks move focus to the clicked element so a following type-text
-      // targets it. Synthetic el.click() does NOT move focus, so do it
-      // explicitly (no-op for non-focusable elements).
-      try {
-        (el as { focus?: () => void }).focus?.();
-      } catch (e) {
-        /* not focusable — ignore */
-      }
+      const pressed = el.dispatchEvent(mouseEvt("mousedown", { x: c.x, y: c.y, buttons: 1 }));
+      // Real clicks move focus: to the clicked element so a following
+      // type-text targets it, or off the focused field when what was clicked
+      // cannot take focus. Synthetic el.click() moves no focus, so pressFocus
+      // does it.
+      pressFocus(el, pressed);
       el.dispatchEvent(mouseEvt("pointerup", { x: c.x, y: c.y, buttons: 0 }));
       el.dispatchEvent(mouseEvt("mouseup", { x: c.x, y: c.y, buttons: 0 }));
       // Exactly ONE activation: el.click() fires the element's `click` event
       // AND performs the default action (follows links, toggles checkboxes,
       // submits forms). We deliberately do NOT also dispatch a synthetic
       // `click` MouseEvent — doing so would double-activate the element.
-      clickWithLabelForwarding(el);
+      // Inside changeFocus, so a handler that moves focus (a dialog focusing
+      // its first control) fires the focus events a background tab drops.
+      changeFocus(function () {
+        clickWithLabelForwarding(el);
+      });
       if (doubleClick) {
         // A real double-click fires `dblclick` after the click above.
         el.dispatchEvent(mouseEvt("dblclick", { x: c.x, y: c.y }));
@@ -612,6 +620,17 @@ export function performInputAction(
       }
       try {
         return el.matches(":disabled"); // e.g. inside a disabled <fieldset>
+      } catch (e) {
+        return false;
+      }
+    }
+
+    // A control the browser itself disables (its disabled attribute, or a
+    // disabled <fieldset> around it): click() on it activates nothing.
+    // aria-disabled is not that; there the page decides.
+    function isDisabledNatively(el: Element): boolean {
+      try {
+        return el.matches(":disabled");
       } catch (e) {
         return false;
       }
@@ -850,10 +869,188 @@ export function performInputAction(
       }
     }
 
+    // --- focus-change helpers. The same bodies are inlined in every injected
+    //     module that moves focus; keep the copies identical. ---
+
+    // A document without system focus (a background tab, or a browser window
+    // behind another app) still moves activeElement on focus() and blur(), but
+    // the browser fires no blur, focusout, focus or focusin. A field that takes
+    // its value on blur (AngularDart's material-input[blurupdate], a React
+    // onBlur) then never gets it. changeFocus runs a focus move, then fires on
+    // the element that lost focus and on the one that gained it each of those
+    // events the browser did not fire itself. In a focused document the
+    // browser fires them all, so nothing is added.
+    const FOCUS_EVENT_TYPES = ["blur", "focusout", "focus", "focusin"];
+
+    function focusEvt(type: string, related: Element | null): Event {
+      const init = {
+        bubbles: type === "focusin" || type === "focusout",
+        cancelable: false,
+        composed: true,
+        relatedTarget: related,
+        view: win as Window,
+      };
+      const FE = win && (win as { FocusEvent?: typeof FocusEvent }).FocusEvent;
+      if (typeof FE === "function") {
+        return new (FE as typeof FocusEvent)(type, init as FocusEventInit);
+      }
+      return new Event(type, init);
+    }
+
+    // The element that has focus, or null while the document itself has it.
+    // With nothing focused (activeElement is the body) there is nothing to
+    // drill into, so no closed-root probe is spent on the body.
+    function focusedElement(): Element | null {
+      const top = doc.activeElement;
+      if (!top || top === doc.body || top === doc.documentElement) {
+        return null;
+      }
+      return deepActiveElement(doc);
+    }
+
+    function changeFocus(move: () => void): void {
+      const before = focusedElement();
+      const fired: Record<string, boolean> = {};
+      const note = function (e: Event): void {
+        const t = e.target as Node | null;
+        if (e.isTrusted && t && t.nodeType === 1) {
+          fired[e.type] = true;
+        }
+      };
+      const at: EventTarget = win || doc;
+      for (let i = 0; i < FOCUS_EVENT_TYPES.length; i++) {
+        at.addEventListener(FOCUS_EVENT_TYPES[i], note, true);
+      }
+      try {
+        move();
+      } finally {
+        for (let i = 0; i < FOCUS_EVENT_TYPES.length; i++) {
+          at.removeEventListener(FOCUS_EVENT_TYPES[i], note, true);
+        }
+      }
+      const after = focusedElement();
+      if (after === before) {
+        return;
+      }
+      if (before && before.isConnected && !fired.blur && !fired.focusout) {
+        before.dispatchEvent(focusEvt("blur", after));
+        before.dispatchEvent(focusEvt("focusout", after));
+      }
+      if (after && !fired.focus && !fired.focusin) {
+        after.dispatchEvent(focusEvt("focus", before));
+        after.dispatchEvent(focusEvt("focusin", before));
+      }
+    }
+
+    // Whether a press may give n focus: what a click focuses in the browsers
+    // (an element with a tabindex, a link, a form control, a frame, a summary,
+    // an editing host), unless it is disabled.
+    function pressFocusable(n: Element): boolean {
+      try {
+        if (n.matches(":disabled")) {
+          return false;
+        }
+      } catch (e) {
+        /* not matchable: judge by kind below */
+      }
+      if (n.hasAttribute("tabindex")) {
+        return true;
+      }
+      const tag = n.localName;
+      if ((tag === "a" || tag === "area") && n.hasAttribute("href")) {
+        return true;
+      }
+      if (tag === "input") {
+        return (n.getAttribute("type") || "").toLowerCase() !== "hidden";
+      }
+      if (
+        tag === "button" ||
+        tag === "select" ||
+        tag === "textarea" ||
+        tag === "iframe" ||
+        tag === "summary"
+      ) {
+        return true;
+      }
+      return contentEditableHost(n);
+    }
+
+    // A real press (mousedown) moves focus: to what was pressed when it can
+    // take focus, else to its nearest focusable ancestor, else off whatever had
+    // focus and onto the document. A press inside the focused element leaves
+    // focus where it is, and so does a page that cancels the mousedown (a
+    // suggestion list keeping focus in its input). A synthetic mousedown has
+    // no default action, so the press does it here; the pressed element is
+    // still focus()ed first, as FoxPilot's clicks always did. Without this a
+    // click on plain text or on a disabled button never took focus off a
+    // field, so a field that takes its value on blur never got it.
+    function pressFocus(el: Element, mousedownAllowed: boolean): void {
+      changeFocus(function () {
+        const held = focusedElement();
+        try {
+          (el as { focus?: () => void }).focus?.();
+        } catch (e) {
+          /* not focusable */
+        }
+        if (!mousedownAllowed || focusedElement() !== held) {
+          return;
+        }
+        if (held && composedContains(held, el)) {
+          return;
+        }
+        let n: Node | null = composedParent(el);
+        for (let steps = 0; n && steps < 4096; steps++, n = composedParent(n)) {
+          if (n === doc.body || n === doc.documentElement) {
+            break;
+          }
+          if (n.nodeType === 1 && pressFocusable(n as Element)) {
+            try {
+              (n as { focus?: (o?: { preventScroll?: boolean }) => void }).focus?.({
+                preventScroll: true,
+              });
+            } catch (e) {
+              /* not focusable after all */
+            }
+            if (focusedElement() !== held) {
+              return;
+            }
+          }
+        }
+        if (held) {
+          try {
+            (held as { blur?: () => void }).blur?.();
+          } catch (e) {
+            /* ignore */
+          }
+        }
+      });
+    }
+
+    // Leaves a field the way a user moving on does: focus goes off it and onto
+    // the document, so blur and focusout fire on it, here too when the browser
+    // drops them. change goes first when FoxPilot typed the value: the browser
+    // never fires one for a value set by script (fill fires its own).
+    function leaveField(el: Element, fireChange: boolean): void {
+      if (fireChange) {
+        el.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+      changeFocus(function () {
+        const active = focusedElement();
+        if (active && composedContains(el, active)) {
+          try {
+            (active as { blur?: () => void }).blur?.();
+          } catch (e) {
+            /* ignore */
+          }
+        }
+      });
+    }
+
     function fillElement(
       el: Element,
       value: string,
-      uid: string
+      uid: string,
+      commit: boolean
     ): { ok: boolean; error?: string } {
       scrollTo(el);
 
@@ -903,6 +1100,9 @@ export function performInputAction(
         // does); change is not.
         el.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
         el.dispatchEvent(new Event("change", { bubbles: true }));
+        if (commit) {
+          leaveField(el, false);
+        }
         return { ok: true };
       }
 
@@ -923,6 +1123,9 @@ export function performInputAction(
         } else if (cur !== target) {
           dispatchClickSequence(el);
         }
+        if (commit) {
+          leaveField(el, false);
+        }
         return { ok: true };
       }
 
@@ -942,11 +1145,17 @@ export function performInputAction(
         };
       }
 
-      // Text input / textarea.
-      focusSafely(el);
+      // Text input / textarea. Inside changeFocus, the field focus leaves gets
+      // its blur and this one its focus, in a background tab too.
+      changeFocus(function () {
+        focusSafely(el);
+      });
       nativeSetValue(el, value);
       el.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
       el.dispatchEvent(new Event("change", { bubbles: true }));
+      if (commit) {
+        leaveField(el, false);
+      }
       return { ok: true };
     }
 
@@ -1029,6 +1238,20 @@ export function performInputAction(
         });
       } catch (e) {
         /* some engines disallow redefining — best effort */
+      }
+      // In a Firefox content script `ev` is an Xray view of the page's event:
+      // the two properties above stay on that view, and page code still read
+      // keyCode 0 (so a menu that closes on keyCode 27 ignored Escape). The
+      // page-side object (wrappedJSObject) takes them as its own. Chrome's
+      // isolated world has no wrappedJSObject; there this does nothing.
+      try {
+        const pageEv = (ev as { wrappedJSObject?: object }).wrappedJSObject;
+        if (pageEv) {
+          Object.defineProperty(pageEv, "keyCode", { value: info.keyCode });
+          Object.defineProperty(pageEv, "which", { value: info.keyCode });
+        }
+      } catch (e) {
+        /* best effort */
       }
       return ev;
     }
@@ -1300,19 +1523,22 @@ export function performInputAction(
     // element), then check that the editor kept the text BEFORE any Enter: a
     // chat box that sends on Enter clears itself. Empty text (the humanized path
     // submitting after typing char by char) skips the insertion and the check.
-    // Never rejects.
+    // commit leaves the editor afterwards (see leaveField). Never rejects.
     async function typeIntoEditor(
       host: Element,
       text: string,
       submit: boolean,
-      at: { x: number; y: number } | null
+      at: { x: number; y: number } | null,
+      commit: boolean
     ): Promise<{ ok: boolean; error?: string }> {
       try {
-        try {
-          (host as { focus?: () => void }).focus?.();
-        } catch (e) {
-          /* not focusable */
-        }
+        changeFocus(function () {
+          try {
+            (host as { focus?: () => void }).focus?.();
+          } catch (e) {
+            /* not focusable */
+          }
+        });
         placeCaret(host, at);
         if (text !== "") {
           await new Promise(function (resolve) {
@@ -1335,6 +1561,9 @@ export function performInputAction(
         if (submit) {
           host.dispatchEvent(keyEvt("keydown", "Enter"));
           host.dispatchEvent(keyEvt("keyup", "Enter"));
+        }
+        if (commit) {
+          leaveField(host, false);
         }
         return { ok: true };
       } catch (e) {
@@ -1401,12 +1630,16 @@ export function performInputAction(
           error: "click intercepted by " + selectorFor(intercepted),
         };
       }
+      // Read before the click: a disabled control activates nothing (click()
+      // returns at once), while the press still moves focus as a real one does.
+      const disabled = isDisabledNatively(dispatchEl);
       dispatchClickSequence(dispatchEl, args.doubleClick, hitPoint);
       const dispatchedTo = dispatchEl !== el ? describeTarget(dispatchEl) : undefined;
       return {
         ok: true,
         ...(intercepted ? { intercepted: intercepted } : {}),
         ...(dispatchedTo ? { dispatchedTo: dispatchedTo } : {}),
+        ...(disabled ? { disabled: true } : {}),
       };
     }
 
@@ -1462,7 +1695,13 @@ export function performInputAction(
           /* no layout / detached — skip the hit-test, never throw */
         }
       }
-      return intercepted ? { ok: true, intercepted: intercepted } : { ok: true };
+      // A trusted click on a disabled control activates nothing either.
+      const disabled = isDisabledNatively(el);
+      return {
+        ok: true,
+        ...(intercepted ? { intercepted: intercepted } : {}),
+        ...(disabled ? { disabled: true } : {}),
+      };
     }
 
     if (args.action === "hover") {
@@ -1486,7 +1725,7 @@ export function performInputAction(
       if (!el) {
         return notFound(args.uid);
       }
-      return fillElement(el, args.value, args.uid);
+      return fillElement(el, args.value, args.uid, !!args.commit);
     }
 
     if (args.action === "fill-form") {
@@ -1496,9 +1735,24 @@ export function performInputAction(
         if (!el) {
           return notFound(field.uid);
         }
-        const r = fillElement(el, field.value, field.uid);
+        const r = fillElement(el, field.value, field.uid, !!args.commit);
         if (!r.ok) {
           return r;
+        }
+      }
+      return { ok: true };
+    }
+
+    if (args.action === "commit") {
+      // Leave the focused field. change is the caller's to ask for: typed
+      // text needs one (see leaveField), trusted typing gets the browser's own.
+      const active = focusedElement();
+      if (active) {
+        const tag = active.localName;
+        if (tag === "input" || tag === "textarea") {
+          leaveField(active, !!args.change);
+        } else {
+          leaveField(contentEditableHost(active) ? editingHost(active) : active, false);
         }
       }
       return { ok: true };
@@ -1527,7 +1781,7 @@ export function performInputAction(
         // contenteditable (the SPA rich-text-editor case): typed through its
         // editing host at the caret, and ok only when the editor kept the text
         // (see typeIntoEditor).
-        return typeIntoEditor(editingHost(el), text, !!args.submit, null);
+        return typeIntoEditor(editingHost(el), text, !!args.submit, null, !!args.commit);
       }
       for (let i = 0; i < text.length; i++) {
         const ch = text.charAt(i);
@@ -1553,6 +1807,9 @@ export function performInputAction(
             /* ignore submit errors */
           }
         }
+      }
+      if (args.commit) {
+        leaveField(el, true);
       }
       return { ok: true };
     }

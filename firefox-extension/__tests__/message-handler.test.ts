@@ -975,11 +975,70 @@ describe("MessageHandler", () => {
       const call = (browser.tabs.executeScript as jest.Mock).mock.calls[0][1];
       expect(call.code).toContain('"action":"fill"');
       expect(call.code).toContain('"value":"hello"');
+      // No commit asked for, none sent: the args JSON ends at the value.
+      expect(call.code).toContain('"value":"hello"})');
       expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
         resource: "action-result",
         correlationId: "test-correlation-id",
         ok: true,
         error: undefined,
+      });
+    });
+
+    it("fill-element, fill-form and type-text pass commit through to the injected action", async () => {
+      (browser.tabs.executeScript as jest.Mock).mockResolvedValue([{ ok: true }]);
+
+      await messageHandler.handleDecodedMessage({
+        cmd: "fill-element",
+        tabId: 123,
+        uid: "e2",
+        value: "a@b.co",
+        commit: true,
+        correlationId: "c1",
+      } as ServerMessageRequest);
+      await messageHandler.handleDecodedMessage({
+        cmd: "fill-form",
+        tabId: 123,
+        fields: [{ uid: "e2", value: "a@b.co" }],
+        commit: true,
+        correlationId: "c2",
+      } as ServerMessageRequest);
+      await messageHandler.handleDecodedMessage({
+        cmd: "type-text",
+        tabId: 123,
+        text: "a@b.co",
+        commit: true,
+        correlationId: "c3",
+      } as ServerMessageRequest);
+
+      const codes = (browser.tabs.executeScript as jest.Mock).mock.calls.map(
+        (c: any[]) => c[1].code as string
+      );
+      expect(codes[0]).toContain('"action":"fill","uid":"e2","value":"a@b.co","commit":true');
+      expect(codes[1]).toContain('"action":"fill-form"');
+      expect(codes[1]).toContain('"commit":true');
+      expect(codes[2]).toContain('"action":"type","text":"a@b.co"');
+      expect(codes[2]).toContain('"commit":true');
+    });
+
+    it("click-element reports disabled:true when the injected click hit a disabled control", async () => {
+      (browser.tabs.executeScript as jest.Mock).mockResolvedValue([
+        { ok: true, disabled: true },
+      ]);
+
+      await messageHandler.handleDecodedMessage({
+        cmd: "click-element",
+        tabId: 123,
+        uid: "e3",
+        correlationId: "cd",
+      } as ServerMessageRequest);
+
+      expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+        resource: "action-result",
+        correlationId: "cd",
+        ok: true,
+        error: undefined,
+        disabled: true,
       });
     });
 
@@ -1628,6 +1687,38 @@ describe("MessageHandler", () => {
         resource: "tab-selected",
         correlationId: "test-correlation-id",
         tabId: 123,
+        windowFocused: true,
+      });
+    });
+
+    it("with focusWindow:false activates the tab but leaves the window (and the keyboard) alone", async () => {
+      (browser.storage.local.get as jest.Mock).mockResolvedValue({
+        config: automationConfig,
+      });
+      (browser.tabs.get as jest.Mock).mockResolvedValue({
+        id: 123,
+        url: "https://example.com",
+        windowId: 5,
+      });
+      (browser.tabs.update as jest.Mock).mockResolvedValue(undefined);
+      (browser.windows.update as jest.Mock).mockClear();
+
+      const request: ServerMessageRequest = {
+        cmd: "select-tab",
+        tabId: 123,
+        focusWindow: false,
+        correlationId: "test-correlation-id",
+      };
+
+      await messageHandler.handleDecodedMessage(request);
+
+      expect(browser.tabs.update).toHaveBeenCalledWith(123, { active: true });
+      expect(browser.windows.update).not.toHaveBeenCalled();
+      expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+        resource: "tab-selected",
+        correlationId: "test-correlation-id",
+        tabId: 123,
+        windowFocused: false,
       });
     });
   });

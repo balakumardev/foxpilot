@@ -182,6 +182,16 @@ export async function selectOption(
     for (let i = 0; i < all.length; i++) { const sr = shadowRootOf(all[i]); if (sr) deepQueryAll(sr, sel, out); }
     return out;
   }
+  function deepActiveElement(doc: Document): Element | null {
+    let a: Element | null = doc.activeElement;
+    for (let depth = 0; a && depth < 32; depth++) {
+      const sr = shadowRootOf(a);
+      const inner = sr ? sr.activeElement : null;
+      if (!inner || inner === a) break;
+      a = inner;
+    }
+    return a;
+  }
 
   try {
     const win = doc.defaultView as (Window & typeof globalThis) | null;
@@ -217,6 +227,78 @@ export async function selectOption(
       /* jsdom lacks a layout engine — never throw on scroll */
     }
 
+    // --- focus-change helpers: the focus-event part. action-script.ts and
+    //     point-action-script.ts carry the same bodies; keep them identical. ---
+
+    // A document without system focus (a background tab, or a browser window
+    // behind another app) still moves activeElement on focus() and blur(), but
+    // the browser fires no blur, focusout, focus or focusin. changeFocus runs a
+    // focus move, then fires each of those events the browser did not fire
+    // itself (see action-script.ts). Here it wraps the trigger, search box and
+    // option the pick focuses, so a field focused before select-option still
+    // gets its blur in a background tab.
+    const FOCUS_EVENT_TYPES = ["blur", "focusout", "focus", "focusin"];
+
+    function focusEvt(type: string, related: Element | null): Event {
+      const init = {
+        bubbles: type === "focusin" || type === "focusout",
+        cancelable: false,
+        composed: true,
+        relatedTarget: related,
+        view: win as Window,
+      };
+      const FE = win && (win as { FocusEvent?: typeof FocusEvent }).FocusEvent;
+      if (typeof FE === "function") {
+        return new (FE as typeof FocusEvent)(type, init as FocusEventInit);
+      }
+      return new Event(type, init);
+    }
+
+    // The element that has focus, or null while the document itself has it.
+    // With nothing focused (activeElement is the body) there is nothing to
+    // drill into, so no closed-root probe is spent on the body.
+    function focusedElement(): Element | null {
+      const top = doc.activeElement;
+      if (!top || top === doc.body || top === doc.documentElement) {
+        return null;
+      }
+      return deepActiveElement(doc);
+    }
+
+    function changeFocus(move: () => void): void {
+      const before = focusedElement();
+      const fired: Record<string, boolean> = {};
+      const note = function (e: Event): void {
+        const t = e.target as Node | null;
+        if (e.isTrusted && t && t.nodeType === 1) {
+          fired[e.type] = true;
+        }
+      };
+      const at: EventTarget = win || doc;
+      for (let i = 0; i < FOCUS_EVENT_TYPES.length; i++) {
+        at.addEventListener(FOCUS_EVENT_TYPES[i], note, true);
+      }
+      try {
+        move();
+      } finally {
+        for (let i = 0; i < FOCUS_EVENT_TYPES.length; i++) {
+          at.removeEventListener(FOCUS_EVENT_TYPES[i], note, true);
+        }
+      }
+      const after = focusedElement();
+      if (after === before) {
+        return;
+      }
+      if (before && before.isConnected && !fired.blur && !fired.focusout) {
+        before.dispatchEvent(focusEvt("blur", after));
+        before.dispatchEvent(focusEvt("focusout", after));
+      }
+      if (after && !fired.focus && !fired.focusin) {
+        after.dispatchEvent(focusEvt("focus", before));
+        after.dispatchEvent(focusEvt("focusin", before));
+      }
+    }
+
     function mouseEvt(type: string): Event {
       return new MouseEvent(type, {
         bubbles: true,
@@ -228,16 +310,20 @@ export async function selectOption(
       node.dispatchEvent(mouseEvt("pointerdown"));
       node.dispatchEvent(mouseEvt("mousedown"));
       node.dispatchEvent(mouseEvt("mouseup"));
-      try {
-        (node as { focus?: () => void }).focus?.();
-      } catch (e) {
-        /* not focusable */
-      }
-      try {
-        (node as { click?: () => void }).click?.();
-      } catch (e) {
-        /* ignore activation errors */
-      }
+      changeFocus(function () {
+        try {
+          (node as { focus?: () => void }).focus?.();
+        } catch (e) {
+          /* not focusable */
+        }
+      });
+      changeFocus(function () {
+        try {
+          (node as { click?: () => void }).click?.();
+        } catch (e) {
+          /* ignore activation errors */
+        }
+      });
     }
 
     // --- native <select> ---
@@ -335,11 +421,13 @@ export async function selectOption(
     }
     const search = findSearchInput(el);
     if (search) {
-      try {
-        (search as { focus?: () => void }).focus?.();
-      } catch (e) {
-        /* ignore */
-      }
+      changeFocus(function () {
+        try {
+          (search as { focus?: () => void }).focus?.();
+        } catch (e) {
+          /* ignore */
+        }
+      });
       const proto = win!.HTMLInputElement.prototype;
       const descriptor = Object.getOwnPropertyDescriptor(proto, "value");
       const setter = descriptor && descriptor.set;

@@ -260,6 +260,20 @@ export function typeCharStep(
       } catch (e) {
         /* some engines disallow redefining — best effort */
       }
+      // In a Firefox content script `ev` is an Xray view of the page's event:
+      // the two properties above stay on that view, and page code still read
+      // keyCode 0 (so a menu that closes on keyCode 27 ignored Escape). The
+      // page-side object (wrappedJSObject) takes them as its own. Chrome's
+      // isolated world has no wrappedJSObject; there this does nothing.
+      try {
+        const pageEv = (ev as { wrappedJSObject?: object }).wrappedJSObject;
+        if (pageEv) {
+          Object.defineProperty(pageEv, "keyCode", { value: info.keyCode });
+          Object.defineProperty(pageEv, "which", { value: info.keyCode });
+        }
+      } catch (e) {
+        /* best effort */
+      }
       return ev;
     }
 

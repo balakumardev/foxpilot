@@ -100,6 +100,9 @@ export interface NavigatedExtensionMessage extends ExtensionMessageBase {
 export interface TabSelectedExtensionMessage extends ExtensionMessageBase {
   resource: "tab-selected";
   tabId: number;
+  // true when the browser window was focused too, so the keyboard now types
+  // into this page. Absent from older extensions.
+  windowFocused?: boolean;
 }
 
 export interface ActiveTabExtensionMessage extends ExtensionMessageBase {
@@ -150,6 +153,11 @@ export interface ActionResultExtensionMessage extends ExtensionMessageBase {
   // uid element, e.g. the <button> inside an li[role=menuitem] wrapper. Absent
   // when the uid element received the click. Append-only.
   dispatchedTo?: { tag: string; name?: string };
+  // click-element: set ONLY when the clicked control is disabled (its disabled
+  // attribute, or a disabled fieldset), so the click activated nothing. The
+  // press still moved focus off the focused field, as a real one does, which
+  // can enable it. Append-only.
+  disabled?: boolean;
 }
 
 // Reply for the evaluate-script tool. `ok` is false when the in-page evaluation

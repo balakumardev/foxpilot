@@ -65,9 +65,9 @@ import {
 type InputActionArgs =
   | { action: "click"; uid: string; doubleClick?: boolean; failIfIntercepted?: boolean }
   | { action: "hover"; uid: string }
-  | { action: "fill"; uid: string; value: string }
-  | { action: "fill-form"; fields: { uid: string; value: string }[] }
-  | { action: "type"; text: string; submit?: boolean }
+  | { action: "fill"; uid: string; value: string; commit?: boolean }
+  | { action: "fill-form"; fields: { uid: string; value: string }[]; commit?: boolean }
+  | { action: "type"; text: string; submit?: boolean; commit?: boolean }
   | { action: "press-key"; key: string; modifiers?: string[] }
   | { action: "drag"; fromUid: string; toUid: string };
 
@@ -392,7 +392,7 @@ export class MessageHandler {
         );
         break;
       case "select-tab":
-        await this.selectTab(req.correlationId, req.tabId);
+        await this.selectTab(req.correlationId, req.tabId, req.focusWindow);
         break;
       case "get-active-tab":
         await this.getActiveTab(req.correlationId);
@@ -437,6 +437,7 @@ export class MessageHandler {
             action: "fill",
             uid: req.uid,
             value: req.value,
+            commit: req.commit,
           },
           req.engine
         );
@@ -448,6 +449,7 @@ export class MessageHandler {
           {
             action: "fill-form",
             fields: req.fields,
+            commit: req.commit,
           },
           req.engine
         );
@@ -457,6 +459,7 @@ export class MessageHandler {
           action: "type",
           text: req.text,
           submit: req.submit,
+          commit: req.commit,
         });
         break;
       case "press-key":
@@ -512,6 +515,7 @@ export class MessageHandler {
             y: req.y,
             text: req.text,
             submit: req.submit,
+            commit: req.commit,
           },
           req.engine
         );
@@ -850,6 +854,7 @@ export class MessageHandler {
         ...(result.intercepted !== undefined
           ? { intercepted: result.intercepted }
           : {}),
+        ...(result.disabled !== undefined ? { disabled: result.disabled } : {}),
       });
       return;
     }
@@ -876,6 +881,7 @@ export class MessageHandler {
         name?: string;
       };
       dispatchedTo?: { tag: string; name?: string };
+      disabled?: boolean;
     }>;
     if (mode === "off") {
       // Covert content-script dispatch. RAW sender: a legitimate ok:false
@@ -906,6 +912,7 @@ export class MessageHandler {
         name?: string;
       };
       dispatchedTo?: { tag: string; name?: string };
+      disabled?: boolean;
     } = await raceInputAgainstNavigation(tabId, dispatchPromise);
 
     await this.client.sendResourceToServer({
@@ -922,7 +929,28 @@ export class MessageHandler {
       ...(result.dispatchedTo !== undefined
         ? { dispatchedTo: result.dispatchedTo }
         : {}),
+      ...(result.disabled !== undefined ? { disabled: result.disabled } : {}),
     });
+  }
+
+  // Leaves the focused field from the isolated world (performInputAction's
+  // "commit"), after a trusted CDP or native fill/type that asked for commit.
+  // Trusted typing makes the browser fire change on that blur itself, so none
+  // is added. Best-effort reporting: a missing content script is ok:false.
+  private async commitFocusedField(
+    tabId: number
+  ): Promise<{ ok: boolean; error?: string }> {
+    try {
+      const r = await sendMessageToTabRaw(tabId, {
+        type: "performInputAction",
+        args: { action: "commit", change: false },
+      });
+      return r && typeof r.ok === "boolean"
+        ? r
+        : { ok: false, error: "commit step returned no result" };
+    } catch (e) {
+      return { ok: false, error: "commit step failed: " + String(e) };
+    }
   }
 
   // Resolve a snapshot uid to its VIEWPORT-CSS-px center via the isolated-world
@@ -979,6 +1007,7 @@ export class MessageHandler {
       role?: string;
       name?: string;
     };
+    disabled?: boolean;
   }> {
     const attachError = (e: unknown): string =>
       "CDP input dispatch failed — could not attach the debugger (is DevTools open on this tab, or another debugger already attached?): " +
@@ -1005,6 +1034,12 @@ export class MessageHandler {
           await cdpInputFill(tabId, center.x, center.y, field.value);
         } catch (e) {
           return { ok: false, error: attachError(e) };
+        }
+        if (args.commit) {
+          const left = await this.commitFocusedField(tabId);
+          if (!left.ok) {
+            return left;
+          }
         }
       }
       return { ok: true };
@@ -1033,6 +1068,8 @@ export class MessageHandler {
             name?: string;
           }
         | undefined;
+      // A disabled control ignores a trusted click too; the probe says so.
+      let disabled = false;
       if (args.action === "click") {
         try {
           const cls = await sendMessageToTabRaw(tabId, {
@@ -1042,6 +1079,7 @@ export class MessageHandler {
           if (cls && cls.intercepted) {
             intercepted = cls.intercepted;
           }
+          disabled = !!(cls && cls.disabled);
         } catch (e) {
           /* best-effort — never block the click on a classify failure */
         }
@@ -1087,7 +1125,17 @@ export class MessageHandler {
       } catch (e) {
         return { ok: false, error: attachError(e) };
       }
-      return intercepted ? { ok: true, intercepted } : { ok: true };
+      if (args.action === "fill" && args.commit) {
+        const left = await this.commitFocusedField(tabId);
+        if (!left.ok) {
+          return left;
+        }
+      }
+      return {
+        ok: true,
+        ...(intercepted ? { intercepted } : {}),
+        ...(disabled ? { disabled: true } : {}),
+      };
     }
 
     // drag / type and anything else are not (yet) supported by the CDP engine —
@@ -1260,6 +1308,15 @@ export class MessageHandler {
             };
           }
           await cdpInputType(tabId, args.x, args.y, args.text, !!args.submit);
+          if (args.commit) {
+            const left = await this.commitFocusedField(tabId);
+            if (!left.ok) {
+              return {
+                ...left,
+                ...(desc && desc.element !== undefined ? { element: desc.element } : {}),
+              };
+            }
+          }
           break;
         case "hover-at":
           await cdpInputHover(tabId, args.x, args.y);
@@ -1440,6 +1497,12 @@ export class MessageHandler {
       } catch (e) {
         /* submit best-effort */
       }
+    }
+
+    // type+commit: leave the field in the page (native keys are trusted, so
+    // the browser fires change on that blur itself).
+    if (args.action === "type" && args.commit) {
+      return this.commitFocusedField(tabId);
     }
 
     return { ok: true };
@@ -2092,19 +2155,27 @@ export class MessageHandler {
     });
   }
 
+  // Activates the tab in its window and, unless focusWindow is false, focuses
+  // that window too: it comes to the front and takes the keyboard, so what the
+  // user types into another app lands in this page until they switch back.
+  // The reply says which happened.
   private async selectTab(
     correlationId: string,
-    tabId: number
+    tabId: number,
+    focusWindow?: boolean
   ): Promise<void> {
     const tab = await browser.tabs.get(tabId);
     await browser.tabs.update(tabId, { active: true });
-    if (tab.windowId != null) {
+    let windowFocused = false;
+    if (focusWindow !== false && tab.windowId != null) {
       await browser.windows.update(tab.windowId, { focused: true });
+      windowFocused = true;
     }
     await this.client.sendResourceToServer({
       resource: "tab-selected",
       correlationId,
       tabId,
+      windowFocused,
     });
   }
 

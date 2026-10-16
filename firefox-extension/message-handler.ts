@@ -424,7 +424,7 @@ export class MessageHandler {
         );
         break;
       case "select-tab":
-        await this.selectTab(req.correlationId, req.tabId);
+        await this.selectTab(req.correlationId, req.tabId, req.focusWindow);
         break;
       case "get-active-tab":
         await this.getActiveTab(req.correlationId);
@@ -469,6 +469,7 @@ export class MessageHandler {
             action: "fill",
             uid: req.uid,
             value: req.value,
+            commit: req.commit,
           },
           req.engine
         );
@@ -480,6 +481,7 @@ export class MessageHandler {
           {
             action: "fill-form",
             fields: req.fields,
+            commit: req.commit,
           },
           req.engine
         );
@@ -489,6 +491,7 @@ export class MessageHandler {
           action: "type",
           text: req.text,
           submit: req.submit,
+          commit: req.commit,
         });
         break;
       case "press-key":
@@ -544,6 +547,7 @@ export class MessageHandler {
             y: req.y,
             text: req.text,
             submit: req.submit,
+            commit: req.commit,
           },
           req.engine
         );
@@ -942,6 +946,7 @@ export class MessageHandler {
         name?: string;
       };
       dispatchedTo?: { tag: string; name?: string };
+      disabled?: boolean;
     }>;
     if (mode === "off") {
       dispatchPromise = browser.tabs
@@ -968,6 +973,7 @@ export class MessageHandler {
         name?: string;
       };
       dispatchedTo?: { tag: string; name?: string };
+      disabled?: boolean;
     } = await raceInputAgainstNavigation(tabId, dispatchPromise);
 
     await this.client.sendResourceToServer({
@@ -984,6 +990,7 @@ export class MessageHandler {
       ...(result.dispatchedTo !== undefined
         ? { dispatchedTo: result.dispatchedTo }
         : {}),
+      ...(result.disabled !== undefined ? { disabled: result.disabled } : {}),
     });
   }
 
@@ -1318,6 +1325,18 @@ export class MessageHandler {
       } catch (e) {
         /* submit best-effort */
       }
+    }
+
+    // type+commit: leave the field in the page. Native keys are trusted, so the
+    // browser fires change on that blur itself.
+    if (args.action === "type" && args.commit) {
+      const r = await exec<StepResult>(
+        `(${performInputAction.toString()})(document, ${JSON.stringify({
+          action: "commit",
+          change: false,
+        })})`
+      );
+      return r || { ok: false, error: "commit step returned no result" };
     }
 
     return { ok: true };
@@ -2058,20 +2077,28 @@ export class MessageHandler {
     });
   }
 
+  // Activates the tab in its window and, unless focusWindow is false, focuses
+  // that window too: it comes to the front and takes the keyboard, so what the
+  // user types into another app lands in this page until they switch back.
+  // The reply says which happened.
   private async selectTab(
     correlationId: string,
-    tabId: number
+    tabId: number,
+    focusWindow?: boolean
   ): Promise<void> {
     const tab = await browser.tabs.get(tabId);
     await browser.tabs.update(tabId, { active: true });
-    if (tab.windowId != null) {
+    let windowFocused = false;
+    if (focusWindow !== false && tab.windowId != null) {
       await browser.windows.update(tab.windowId, { focused: true });
+      windowFocused = true;
     }
 
     await this.client.sendResourceToServer({
       resource: "tab-selected",
       correlationId,
       tabId,
+      windowFocused,
     });
   }
 

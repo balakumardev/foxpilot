@@ -101,6 +101,84 @@ describe("runHumanInput", () => {
     });
   });
 
+  it("fill-form with commit: every instant fill carries it", async () => {
+    const deps = makeDeps();
+    const res = await runHumanInput(
+      {
+        action: "fill-form",
+        fields: [
+          { uid: "e1", value: "a" },
+          { uid: "e2", value: "b" },
+        ],
+        commit: true,
+      },
+      deps
+    );
+    expect(res.ok).toBe(true);
+    expect(deps.instant).toHaveBeenNthCalledWith(1, {
+      action: "fill",
+      uid: "e1",
+      value: "a",
+      commit: true,
+    });
+    expect(deps.instant).toHaveBeenNthCalledWith(2, {
+      action: "fill",
+      uid: "e2",
+      value: "b",
+      commit: true,
+    });
+  });
+
+  it("type with commit: leaves the field after the last character, asking for the change typing never fires", async () => {
+    const deps = makeDeps();
+    const res = await runHumanInput({ action: "type", text: "hi", commit: true }, deps);
+    expect(res.ok).toBe(true);
+    expect(deps.typeChar).toHaveBeenCalledTimes(2);
+    expect(deps.instant).toHaveBeenCalledTimes(1);
+    expect(deps.instant).toHaveBeenCalledWith({ action: "commit", change: true });
+  });
+
+  it("type with submit and commit: Enter first, then the commit", async () => {
+    const order: string[] = [];
+    const deps = makeDeps({
+      instant: jest.fn(async (a) => {
+        order.push(a.action + (a.action === "type" && a.submit ? ":submit" : ""));
+        return { ok: true };
+      }),
+    });
+    const res = await runHumanInput({ action: "type", text: "q", submit: true, commit: true }, deps);
+    expect(res.ok).toBe(true);
+    expect(order).toEqual(["type:submit", "commit"]);
+  });
+
+  it("type with submit and commit: a failed submit is returned and nothing is committed", async () => {
+    const deps = makeDeps({
+      instant: jest.fn().mockResolvedValue({ ok: false, error: "no field" }),
+    });
+    const res = await runHumanInput({ action: "type", text: "q", submit: true, commit: true }, deps);
+    expect(res).toEqual({ ok: false, error: "no field" });
+    expect(deps.instant).toHaveBeenCalledTimes(1);
+  });
+
+  it("type with commit: a mid-way step failure hands the rest, commit included, to one instant type", async () => {
+    let n = 0;
+    const deps = makeDeps({
+      typeChar: jest.fn(async () => {
+        n += 1;
+        return n === 1 ? { ok: true } : { ok: false, error: "boom" };
+      }),
+    });
+    const res = await runHumanInput({ action: "type", text: "hello", commit: true }, deps);
+    expect(res.ok).toBe(true);
+    expect(deps.instant).toHaveBeenCalledTimes(1);
+    expect(deps.instant).toHaveBeenCalledWith({
+      action: "type",
+      text: "ello",
+      submit: undefined,
+      commit: true,
+    });
+  });
+
   it("press-key: waits then defers to instant", async () => {
     const deps = makeDeps();
     const res = await runHumanInput(

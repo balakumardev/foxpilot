@@ -97,6 +97,10 @@ export interface NavigatePageHistoryServerMessage extends ServerMessageBase {
 export interface SelectTabServerMessage extends ServerMessageBase {
   cmd: "select-tab";
   tabId: number;
+  // Also focus the tab's browser window (raise it and give it the keyboard).
+  // Absent = true, the original behaviour. false only activates the tab in its
+  // window, so whatever the user is typing into keeps the keyboard.
+  focusWindow?: boolean;
 }
 
 export interface GetActiveTabServerMessage extends ServerMessageBase {
@@ -154,6 +158,10 @@ export interface FillElementServerMessage extends ServerMessageBase {
   // See ClickElementServerMessage.engine.
   engine?: "synthetic" | "cdp";
   activateTab?: boolean;
+  // Leave the field once the value is in, the way a user moving on does:
+  // focus goes off it and blur/focusout fire on it, in a background tab too,
+  // for fields that only take their value on blur. Absent = false.
+  commit?: boolean;
 }
 
 export interface FillFormServerMessage extends ServerMessageBase {
@@ -163,6 +171,8 @@ export interface FillFormServerMessage extends ServerMessageBase {
   // See ClickElementServerMessage.engine.
   engine?: "synthetic" | "cdp";
   activateTab?: boolean;
+  // See FillElementServerMessage.commit; applies to every field.
+  commit?: boolean;
 }
 
 export interface TypeTextServerMessage extends ServerMessageBase {
@@ -171,6 +181,8 @@ export interface TypeTextServerMessage extends ServerMessageBase {
   text: string;
   submit?: boolean;
   activateTab?: boolean;
+  // See FillElementServerMessage.commit; after the Enter when submit is set.
+  commit?: boolean;
 }
 
 export interface PressKeyServerMessage extends ServerMessageBase {
@@ -436,6 +448,8 @@ export interface TypeAtServerMessage extends ServerMessageBase {
   y: number;
   text: string;
   submit?: boolean;
+  // See FillElementServerMessage.commit.
+  commit?: boolean;
 }
 
 // Move a synthetic pointer to the element at viewport CSS-pixel coordinates
