@@ -16,6 +16,12 @@ import { formatSelectTabResult } from "./select-tab-format";
 import { formatNavigateResult } from "./navigate-format";
 import { formatTabList } from "./tab-list-format";
 import { allowedNavUrl, NAV_URL_MESSAGE } from "./url-policy";
+import {
+  SEND_FEEDBACK_ANNOTATIONS,
+  SEND_FEEDBACK_DESCRIPTION,
+  sendFeedbackInputShape,
+  submitFeedback,
+} from "./feedback-client";
 import dayjs from "dayjs";
 import relativeTime from "dayjs/plugin/relativeTime";
 
@@ -443,6 +449,36 @@ mcpServer.tool(
           text: `Active browser is now ${result.activeBrowserId}.`,
         },
       ],
+    };
+  }
+);
+
+// Server-only like list-browsers/select-browser: it never reaches the browser
+// or the broker, so it works with no extension connected. The handler leaves
+// userApproved out on purpose; it only gates the call and is never sent.
+mcpServer.tool(
+  "send-feedback",
+  SEND_FEEDBACK_DESCRIPTION,
+  sendFeedbackInputShape,
+  SEND_FEEDBACK_ANNOTATIONS,
+  async ({ kind, title, description, tool }, extra) => {
+    const client = mcpServer.server.getClientVersion();
+    const { text, isError } = await submitFeedback(
+      { kind, title, description, tool },
+      {
+        signal: extra.signal,
+        metadata: {
+          foxpilotVersion: FOXPILOT_VERSION,
+          clientName: client?.name,
+          clientVersion: client?.version,
+          platform: `${process.platform}-${process.arch}`,
+          nodeVersion: process.version,
+        },
+      }
+    );
+    return {
+      content: [{ type: "text", text }],
+      ...(isError ? { isError: true } : {}),
     };
   }
 );

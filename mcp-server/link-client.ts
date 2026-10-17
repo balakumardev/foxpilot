@@ -29,7 +29,6 @@ import {
 import {
   CLOSE_KICKED,
   CLOSE_ROOM_FULL,
-  DEFAULT_RELAY_URL,
   RELAY_PING,
   RELAY_PONG,
   parseJsonObject,
@@ -63,6 +62,11 @@ export interface LinkClientOptions {
   deadAfterMs?: number;
   connect?: (url: string) => WebSocket;
 }
+
+// A legacy token (`fpl1.<secret>`) carries no relay address and FoxPilot has no
+// shared relay to fall back to, so the remote side must be told where it is.
+const NO_RELAY_MESSAGE =
+  "The FOXPILOT_LINK token does not name a relay, and FoxPilot has no default relay. Set FOXPILOT_RELAY_URL on this machine to the relay address you use, or run `npx foxpilot-mcp link --relay <url>` on your computer and use the new token it prints.";
 
 function formatRelayUnreachable(
   relayBase: string,
@@ -166,7 +170,10 @@ export class LinkClientConnection {
 
     const parsedToken = parseLinkToken(opts.token);
     const roomId = deriveRoomId(parsedToken.secret);
-    const relay = opts.relayUrl ?? parsedToken.relayUrl ?? DEFAULT_RELAY_URL;
+    const relay = opts.relayUrl || parsedToken.relayUrl;
+    if (!relay) {
+      throw new LinkConnectError(NO_RELAY_MESSAGE);
+    }
     const url = relayEndpoint(relay, roomId, "client");
     const relayBase = relay;
 

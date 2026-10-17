@@ -1,12 +1,12 @@
 /**
  * A self-hostable FoxPilot relay (`npx foxpilot-mcp relay`).
  *
- * Same protocol as the hosted Cloudflare relay: it pairs a link's host (the
- * local broker) with its remote clients by room id and forwards opaque,
- * end-to-end-encrypted strings. Rooms live in memory and disappear when the
- * last socket leaves. Useful behind a VPN/Tailscale/SSH tunnel, or on a VPS
- * when you'd rather not use the hosted relay. The tests also run links
- * through it.
+ * Same protocol as the Cloudflare Worker relay in `relay-worker/`: it pairs a
+ * link's host (the local broker) with its remote clients by room id and
+ * forwards opaque, end-to-end-encrypted strings. Rooms live in memory and
+ * disappear when the last socket leaves. Useful behind a VPN/Tailscale/SSH
+ * tunnel, or on a VPS when you'd rather not deploy the Worker. The tests also
+ * run links through it.
  */
 
 import * as crypto from "crypto";

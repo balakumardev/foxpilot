@@ -12,18 +12,24 @@ FoxPilot connects your browser to a **Model Context Protocol (MCP) server runnin
 
 - No analytics or tracking of any kind
 - No telemetry, crash reports, or usage statistics
-- No data is sent to any remote/third-party server
+- No data is sent to any remote/third-party server, unless you turn on the optional remote link (off by default) or your AI assistant calls the optional `send-feedback` tool with your approval (both described below)
 
 ## Data flow
 
 1. The extension connects only to a server running on **your own machine** (default: `127.0.0.1` / `localhost`, port `8089`), authenticated with a secret that only you hold.
 2. Commands originate from your local MCP client (the AI assistant you run). In response, the extension may read tab information, browsing history, or page content, and perform automation actions.
 3. Any such data is returned **only to your local server**. Nothing leaves your computer beyond the normal web requests the pages you visit would make anyway.
-4. The extension has no remote backend operated by the developer.
+4. The extension has no remote backend. The only service the developer operates is the feedback service used by the optional `send-feedback` tool, described below.
 
 ## Optional remote link
 
-The extension itself still connects only to the local server running on your own computer. If you turn on the optional remote link, your local FoxPilot server forwards commands and results end-to-end encrypted through a relay to a FoxPilot server you set up on another machine. The relay cannot read them and stores nothing. The remote link is off by default.
+The extension itself still connects only to the local server running on your own computer. If you turn on the optional remote link, your local FoxPilot server forwards commands and results end-to-end encrypted through a relay to a FoxPilot server you set up on another machine. The developer does not operate a relay: you run your own (a Cloudflare Worker on your own account, or a Node process on a machine you control). The relay cannot read the messages and stores nothing. The remote link is off by default.
+
+## Optional feedback tool
+
+The FoxPilot MCP server (not the browser extension) includes a `send-feedback` tool. Nothing is sent unless your AI assistant calls it, and the tool instructs the assistant to do so only when you ask for it or agree to it. When called, it sends one report to a feedback service operated by the developer on Cloudflare Workers, which files it as a ticket in the developer's issue tracker. The report contains: the report type, the title and description written by the assistant, the name of the FoxPilot tool involved (optional), the FoxPilot version, the MCP client's name and version, your operating system and CPU architecture, and the Node.js version. Before sending, FoxPilot removes link tokens, authorization and cookie headers, bearer tokens, common API-key formats, URL query strings and fragments, email addresses and your home-directory path from the text.
+
+The service uses your IP address only to rate-limit submissions: it stores a keyed hash of the address, not the address itself, for up to two days. The ticket content is kept in the developer's issue tracker until the developer deletes it; to have a report removed, email [mail@balakumar.dev](mailto:mail@balakumar.dev). You can disable the tool's network call by setting `FOXPILOT_FEEDBACK=off` for the MCP server, or send reports to your own deployment instead with `FOXPILOT_FEEDBACK_URL`.
 
 ## Permissions
 

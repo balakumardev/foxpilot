@@ -11,7 +11,7 @@ import {
   writeLinkConfig,
 } from "./link-config";
 import { generateLinkSecret } from "./link-crypto";
-import { DEFAULT_RELAY_URL, isAllowedRelayUrl } from "./relay-protocol";
+import { isAllowedRelayUrl } from "./relay-protocol";
 import { RelayServer } from "./relay-server";
 import { FOXPILOT_VERSION } from "./version";
 
@@ -47,7 +47,7 @@ function printHelp(out: (line: string) => void): void {
   out("FoxPilot MCP server & remote-link CLI");
   out("");
   out("Usage:");
-  out("  npx foxpilot-mcp link [on] [--relay <url>]           Turn on remote link and show setup token");
+  out("  npx foxpilot-mcp link [on] --relay <url>             Turn on remote link via your own relay and show setup token");
   out("  npx foxpilot-mcp link status                         Show remote link status");
   out("  npx foxpilot-mcp link off                            Turn off remote link");
   out("  npx foxpilot-mcp link rotate                         Rotate link secret & generate a new token");
@@ -57,7 +57,24 @@ function printHelp(out: (line: string) => void): void {
   out("  npx foxpilot-mcp broker stop                         Stop the running broker daemon");
   out("  npx foxpilot-mcp help                                Show this help message");
   out("  npx foxpilot-mcp version                             Show FoxPilot version");
+  out("");
+  out("There is no shared relay. The first 'link' needs --relay <url> (or FOXPILOT_RELAY_URL);");
+  out("later runs reuse the relay saved in link.json. See \"Run your own relay\" in the README.");
 }
+
+const NO_RELAY_MESSAGE = [
+  "A relay is required: FoxPilot has no shared relay, so you run your own.",
+  "",
+  "Pick one:",
+  "  1. Cloudflare Worker on your own account (from a checkout of the FoxPilot repo):",
+  "       cd relay-worker && npm ci && npx wrangler deploy",
+  "     then: npx foxpilot-mcp link --relay wss://<your-worker>.<your-subdomain>.workers.dev",
+  "  2. The Node relay, behind TLS or on a private/Tailscale address:",
+  "       npx foxpilot-mcp relay --port 8787",
+  "     then: npx foxpilot-mcp link --relay <url>",
+  "",
+  'Details: the README section "Run your own relay". You can also set FOXPILOT_RELAY_URL instead of passing --relay.',
+].join("\n");
 
 function printSetupBlock(
   out: (line: string) => void,
@@ -273,7 +290,7 @@ export async function runCli(
         if (arg === "--relay") {
           if (i + 1 >= flagArgs.length || flagArgs[i + 1].startsWith("--")) {
             actualIo.err(
-              "Missing value for --relay flag.\nUsage: npx foxpilot-mcp link [on] [--relay <url>]"
+              "Missing value for --relay flag.\nUsage: npx foxpilot-mcp link [on] --relay <url>"
             );
             return 2;
           }
@@ -282,7 +299,7 @@ export async function runCli(
           flagRelay = arg.slice("--relay=".length);
         } else {
           actualIo.err(
-            `Unknown flag or argument: ${arg}\nUsage: npx foxpilot-mcp link [on] [--relay <url>]`
+            `Unknown flag or argument: ${arg}\nUsage: npx foxpilot-mcp link [on] --relay <url>`
           );
           return 2;
         }
@@ -295,9 +312,12 @@ export async function runCli(
           relayUrl = existing.relayUrl;
         } else if (envActual.FOXPILOT_RELAY_URL) {
           relayUrl = envActual.FOXPILOT_RELAY_URL;
-        } else {
-          relayUrl = DEFAULT_RELAY_URL;
         }
+      }
+
+      if (!relayUrl) {
+        actualIo.err(NO_RELAY_MESSAGE);
+        return 2;
       }
 
       if (!isAllowedRelayUrl(relayUrl)) {
@@ -358,7 +378,7 @@ export async function runCli(
       const config = readLinkConfig(configDir);
       if (!config) {
         actualIo.out("Remote link is not configured (no link.json).");
-        actualIo.out("Turn it on with: npx foxpilot-mcp link");
+        actualIo.out("Turn it on with: npx foxpilot-mcp link --relay <url>");
         return 0;
       }
 

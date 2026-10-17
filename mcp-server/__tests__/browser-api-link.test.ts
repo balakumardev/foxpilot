@@ -278,4 +278,65 @@ describe("BrowserAPI over remote link", () => {
       failingApi.close();
     }
   });
+
+  describe("a legacy token that names no relay", () => {
+    afterEach(() => {
+      delete process.env.FOXPILOT_RELAY_URL;
+    });
+
+    it("rejects calls with the no-relay text when FOXPILOT_RELAY_URL is unset", async () => {
+      const legacyToken = formatLinkToken(generateLinkSecret());
+      process.env.FOXPILOT_LINK = legacyToken;
+      delete process.env.FOXPILOT_RELAY_URL;
+      const legacyApi = new BrowserAPI();
+      try {
+        await expect(legacyApi.init()).resolves.toBeUndefined();
+        const err = await legacyApi.getTabList().then(
+          () => null,
+          (e: unknown) => e as Error
+        );
+        expect(err).not.toBeNull();
+        expect(err!.message).toMatch(/does not name a relay/);
+        expect(err!.message).not.toContain(legacyToken);
+      } finally {
+        legacyApi.close();
+      }
+    });
+
+    it("FOXPILOT_RELAY_URL supplies the relay", async () => {
+      const legacySecret = generateLinkSecret();
+      const legacyHost = new TestHost(
+        relayBase,
+        legacySecret,
+        deriveRoomId(legacySecret)
+      );
+      legacyHost.onClientFrame = (frame) => {
+        if (frame.kind === "tool" && frame.message.cmd === "get-tab-list") {
+          legacyHost.send({
+            kind: "tool-result",
+            requestId: frame.requestId,
+            message: {
+              resource: "tabs",
+              correlationId: (frame.message as any).correlationId,
+              tabs: [{ id: 7, url: "https://example.org", title: "Legacy" }],
+            } as any,
+          });
+        }
+      };
+      await legacyHost.connect();
+
+      process.env.FOXPILOT_LINK = formatLinkToken(legacySecret);
+      process.env.FOXPILOT_RELAY_URL = relayBase;
+      const legacyApi = new BrowserAPI();
+      try {
+        await legacyApi.init();
+        await expect(legacyApi.getTabList()).resolves.toEqual([
+          { id: 7, url: "https://example.org", title: "Legacy" },
+        ]);
+      } finally {
+        legacyApi.close();
+        legacyHost.close();
+      }
+    });
+  });
 });
