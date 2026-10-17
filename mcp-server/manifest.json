@@ -168,6 +168,10 @@
     {
       "name": "emulate",
       "description": "Emulate device conditions for a tab (geolocation and/or user agent override)"
+    },
+    {
+      "name": "send-feedback",
+      "description": "Send a bug report or feature request about FoxPilot to its maintainers. Only used when you ask for it or agree to it; sent over the internet, with secrets and personal data redacted first. Set FOXPILOT_FEEDBACK=off to disable."
     }
   ]
 }

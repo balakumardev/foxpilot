@@ -1,0 +1,35 @@
+# Cloudflare Worker behind FoxPilot's public feedback API (POST /v1/feedback).
+# Sanitizes a report, rate-limits it (two rate-limit bindings plus KV daily caps and content dedupe;
+# the client address is only ever stored as an HMAC), then files it as a Linear issue.
+# Secrets, set once with `npx wrangler secret put <NAME>` (never commit them):
+#   LINEAR_API_KEY  a restricted Linear API key that can only create issues
+#   IP_HASH_KEY     random string of at least 32 characters; keys the HMAC of the client address
+#   LINEAR_CONFIG   JSON: {"teamId": "<uuid>", "assigneeId": "<uuid, optional>", "labelIds": ["<uuid>"],
+#                   "kindLabelIds": {"bug": "<uuid>", "feature": "<uuid>", "improvement": "<uuid>", "other": "<uuid>"}}
+#                   labelIds are always applied; kindLabelIds add one label per report kind. Only teamId is required.
+# Until all three are valid the Worker answers 503 "feedback not configured".
+# Deploy with: npx wrangler deploy. It needs Cloudflare credentials in the environment
+# (CLOUDFLARE_API_TOKEN, or CLOUDFLARE_API_KEY + CLOUDFLARE_EMAIL), plus CLOUDFLARE_ACCOUNT_ID
+# when those credentials can reach more than one account. The account is deliberately not pinned here.
+
+name = "foxpilot-feedback"
+main = "src/index.ts"
+compatibility_date = "2026-09-01"
+workers_dev = true
+preview_urls = false
+
+[observability]
+enabled = true # the Worker logs only event names, ticket refs and reasons, never addresses, secrets or report text
+
+[[kv_namespaces]]
+binding = "FEEDBACK_KV" # no id: wrangler 4 creates the namespace on first deploy
+
+[[ratelimits]]
+name = "BURST_LIMITER"
+namespace_id = "20260928"
+simple = { limit = 3, period = 60 } # per hashed client; namespace ids must be unique per Cloudflare account, so change it if it collides with another rate limiter on yours
+
+[[ratelimits]]
+name = "GLOBAL_LIMITER"
+namespace_id = "20260929"
+simple = { limit = 5, period = 60 } # across all clients; same uniqueness rule as above
