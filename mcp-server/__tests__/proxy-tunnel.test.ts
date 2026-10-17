@@ -1,7 +1,9 @@
+import { execFileSync } from "child_process";
 import * as fs from "fs";
 import * as http from "http";
 import * as https from "https";
 import * as net from "net";
+import * as os from "os";
 import * as path from "path";
 import WebSocket, { WebSocketServer } from "ws";
 import {
@@ -11,9 +13,29 @@ import {
   tunneledCreateConnection,
 } from "../proxy-tunnel";
 
-const FIXTURES = path.join(__dirname, "fixtures");
-const CERT = fs.readFileSync(path.join(FIXTURES, "relay-test-cert.pem"));
-const KEY = fs.readFileSync(path.join(FIXTURES, "relay-test-key.pem"));
+// A throwaway self-signed certificate for relay.test, generated for each run so
+// no private key has to be committed. The temp dir is removed right after reading.
+function makeRelayTestCert(): { cert: Buffer; key: Buffer } {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "foxpilot-test-cert-"));
+  try {
+    const certFile = path.join(dir, "cert.pem");
+    const keyFile = path.join(dir, "key.pem");
+    execFileSync(
+      "openssl",
+      [
+        "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+        "-keyout", keyFile, "-out", certFile,
+        "-subj", "/CN=relay.test", "-days", "2",
+        "-addext", "subjectAltName=DNS:relay.test",
+      ],
+      { stdio: "ignore" }
+    );
+    return { cert: fs.readFileSync(certFile), key: fs.readFileSync(keyFile) };
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+const { cert: CERT, key: KEY } = makeRelayTestCert();
 
 describe("proxyForUrl", () => {
   const P = "http://proxy.example:3128";

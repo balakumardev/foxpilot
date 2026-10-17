@@ -3,6 +3,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { BrokerServer } from "../broker";
+import * as brokerLaunch from "../broker-launch";
 import { CliIo, isCliInvocation, runCli } from "../cli";
 import { readLinkConfig, writeLinkConfig } from "../link-config";
 import { parseLinkToken } from "../link-crypto";
@@ -251,6 +252,115 @@ describe("CLI (runCli & isCliInvocation)", () => {
     const code = await runCli(["link", "--relay", "ws://8.8.8.8:1"], io);
     expect(code).toBe(2);
     expect(io.errStr()).toContain("wss:// is required outside private networks");
+  });
+
+  describe("no relay anywhere", () => {
+    function envWithoutRelay(): NodeJS.ProcessEnv {
+      const env = { ...process.env };
+      delete env.FOXPILOT_RELAY_URL;
+      return env;
+    }
+
+    function expectNoRelayGuidance(io: ReturnType<typeof makeIo>): void {
+      const err = io.errStr();
+      expect(err).toContain("A relay is required");
+      expect(err).toContain("no shared relay");
+      expect(err).toContain("cd relay-worker && npm ci && npx wrangler deploy");
+      expect(err).toContain(
+        "npx foxpilot-mcp link --relay wss://<your-worker>.<your-subdomain>.workers.dev"
+      );
+      expect(err).toContain("npx foxpilot-mcp relay --port 8787");
+      expect(err).toContain("npx foxpilot-mcp link --relay <url>");
+      expect(err).toContain('"Run your own relay"');
+      expect(err).not.toMatch(/foxpilot-relay|api\.workers\.dev/);
+      expect(io.outStr()).toBe("");
+    }
+
+    it("link exits 2 with guidance, writes no link.json and never touches a broker", async () => {
+      const probeSpy = jest.spyOn(brokerLaunch, "probeBroker");
+      try {
+        const io = makeIo();
+        const code = await runCli(["link"], io, envWithoutRelay());
+        expect(code).toBe(2);
+        expectNoRelayGuidance(io);
+
+        expect(fs.existsSync(path.join(tempHome, ".foxpilot", "link.json"))).toBe(
+          false
+        );
+        expect(probeSpy).not.toHaveBeenCalled();
+        expect(spawnMock).not.toHaveBeenCalled();
+        expect(linkHost.status().enabled).toBe(false);
+      } finally {
+        probeSpy.mockRestore();
+      }
+    });
+
+    it("link on behaves the same as link", async () => {
+      const io = makeIo();
+      const code = await runCli(["link", "on"], io, envWithoutRelay());
+      expect(code).toBe(2);
+      expectNoRelayGuidance(io);
+      expect(fs.existsSync(path.join(tempHome, ".foxpilot", "link.json"))).toBe(
+        false
+      );
+    });
+
+    it("link rotate with nothing configured gives the same guidance", async () => {
+      const io = makeIo();
+      const code = await runCli(["link", "rotate"], io, envWithoutRelay());
+      expect(code).toBe(2);
+      expectNoRelayGuidance(io);
+      expect(fs.existsSync(path.join(tempHome, ".foxpilot", "link.json"))).toBe(
+        false
+      );
+    });
+
+    it("an empty --relay value does not count as a relay", async () => {
+      const io = makeIo();
+      const code = await runCli(["link", "--relay="], io, envWithoutRelay());
+      expect(code).toBe(2);
+      expectNoRelayGuidance(io);
+    });
+
+    it("FOXPILOT_RELAY_URL supplies the relay", async () => {
+      const io = makeIo();
+      const code = await runCli(["link"], io, {
+        ...process.env,
+        FOXPILOT_RELAY_URL: relayUrl,
+      });
+      expect(code).toBe(0);
+      const match = io.outStr().match(/FOXPILOT_LINK=([^\s]+)/);
+      expect(match).not.toBeNull();
+      expect(parseLinkToken(match![1]).relayUrl).toBe(relayUrl);
+      expect(readLinkConfig(path.join(tempHome, ".foxpilot"))!.relayUrl).toBe(
+        relayUrl
+      );
+    });
+
+    it("a later link reuses the relay saved in link.json", async () => {
+      const first = makeIo();
+      expect(await runCli(["link", "--relay", relayUrl], first)).toBe(0);
+      const firstToken = first.outStr().match(/FOXPILOT_LINK=([^\s]+)/)![1];
+
+      const again = makeIo();
+      expect(await runCli(["link"], again, envWithoutRelay())).toBe(0);
+      const againToken = again.outStr().match(/FOXPILOT_LINK=([^\s]+)/)![1];
+      expect(againToken).toBe(firstToken);
+    });
+
+    it("link status and help point at --relay, not at a default", async () => {
+      const status = makeIo();
+      expect(await runCli(["link", "status"], status)).toBe(0);
+      expect(status.outStr()).toContain(
+        "Turn it on with: npx foxpilot-mcp link --relay <url>"
+      );
+
+      const help = makeIo();
+      expect(await runCli(["help"], help)).toBe(0);
+      expect(help.outStr()).toContain("link [on] --relay <url>");
+      expect(help.outStr()).toContain("There is no shared relay");
+      expect(help.outStr()).toContain('"Run your own relay"');
+    });
   });
 
   it("broker status prints the version", async () => {

@@ -504,6 +504,78 @@ describe("LinkClientConnection", () => {
     ).toThrow("FoxPilot link is not connected");
   });
 
+  describe("a legacy token that names no relay", () => {
+    it("fails with a clear error and never dials anything when no relay is supplied", async () => {
+      const secret = generateLinkSecret();
+      const token = formatLinkToken(secret);
+      expect(linkTokenError(token)).toBeNull();
+
+      const connect = jest.fn(() => {
+        throw new Error("must not dial");
+      });
+      let thrown: unknown;
+      try {
+        await LinkClientConnection.open({
+          token,
+          label: "test-client",
+          version: "1.0.0",
+          onFrame: () => {},
+          onClose: () => {},
+          connect,
+        });
+      } catch (err) {
+        thrown = err;
+      }
+
+      expect(thrown).toBeInstanceOf(LinkConnectError);
+      const message = (thrown as Error).message;
+      expect(message).toContain("does not name a relay");
+      expect(message).toContain("FOXPILOT_RELAY_URL");
+      expect(message).toContain("npx foxpilot-mcp link --relay <url>");
+      expect(message).not.toContain(token);
+      expect(message).not.toContain(secret.toString("base64url"));
+      expect(connect).not.toHaveBeenCalled();
+    });
+
+    it("an empty relayUrl override counts as none", async () => {
+      const token = formatLinkToken(generateLinkSecret());
+      await expect(
+        LinkClientConnection.open({
+          token,
+          relayUrl: "",
+          label: "test-client",
+          version: "1.0.0",
+          onFrame: () => {},
+          onClose: () => {},
+        })
+      ).rejects.toThrow(/does not name a relay/);
+    });
+
+    it("connects through the relayUrl option (FOXPILOT_RELAY_URL on the remote side)", async () => {
+      const secret = generateLinkSecret();
+      const roomId = deriveRoomId(secret);
+      const token = formatLinkToken(secret);
+
+      const host = new TestHost(relayBase, secret, roomId);
+      await host.connect();
+
+      const conn = await LinkClientConnection.open({
+        token,
+        relayUrl: relayBase,
+        label: "test-client",
+        version: "1.0.0",
+        onFrame: () => {},
+        onClose: () => {},
+        hostWaitMs: 2000,
+        handshakeTimeoutMs: 3000,
+      });
+      expect(conn.isOpen()).toBe(true);
+
+      conn.close();
+      host.close();
+    });
+  });
+
   it("invalid token → linkTokenError text and open() rejects", async () => {
     const badToken = "invalid-token";
     const errText = linkTokenError(badToken);

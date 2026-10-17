@@ -20,9 +20,6 @@
 
 export const RELAY_PROTOCOL_VERSION = 1;
 
-/** The hosted relay every link uses unless the token or env names another. */
-export const DEFAULT_RELAY_URL = "wss://foxpilot-relay.ghostwriter-api.workers.dev";
-
 /** Room ids are base64url; anything else is refused before it reaches a room. */
 export const ROOM_ID_RE = /^[A-Za-z0-9_-]{22,64}$/;
 

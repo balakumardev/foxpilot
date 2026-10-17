@@ -1,12 +1,13 @@
 # Cloudflare Worker relay for FoxPilot remote links.
 # Pairs a host (local browser broker) with clients (remote MCP servers) by room id.
 # Forwards opaque, end-to-end-encrypted strings via WebSocket Hibernation. Stores nothing.
-# Deploy with: npx wrangler deploy (requires Cloudflare account credentials in environment).
+# Deploy with: npx wrangler deploy. It needs Cloudflare credentials in the environment
+# (CLOUDFLARE_API_TOKEN, or CLOUDFLARE_API_KEY + CLOUDFLARE_EMAIL), plus CLOUDFLARE_ACCOUNT_ID
+# when those credentials can reach more than one account. The account is deliberately not pinned here.
 
 name = "foxpilot-relay"
 main = "src/index.ts"
 compatibility_date = "2026-09-01"
-account_id = "a36f3c9e9f8dccf787c316eda8ba1c60" # Ghostwriter account, same as foxpilot-feedback
 workers_dev = true
 preview_urls = false
 
@@ -24,4 +25,4 @@ new_sqlite_classes = ["RelayRoom"] # SQLite-backed DOs work on the Workers Free 
 [[ratelimits]]
 name = "CONNECT_LIMITER"
 namespace_id = "20261004"
-simple = { limit = 120, period = 60 } # per client IP, counts WebSocket connects; namespace ids must be unique on the account — 20260928/20260929 are taken by foxpilot-feedback
+simple = { limit = 120, period = 60 } # per client IP, counts WebSocket connects; namespace ids must be unique per Cloudflare account, so change it if it collides with another rate limiter on yours

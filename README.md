@@ -28,7 +28,10 @@ These powerful tools require enabling **Automation Mode** in the extension:
 - Handle native dialogs; emulate geolocation / user agent
 
 ### Remote link (opt-in)
-- Drive this browser from a FoxPilot server in a cloud workspace or on another machine, end-to-end encrypted. See [Remote link](#remote-link-drive-this-browser-from-a-cloud-workspace).
+- Drive this browser from a FoxPilot server in a cloud workspace or on another machine, end-to-end encrypted, through a relay you run yourself. See [Remote link](#remote-link-drive-this-browser-from-a-cloud-workspace).
+
+### Feedback
+- Ask your assistant to report a bug or request a feature with the `send-feedback` tool. Nothing is sent unless the tool is called, and the assistant is told to call it only with your approval. See [Send feedback](#send-feedback).
 
 ## Example use-cases:
 
@@ -53,7 +56,7 @@ FoxPilot is built to run safely against your **personal** Firefox profile rather
 
 * **Privacy-first defaults.** Page interaction, scripting, screenshots, and console/network capture are off until you explicitly turn on **Automation Mode** in the extension — and it can be turned back off at any time.
 * **Per-domain consent.** Reading webpage content requires your explicit consent in the browser for each domain, enforced at the extension's manifest level.
-* **Local-only.** Communication uses a local-only (loopback) connection between the MCP server and the extension unless you turn on the optional [remote link](#remote-link-drive-this-browser-from-a-cloud-workspace), which is end-to-end encrypted. The extension pairs automatically — the local broker only admits browser-extension connections that arrive over loopback, so there's no secret for you to copy or manage. No remote data collection or tracking.
+* **Local-only.** Communication uses a local-only (loopback) connection between the MCP server and the extension unless you turn on the optional [remote link](#remote-link-drive-this-browser-from-a-cloud-workspace), which is end-to-end encrypted. The extension pairs automatically — the local broker only admits browser-extension connections that arrive over loopback, so there's no secret for you to copy or manage. No telemetry or tracking: nothing leaves your computer unless you turn on the remote link or your assistant calls [`send-feedback`](#send-feedback) with your approval.
 * **Auditable.** The extension keeps an audit log of tool calls and lets you enable/disable individual tools.
 * **No runtime third-party dependencies** in the extension.
 
@@ -171,15 +174,55 @@ In a containerized (`CONTAINERIZED=true`) or remote setup the extension's connec
 
 A FoxPilot MCP server running in a cloud workspace (Claude Code on the web, GitHub Codespaces, a remote VM, or a dev container) can drive the browser on your computer. Local FoxPilot sessions continue to work at the same time, sharing tab leases and active-browser selection through the local broker. All traffic is end-to-end encrypted through a relay that routes messages by room id without reading commands or page data.
 
-### Set up on your computer
+FoxPilot does not operate a shared relay. You run your own, so no third party sits in the path of your browser traffic. It takes a few minutes and has to be done only once.
 
-Run this command on the computer where your browser is open with the FoxPilot extension:
+### Run your own relay
+
+Pick one. Both speak the same protocol, store nothing and log nothing.
+
+#### Option A: Cloudflare Worker (recommended)
+
+The relay is a small Cloudflare Worker with one Durable Object class (SQLite-backed, which the Workers Free plan supports). You need a Cloudflare account and Node.js 22 or newer.
 
 ```bash
-npx foxpilot-mcp link
+git clone https://github.com/balakumardev/foxpilot
+cd foxpilot/relay-worker
+npm ci
+npx wrangler login        # or export CLOUDFLARE_API_TOKEN (Workers Scripts: Edit)
+npx wrangler deploy
 ```
 
-This creates `~/.foxpilot/link.json` (mode 0600) with a random 32-byte secret, starts the local broker, and connects to the relay. It prints a link token starting with `fpl1.` and the exact configuration commands for the remote workspace. Keep the browser open with the FoxPilot extension. While the link is on, the local broker does not idle-exit. Up to 8 remote sessions can connect at once.
+Wrangler prints the Worker URL, for example `https://foxpilot-relay.<your-subdomain>.workers.dev`. The first deploy on a new account asks you to register a `workers.dev` subdomain. Check that it answers, then use the same host with `wss://` as your relay address:
+
+```bash
+curl https://foxpilot-relay.<your-subdomain>.workers.dev/v1/health
+```
+
+If the deploy fails because the rate-limit `namespace_id` in `relay-worker/wrangler.toml` is already used by another limiter on your account, change it to any unused number. The Worker has no secrets to set.
+
+#### Option B: Node relay on a machine you control
+
+```bash
+npx foxpilot-mcp relay --port 8787 --host 0.0.0.0
+```
+
+Put it behind a TLS reverse proxy (Caddy, nginx) and use its `wss://` address. Over a private network, VPN or Tailscale you can skip TLS and use `ws://`:
+
+```bash
+npx foxpilot-mcp link --relay ws://192.168.1.50:8787
+```
+
+Plain `ws://` is accepted only for loopback, RFC 1918 private subnets, and Tailscale addresses (`100.64.0.0/10` and `*.ts.net`).
+
+### Set up on your computer
+
+Run this command on the computer where your browser is open with the FoxPilot extension, with the address of your relay:
+
+```bash
+npx foxpilot-mcp link --relay wss://foxpilot-relay.<your-subdomain>.workers.dev
+```
+
+This creates `~/.foxpilot/link.json` (mode 0600) with a random 32-byte secret and your relay address, starts the local broker, and connects to the relay. Later runs of `npx foxpilot-mcp link` reuse the stored relay; `FOXPILOT_RELAY_URL` can supply it instead. It prints a link token starting with `fpl1.` and the exact configuration commands for the remote workspace. Keep the browser open with the FoxPilot extension. While the link is on, the local broker does not idle-exit. Up to 8 remote sessions can connect at once.
 
 ### Set up on the remote side
 
@@ -223,11 +266,11 @@ Do not commit the token to version control. Add `FOXPILOT_LINK` as an environmen
 }
 ```
 
-Allow outbound network access to the relay host `foxpilot-relay.ghostwriter-api.workers.dev` in the environment settings, or use full network access. `HTTPS_PROXY` and `NO_PROXY` are detected and handled automatically.
+Allow outbound network access to your relay's host (the one in your link token) in the environment settings, or use full network access. `HTTPS_PROXY` and `NO_PROXY` are detected and handled automatically.
 
 Optional environment variables on the remote machine:
 - `FOXPILOT_LINK_LABEL`: sets the session name displayed on your computer. Defaults to the remote hostname.
-- `FOXPILOT_RELAY_URL`: overrides the relay URL encoded in the token.
+- `FOXPILOT_RELAY_URL`: overrides the relay URL encoded in the token (needed only for an older token that names no relay).
 
 The `upload-file` tool reads file paths on the remote machine where the MCP server runs.
 
@@ -247,28 +290,6 @@ npx foxpilot-mcp broker stop    # stop the broker (it restarts on demand)
 
 In the browser: open the FoxPilot options page and click **Test Connection**. It shows `Remote link: on (N remote session(s))` and lists the remote sessions by name. **Turn off remote link** disconnects them all and turns the link off.
 
-### Self-host the relay
-
-The default relay runs at `wss://foxpilot-relay.ghostwriter-api.workers.dev` on Cloudflare Workers. It stores and logs nothing. You can run your own relay:
-
-```bash
-npx foxpilot-mcp relay --port 8787 --host 0.0.0.0
-```
-
-Put it behind a TLS reverse proxy (Caddy, nginx) and point your computer's link at it. The token carries the relay address, so the remote side needs no extra setting:
-
-```bash
-npx foxpilot-mcp link --relay wss://relay.example.com
-```
-
-Over a private network, VPN, or Tailscale:
-
-```bash
-npx foxpilot-mcp link --relay ws://192.168.1.50:8787
-```
-
-Plain `ws://` is accepted only for loopback, RFC 1918 private subnets, and Tailscale addresses (`100.64.0.0/10` and `*.ts.net`).
-
 ### Security
 
 - The link token controls access to your browser. Anyone with the token can drive the browser while the link is active.
@@ -281,8 +302,18 @@ Plain `ws://` is accepted only for loopback, RFC 1918 private subnets, and Tails
 
 - **"Your computer's FoxPilot is not connected to the relay"**: Run `npx foxpilot-mcp link` on your computer and keep the browser open with the FoxPilot extension.
 - **"Your computer's FoxPilot did not accept this link token"**: The token was rotated or the link was turned off. Run `npx foxpilot-mcp link` on your computer to view the active token and update `FOXPILOT_LINK` on the remote workspace.
-- **"Could not reach the FoxPilot relay"**: Check the remote environment network settings. If the environment uses an egress proxy, set `HTTPS_PROXY`. If domain restrictions apply, allow `foxpilot-relay.ghostwriter-api.workers.dev`.
+- **"Could not reach the FoxPilot relay"**: Check the remote environment network settings. If the environment uses an egress proxy, set `HTTPS_PROXY`. If domain restrictions apply, allow your relay's host.
 - **`link` says the running broker is an older version**: an older FoxPilot broker is still running on your computer. Stop it with the command `link` prints, then run `npx foxpilot-mcp link` again.
+
+## Send feedback
+
+Tell your assistant "report this FoxPilot bug" (or "suggest a FoxPilot feature") and it can file the report for you with the `send-feedback` tool. The tool creates a ticket in the maintainers' tracker. You can also [open a GitHub issue](https://github.com/balakumardev/foxpilot/issues) as usual.
+
+- **Nothing is sent on its own.** The report leaves your computer only when the tool is called. Its description tells the assistant to call it only when you ask or agree, and to describe the problem generically.
+- **What is sent:** the report type (bug, feature, improvement, other), the title and description the assistant wrote, the name of the FoxPilot tool involved (if any), the FoxPilot version, your MCP client's name and version, your OS and CPU architecture, and the Node.js version. The tool's reply shows you what was sent.
+- **Scrubbed before sending.** FoxPilot removes link tokens, authorization and cookie headers, bearer tokens, common API-key formats, JWTs, URL query strings and fragments, email addresses and your home-directory path from the text. This is a safety net, not a guarantee, so don't ask the assistant to paste page content into a report.
+- **Rate limits and your IP address.** The service limits reports per network and per day. Your IP address is used only for that: it is stored as a keyed hash, not as the address, for up to two days.
+- **Turn it off or point it elsewhere.** Set `FOXPILOT_FEEDBACK=off` in the MCP server's environment to make the tool refuse to send. Set `FOXPILOT_FEEDBACK_URL` to send to your own deployment of [`feedback-worker/`](./feedback-worker) instead (https, or http on loopback only).
 
 ## Author
 

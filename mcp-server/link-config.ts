@@ -2,7 +2,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { ensureFoxpilotDir, foxpilotDir } from "./control-secret";
 import { formatLinkToken, generateLinkSecret } from "./link-crypto";
-import { DEFAULT_RELAY_URL, isAllowedRelayUrl } from "./relay-protocol";
+import { isAllowedRelayUrl } from "./relay-protocol";
 
 export interface LinkConfig {
   version: 1;
@@ -78,16 +78,15 @@ export function writeLinkConfig(config: LinkConfig, dir?: string): void {
   fs.chmodSync(file, 0o600);
 }
 
-export function createLinkConfig(relayUrl?: string): LinkConfig {
-  const resolvedRelayUrl = relayUrl ?? DEFAULT_RELAY_URL;
-  if (!isAllowedRelayUrl(resolvedRelayUrl)) {
-    throw new Error(`Disallowed relay URL: ${resolvedRelayUrl}`);
+export function createLinkConfig(relayUrl: string): LinkConfig {
+  if (!isAllowedRelayUrl(relayUrl)) {
+    throw new Error(`Disallowed relay URL: ${relayUrl}`);
   }
   return {
     version: 1,
     enabled: true,
     secret: generateLinkSecret().toString("base64url"),
-    relayUrl: resolvedRelayUrl,
+    relayUrl,
     createdAt: new Date().toISOString(),
   };
 }

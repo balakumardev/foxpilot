@@ -10,7 +10,8 @@ import {
   writeLinkConfig,
 } from "../link-config";
 import { parseLinkToken } from "../link-crypto";
-import { DEFAULT_RELAY_URL } from "../relay-protocol";
+
+const TEST_RELAY = "wss://relay.example.com";
 
 describe("link-config", () => {
   let tempDir: string;
@@ -28,7 +29,7 @@ describe("link-config", () => {
   });
 
   it("round-trips in a temp directory with 0600 file mode", () => {
-    const config = createLinkConfig();
+    const config = createLinkConfig(TEST_RELAY);
     writeLinkConfig(config, tempDir);
 
     const read = readLinkConfig(tempDir);
@@ -52,7 +53,7 @@ describe("link-config", () => {
     fs.writeFileSync(filePath, JSON.stringify(["not an object"]), { mode: 0o600 });
     expect(readLinkConfig(tempDir)).toBeNull();
 
-    const base = createLinkConfig();
+    const base = createLinkConfig(TEST_RELAY);
 
     // Unsupported version
     fs.writeFileSync(
@@ -95,24 +96,26 @@ describe("link-config", () => {
     expect(readLinkConfig(tempDir)).toBeNull();
   });
 
-  it("createLinkConfig provides defaults and validates custom relayUrl", () => {
-    const config = createLinkConfig();
+  it("createLinkConfig takes the relay from its argument and validates it", () => {
+    const config = createLinkConfig(TEST_RELAY);
     expect(config.version).toBe(1);
     expect(config.enabled).toBe(true);
-    expect(config.relayUrl).toBe(DEFAULT_RELAY_URL);
+    expect(config.relayUrl).toBe(TEST_RELAY);
     expect(Buffer.from(config.secret, "base64url").length).toBe(32);
     expect(Date.parse(config.createdAt)).toBeGreaterThan(0);
 
-    const custom = createLinkConfig("wss://custom-relay.example.com");
-    expect(custom.relayUrl).toBe("wss://custom-relay.example.com");
+    expect(createLinkConfig("ws://127.0.0.1:8787").relayUrl).toBe(
+      "ws://127.0.0.1:8787"
+    );
 
     expect(() => createLinkConfig("ws://not-allowed.example.com")).toThrow(
       /Disallowed relay URL/
     );
+    expect(() => createLinkConfig("")).toThrow(/Disallowed relay URL/);
   });
 
   it("linkSecret extracts a 32-byte Buffer or throws on invalid", () => {
-    const config = createLinkConfig();
+    const config = createLinkConfig(TEST_RELAY);
     const secret = linkSecret(config);
     expect(Buffer.isBuffer(secret)).toBe(true);
     expect(secret.length).toBe(32);
@@ -124,7 +127,7 @@ describe("link-config", () => {
   });
 
   it("linkToken parses back with parseLinkToken", () => {
-    const config = createLinkConfig();
+    const config = createLinkConfig(TEST_RELAY);
     const token = linkToken(config);
     const parsed = parseLinkToken(token);
 
