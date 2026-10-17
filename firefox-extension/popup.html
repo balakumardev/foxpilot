@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>FoxPilot</title>
+  <style>
+    :root { color-scheme: dark; }
+    body { margin: 0; width: 320px; background: #0B0F19; color: #F1F5F9;
+      font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    .wrap { padding: 14px; }
+    .head { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+    .head img { width: 28px; height: 28px; border-radius: 6px; }
+    .head b { font-size: 15px; }
+    .status { display: flex; align-items: center; gap: 8px; padding: 10px 12px;
+      border-radius: 10px; background: #111B2E; border: 1px solid #1F2A3C; }
+    .dot { width: 9px; height: 9px; border-radius: 50%; background: #F59E0B; flex: none; }
+    .status[data-state="connected"] .dot { background: #22C55E; }
+    .status[data-state="blocked"] .dot { background: #EF4444; }
+    .hint { color: #94A3B8; font-size: 12px; margin: 10px 0 0; }
+    .setup { margin-top: 12px; }
+    .setup[hidden] { display: none; }
+    .setup p { margin: 0 0 6px; color: #94A3B8; font-size: 12px; }
+    code { display: block; padding: 8px 10px; border-radius: 8px; background: #0F172A;
+      border: 1px solid #1F2A3C; font: 11.5px ui-monospace, Menlo, monospace;
+      word-break: break-all; user-select: all; }
+    .row { display: flex; gap: 8px; margin-top: 8px; }
+    button, a.btn { flex: 1; text-align: center; cursor: pointer; border-radius: 8px; padding: 8px 10px;
+      font: inherit; font-weight: 600; border: 1px solid #2A3850; background: #16223A;
+      color: #F1F5F9; text-decoration: none; }
+    button.primary { background: #F97316; border-color: #F97316; color: #111; }
+    button:hover, a.btn:hover { filter: brightness(1.12); }
+    .links { margin-top: 10px; font-size: 12px; }
+    .links a { color: #FB923C; text-decoration: none; margin-right: 12px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="head"><img src="assets/foxpilot-logo.png" alt="" /><b>FoxPilot</b></div>
+    <div class="status" id="status" data-state="disconnected">
+      <span class="dot"></span><span id="status-text">Checking…</span>
+    </div>
+    <p class="hint" id="status-hint"></p>
+
+    <div class="setup" id="setup" hidden>
+      <p>This extension needs the FoxPilot MCP server running on this computer. In Claude Code, run:</p>
+      <code id="cmd">claude mcp add foxpilot -- npx -y foxpilot-mcp</code>
+      <div class="row"><button id="copy" type="button">Copy command</button></div>
+      <div class="links">
+        <a id="dxt" href="https://github.com/balakumardev/foxpilot/releases/latest/download/foxpilot-mcp.dxt" target="_blank" rel="noopener noreferrer">Claude Desktop (.dxt)</a>
+        <a href="https://github.com/balakumardev/foxpilot#installation" target="_blank" rel="noopener noreferrer">Other clients</a>
+      </div>
+    </div>
+
+    <div class="row"><button class="primary" id="open-settings" type="button">Open full settings</button></div>
+  </div>
+  <script src="dist/popup.js"></script>
+</body>
+</html>

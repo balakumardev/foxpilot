@@ -23,7 +23,7 @@ const zipPath = join(outRoot, `foxpilot-chrome-${version}.zip`);
 
 // Runtime allowlist — everything Chrome needs to load + run, nothing else.
 // (Excludes __tests__, node_modules, *.ts sources, tsconfig/jest/package.json.)
-const include = ["manifest.json", "offscreen.html", "options.html", "dist", "assets"];
+const include = ["manifest.json", "offscreen.html", "options.html", "popup.html", "dist", "assets"];
 
 if (!existsSync(join(root, "dist", "background.js"))) {
   console.error("dist/ is not built — run `npm run build` first.");

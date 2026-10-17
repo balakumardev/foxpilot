@@ -1,4 +1,12 @@
 import "./globals";
+
+// First install: open the settings page so the user lands on the MCP-server
+// install steps (the Setup section is first) instead of an unexplained icon.
+chrome.runtime.onInstalled.addListener((details: { reason?: string }) => {
+  if (details.reason === "install") {
+    void chrome.runtime.openOptionsPage().catch(() => {});
+  }
+});
 import { WebsocketClient } from "./client";
 import { LongPollClient } from "./longpoll-client";
 import {

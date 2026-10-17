@@ -3,7 +3,7 @@
   "version": "1.0.32",
   "main": "dist/background.js",
   "scripts": {
-    "build": "esbuild background.ts --bundle --outfile=dist/background.js && esbuild options.ts --bundle --outfile=dist/options.js",
+    "build": "esbuild background.ts --bundle --outfile=dist/background.js && esbuild options.ts --bundle --outfile=dist/options.js && esbuild popup.ts --bundle --outfile=dist/popup.js",
     "test": "jest"
   },
   "license": "MIT",

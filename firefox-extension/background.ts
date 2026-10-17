@@ -64,6 +64,14 @@ function updateBrokerState(
   }
 }
 
+// First install: open the settings page so the user lands on the MCP-server
+// install steps (the Setup section is first) instead of an unexplained icon.
+browser.runtime.onInstalled.addListener((details: { reason?: string }) => {
+  if (details.reason === "install") {
+    void browser.runtime.openOptionsPage().catch(() => {});
+  }
+});
+
 function initClient(port: number, secret: string, transport: "websocket" | "longpoll") {
   const onConnectionState = (
     state: ConnectionState,

@@ -74,7 +74,7 @@ jobs:
       - name: Package unsigned extension zip
         run: |
           mkdir -p build/ext
-          cp -r firefox-extension/manifest.json firefox-extension/options.html \
+          cp -r firefox-extension/manifest.json firefox-extension/options.html firefox-extension/popup.html \
                 firefox-extension/dist firefox-extension/assets build/ext/
           (cd build/ext && zip -r -X ../../foxpilot-extension.zip . >/dev/null)
 
@@ -181,7 +181,7 @@ jobs:
         if: steps.amo.outputs.ok == 'true'
         run: |
           mkdir -p build/ext-amo
-          cp -r firefox-extension/manifest.json firefox-extension/options.html \
+          cp -r firefox-extension/manifest.json firefox-extension/options.html firefox-extension/popup.html \
                 firefox-extension/dist firefox-extension/assets build/ext-amo/
 
       - name: Sign + submit to AMO (listed)

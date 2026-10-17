@@ -36,7 +36,16 @@
     ]
   },
   "options_ui": {
-    "page": "options.html"
+    "page": "options.html",
+    "open_in_tab": true
+  },
+  "browser_action": {
+    "default_title": "FoxPilot",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "48": "assets/foxpilot-logo.png",
+      "96": "assets/foxpilot-logo.png"
+    }
   },
   "icons": {
     "48": "assets/foxpilot-logo.png",

@@ -240,7 +240,9 @@ export function timeoutMessageFor(
 export const NEVER_SENT_MESSAGE =
   "The request was never sent to a browser: no usable extension connection was " +
   "available when it was dispatched. Nothing ran in the page, so this is SAFE " +
-  "to retry. Check that the FoxPilot extension is connected — and if more than " +
+  "to retry. Check that the FoxPilot extension is installed and connected (install: " +
+  "https://github.com/balakumardev/foxpilot#installation; the toolbar icon shows its " +
+  "status) — and if more than " +
   "one browser is connected, call select-browser to pick one — then retry.";
 
 /**

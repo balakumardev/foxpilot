@@ -409,7 +409,7 @@ mcpServer.tool(
         content: [
           {
             type: "text",
-            text: "No browsers connected. Open Chrome or Firefox with the FoxPilot extension installed and connected (same secret).",
+            text: "No browsers connected. The FoxPilot MCP server is running, but no browser extension has paired with it. Install the extension: Firefox https://addons.mozilla.org/en-US/firefox/addon/foxpilot/ , Chrome/Edge via the Chrome Web Store (or https://github.com/balakumardev/foxpilot/releases/latest). Then open the browser; it connects automatically over localhost. If it is already installed, click the FoxPilot toolbar icon to check its status.",
           },
         ],
       };
