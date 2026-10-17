@@ -84,6 +84,8 @@ describe("BrowserAPI over the broker", () => {
   let server: BrokerServer;
   let ext: WebSocket;
   let api: BrowserAPI;
+  // Every request the mock extension received, in order.
+  const seen: ServerMessageRequest[] = [];
   const origSecret = process.env.EXTENSION_SECRET;
   const origPort = process.env.EXTENSION_PORT;
 
@@ -93,6 +95,7 @@ describe("BrowserAPI over the broker", () => {
     const port = server.getPort();
 
     ext = await startMockExtension(port, SECRET, (req) => {
+      seen.push(req);
       switch (req.cmd) {
         case "open-tab":
           return {
@@ -189,6 +192,25 @@ describe("BrowserAPI over the broker", () => {
   it("getTabList returns the extension's tab list", async () => {
     const tabs = await api.getTabList();
     expect(tabs).toEqual([{ id: 1, url: "https://a.com", title: "A" }]);
+  });
+
+  it("getTabList sends the filter to the extension so it can narrow the list", async () => {
+    await api.getTabList({ windowId: 7, activeOnly: true, visibleOnly: true });
+    const req = seen.filter((r) => r.cmd === "get-tab-list").pop();
+    expect(req).toMatchObject({
+      cmd: "get-tab-list",
+      windowId: 7,
+      activeOnly: true,
+      visibleOnly: true,
+    });
+  });
+
+  it("getTabList without a filter sends none of the filter fields", async () => {
+    await api.getTabList();
+    const req = seen.filter((r) => r.cmd === "get-tab-list").pop();
+    expect(req).not.toHaveProperty("windowId");
+    expect(req).not.toHaveProperty("activeOnly");
+    expect(req).not.toHaveProperty("visibleOnly");
   });
 
   it("getConsoleMessages returns the extension's buffered entries", async () => {

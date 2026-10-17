@@ -14,6 +14,18 @@ export interface CloseTabsServerMessage extends ServerMessageBase {
 
 export interface GetTabListServerMessage extends ServerMessageBase {
   cmd: "get-tab-list";
+  // All optional and applied by the extension, so a browser with thousands of
+  // tabs never has to serialise the ones the caller did not ask for. Absent =
+  // every tab, as before (an older extension ignores them and returns every tab).
+  /** Only tabs in this window. */
+  windowId?: number;
+  /** Only the active tab of each window. */
+  activeOnly?: boolean;
+  /**
+   * Skip tabs the user cannot see in the tab strip: hidden tabs (Firefox) and
+   * tabs inside a collapsed tab group (Chrome/Edge).
+   */
+  visibleOnly?: boolean;
 }
 
 export interface GetBrowserRecentHistoryServerMessage extends ServerMessageBase {

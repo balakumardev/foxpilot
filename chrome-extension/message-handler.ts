@@ -338,7 +338,7 @@ export class MessageHandler {
         await this.closeTabs(req.correlationId, req.tabIds);
         break;
       case "get-tab-list":
-        await this.sendTabs(req.correlationId);
+        await this.sendTabs(req);
         break;
       case "get-browser-recent-history":
         await this.sendRecentHistory(req.correlationId, req.searchQuery);
@@ -701,13 +701,52 @@ export class MessageHandler {
     });
   }
 
-  private async sendTabs(correlationId: string): Promise<void> {
-    const tabs = await browser.tabs.query({});
+  private async sendTabs(
+    req: Extract<ServerMessageRequest, { cmd: "get-tab-list" }>
+  ): Promise<void> {
+    // Narrow in the browser, then send only the fields the server reads. A whole
+    // tabs.query() Tab also carries the favicon (often a data: URI), mutedInfo,
+    // sizes, groupId... so with thousands of tabs the unfiltered reply is
+    // megabytes the server drops straight away, and it can take the connection
+    // down before the reply lands.
+    const query: { windowId?: number; active?: boolean } = {};
+    if (req.windowId !== undefined) {
+      query.windowId = req.windowId;
+    }
+    if (req.activeOnly) {
+      query.active = true;
+    }
+    let tabs = await browser.tabs.query(query);
+    if (req.visibleOnly) {
+      // Chrome has no hidden tabs; the tabs the user cannot see in the strip are
+      // the ones inside a collapsed tab group.
+      const collapsed = await this.collapsedGroupIds();
+      if (collapsed.size > 0) {
+        tabs = tabs.filter(
+          (tab) => tab.groupId === undefined || !collapsed.has(tab.groupId)
+        );
+      }
+    }
     await this.client.sendResourceToServer({
       resource: "tabs",
-      correlationId,
-      tabs,
+      correlationId: req.correlationId,
+      tabs: tabs.map((tab) => ({
+        id: tab.id,
+        windowId: tab.windowId,
+        url: tab.url,
+        title: tab.title,
+        lastAccessed: tab.lastAccessed,
+      })),
     });
+  }
+
+  /** Ids of the tab groups currently collapsed (empty when the API is absent). */
+  private async collapsedGroupIds(): Promise<Set<number>> {
+    if (!browser.tabGroups?.query) {
+      return new Set();
+    }
+    const groups = await browser.tabGroups.query({ collapsed: true });
+    return new Set(groups.map((group) => group.id));
   }
 
   private async sendRecentHistory(

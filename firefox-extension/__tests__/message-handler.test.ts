@@ -318,6 +318,98 @@ describe("MessageHandler", () => {
           tabs: mockTabs,
         });
       });
+
+      it("sends only the fields the server reads, not the whole Tab object", async () => {
+        // A full tabs.query() Tab carries favicon data URIs, mutedInfo, sizes,
+        // sessionId... For thousands of tabs that is megabytes the server drops.
+        (browser.tabs.query as jest.Mock).mockResolvedValue([
+          {
+            id: 1,
+            windowId: 7,
+            url: "https://a.com",
+            title: "A",
+            lastAccessed: 1000,
+            favIconUrl: "data:image/png;base64," + "A".repeat(4000),
+            mutedInfo: { muted: false },
+            sessionId: "s1",
+            width: 1200,
+            height: 800,
+            hidden: false,
+            active: true,
+          },
+        ]);
+
+        await messageHandler.handleDecodedMessage({
+          cmd: "get-tab-list",
+          correlationId: "c-slim",
+        });
+
+        expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+          resource: "tabs",
+          correlationId: "c-slim",
+          tabs: [
+            {
+              id: 1,
+              windowId: 7,
+              url: "https://a.com",
+              title: "A",
+              lastAccessed: 1000,
+            },
+          ],
+        });
+        const sent = (mockClient.sendResourceToServer as jest.Mock).mock
+          .calls[0][0];
+        expect(Object.keys(sent.tabs[0]).sort()).toEqual([
+          "id",
+          "lastAccessed",
+          "title",
+          "url",
+          "windowId",
+        ]);
+      });
+
+      it("passes windowId, activeOnly and visibleOnly to tabs.query", async () => {
+        (browser.tabs.query as jest.Mock).mockResolvedValue([]);
+
+        await messageHandler.handleDecodedMessage({
+          cmd: "get-tab-list",
+          correlationId: "c-filter",
+          windowId: 7,
+          activeOnly: true,
+          visibleOnly: true,
+        });
+
+        expect(browser.tabs.query).toHaveBeenCalledWith({
+          windowId: 7,
+          active: true,
+          hidden: false,
+        });
+      });
+
+      it("treats false filters like absent ones (query stays {})", async () => {
+        (browser.tabs.query as jest.Mock).mockResolvedValue([]);
+
+        await messageHandler.handleDecodedMessage({
+          cmd: "get-tab-list",
+          correlationId: "c-false",
+          activeOnly: false,
+          visibleOnly: false,
+        });
+
+        expect(browser.tabs.query).toHaveBeenCalledWith({});
+      });
+
+      it("keeps a windowId of 0 as a filter", async () => {
+        (browser.tabs.query as jest.Mock).mockResolvedValue([]);
+
+        await messageHandler.handleDecodedMessage({
+          cmd: "get-tab-list",
+          correlationId: "c-zero",
+          windowId: 0,
+        });
+
+        expect(browser.tabs.query).toHaveBeenCalledWith({ windowId: 0 });
+      });
     });
 
     describe("get-browser-recent-history command", () => {

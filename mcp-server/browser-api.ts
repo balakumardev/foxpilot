@@ -122,6 +122,13 @@ class LocalBrokerConnection implements BrokerConnection {
   }
 }
 
+/** What the extension narrows the tab list to before it sends it (all optional). */
+export interface TabListFilter {
+  windowId?: number;
+  activeOnly?: boolean;
+  visibleOnly?: boolean;
+}
+
 export class BrowserAPI {
   private ws: WebSocket | null = null;
   private conn: BrokerConnection | null = null;
@@ -521,9 +528,12 @@ export class BrowserAPI {
     await this.sendTool({ cmd: "close-tabs", tabIds });
   }
 
-  async getTabList(): Promise<BrowserTab[]> {
+  async getTabList(filter: TabListFilter = {}): Promise<BrowserTab[]> {
     const message = await this.sendTool<TabsExtensionMessage>({
       cmd: "get-tab-list",
+      windowId: filter.windowId,
+      activeOnly: filter.activeOnly,
+      visibleOnly: filter.visibleOnly,
     });
     return message.tabs;
   }

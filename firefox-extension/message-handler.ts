@@ -366,7 +366,7 @@ export class MessageHandler {
         await this.closeTabs(req.correlationId, req.tabIds);
         break;
       case "get-tab-list":
-        await this.sendTabs(req.correlationId);
+        await this.sendTabs(req);
         break;
       case "get-browser-recent-history":
         await this.sendRecentHistory(req.correlationId, req.searchQuery);
@@ -738,12 +738,36 @@ export class MessageHandler {
     });
   }
 
-  private async sendTabs(correlationId: string): Promise<void> {
-    const tabs = await browser.tabs.query({});
+  private async sendTabs(
+    req: Extract<ServerMessageRequest, { cmd: "get-tab-list" }>
+  ): Promise<void> {
+    // Narrow in the browser, then send only the fields the server reads. A whole
+    // tabs.query() Tab also carries the favicon (often a data: URI), mutedInfo,
+    // sizes, sessionId... so with thousands of tabs the unfiltered reply is
+    // megabytes the server drops straight away, and it can take the connection
+    // down before the reply lands.
+    const query: browser.tabs._QueryQueryInfo = {};
+    if (req.windowId !== undefined) {
+      query.windowId = req.windowId;
+    }
+    if (req.activeOnly) {
+      query.active = true;
+    }
+    if (req.visibleOnly) {
+      // Firefox can hide tabs (tab-group / tree-style extensions do it).
+      query.hidden = false;
+    }
+    const tabs = await browser.tabs.query(query);
     await this.client.sendResourceToServer({
       resource: "tabs",
-      correlationId,
-      tabs,
+      correlationId: req.correlationId,
+      tabs: tabs.map((tab) => ({
+        id: tab.id,
+        windowId: tab.windowId,
+        url: tab.url,
+        title: tab.title,
+        lastAccessed: tab.lastAccessed,
+      })),
     });
   }
 
