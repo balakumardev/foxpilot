@@ -14,6 +14,7 @@ import { formatEvalResult } from "./eval-format";
 import { formatClickResult } from "./click-format";
 import { formatSelectTabResult } from "./select-tab-format";
 import { formatNavigateResult } from "./navigate-format";
+import { formatTabList } from "./tab-list-format";
 import { allowedNavUrl, NAV_URL_MESSAGE } from "./url-policy";
 import dayjs from "dayjs";
 import relativeTime from "dayjs/plugin/relativeTime";
@@ -120,41 +121,40 @@ mcpServer.tool(
 
 mcpServer.tool(
   "get-list-of-open-tabs",
-  "Get the list of open tabs in the user's browser. Use offset and limit parameters for pagination when there are many tabs.",
+  "Get the list of open tabs in the user's browser. Use offset and limit for pagination when there are many tabs. " +
+    "With thousands of tabs, narrow the list instead of paging through it: windowId limits it to one window, " +
+    "activeOnly to the active tab of each window (a quick way to discover window ids), and visibleOnly skips tabs " +
+    "the user cannot see in the tab strip (hidden tabs in Firefox, tabs in a collapsed tab group in Chrome/Edge). " +
+    "Every line ends with its window id.",
   {
     offset: z.number().int().min(0).default(0).describe("Starting index for pagination (0-based, must be >= 0)"),
     limit: z.number().default(100).describe("Maximum number of tabs to return (default: 100, max: 500)"),
+    windowId: z
+      .number()
+      .int()
+      .optional()
+      .describe("Only list tabs in this window (see 'window id=' on each line)"),
+    activeOnly: z
+      .boolean()
+      .optional()
+      .describe("Only list the active tab of each window"),
+    visibleOnly: z
+      .boolean()
+      .optional()
+      .describe(
+        "Skip tabs the user cannot see in the tab strip: hidden tabs (Firefox) and tabs in a collapsed tab group (Chrome/Edge)"
+      ),
   },
-  async ({ offset, limit }) => {
-    // Validate and cap the limit
-    const effectiveLimit = Math.min(Math.max(1, limit), 500);
-
-    const openTabs = await browserApi.getTabList();
-    const totalTabs = openTabs.length;
-
-    // Apply pagination
-    const paginatedTabs = openTabs.slice(offset, offset + effectiveLimit);
-    const hasMore = offset + effectiveLimit < totalTabs;
-
-    // Add pagination info as the first content item
-    const paginationInfo = {
-      type: "text" as const,
-      text: `Showing tabs ${offset + 1}-${offset + paginatedTabs.length} of ${totalTabs} total tabs${hasMore ? ` (use offset=${offset + effectiveLimit} to see more)` : ''}`,
-    };
-
-    const tabContent = paginatedTabs.map((tab) => {
-      let lastAccessed = "unknown";
-      if (tab.lastAccessed) {
-        lastAccessed = dayjs(tab.lastAccessed).fromNow(); // LLM-friendly time ago
-      }
-      return {
-        type: "text" as const,
-        text: `tab id=${tab.id}, tab url=${tab.url}, tab title=${tab.title}, last accessed=${lastAccessed}`,
-      };
-    });
-
+  async ({ offset, limit, windowId, activeOnly, visibleOnly }) => {
+    const filter = { windowId, activeOnly, visibleOnly };
+    const openTabs = await browserApi.getTabList(filter);
     return {
-      content: [paginationInfo, ...tabContent],
+      content: formatTabList(openTabs, {
+        offset,
+        limit,
+        filtered:
+          windowId !== undefined || activeOnly === true || visibleOnly === true,
+      }),
     };
   }
 );

@@ -2080,3 +2080,142 @@ describe("MessageHandler (chrome) — get-console-messages capture gate", () => 
     expect(msg).toMatch(/default/i);
   });
 });
+
+describe("MessageHandler (chrome) — get-tab-list", () => {
+  let messageHandler: MessageHandler;
+  let transport: jest.Mocked<ExtensionTransport>;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    transport = makeTransport();
+    messageHandler = new MessageHandler(transport);
+    (browser.storage.local.get as jest.Mock).mockResolvedValue({
+      config: {
+        secret: "test-secret",
+        ports: [8089],
+        domainDenyList: [] as string[],
+        auditLog: [],
+        toolSettings: {},
+      },
+    });
+    (browser as any).tabGroups.query = jest.fn().mockResolvedValue([]);
+  });
+
+  it("sends only the fields the server reads, not the whole Tab object", async () => {
+    (browser.tabs.query as jest.Mock).mockResolvedValue([
+      {
+        id: 1,
+        windowId: 7,
+        url: "https://a.com",
+        title: "A",
+        lastAccessed: 1000,
+        favIconUrl: "data:image/png;base64," + "A".repeat(4000),
+        mutedInfo: { muted: false },
+        groupId: -1,
+        width: 1200,
+        height: 800,
+        active: true,
+      },
+    ]);
+
+    await messageHandler.handleDecodedMessage({
+      cmd: "get-tab-list",
+      correlationId: "c-slim",
+    });
+
+    expect(browser.tabs.query).toHaveBeenCalledWith({});
+    const sent = transport.sendResourceToServer.mock.calls[0][0] as any;
+    expect(sent.resource).toBe("tabs");
+    expect(sent.tabs).toEqual([
+      {
+        id: 1,
+        windowId: 7,
+        url: "https://a.com",
+        title: "A",
+        lastAccessed: 1000,
+      },
+    ]);
+    expect(Object.keys(sent.tabs[0]).sort()).toEqual([
+      "id",
+      "lastAccessed",
+      "title",
+      "url",
+      "windowId",
+    ]);
+  });
+
+  it("passes windowId and activeOnly to tabs.query, and never asks for hidden", async () => {
+    (browser.tabs.query as jest.Mock).mockResolvedValue([]);
+
+    await messageHandler.handleDecodedMessage({
+      cmd: "get-tab-list",
+      correlationId: "c-filter",
+      windowId: 7,
+      activeOnly: true,
+    });
+
+    // Chrome has no `hidden` tab state, so the query must not carry one.
+    expect(browser.tabs.query).toHaveBeenCalledWith({
+      windowId: 7,
+      active: true,
+    });
+  });
+
+  it("visibleOnly drops tabs that sit in a collapsed tab group", async () => {
+    (browser.tabs.query as jest.Mock).mockResolvedValue([
+      { id: 1, windowId: 7, url: "https://a.com", groupId: -1 },
+      { id: 2, windowId: 7, url: "https://b.com", groupId: 5 },
+      { id: 3, windowId: 7, url: "https://c.com", groupId: 6 },
+    ]);
+    (browser as any).tabGroups.query.mockResolvedValue([
+      { id: 5, collapsed: true },
+    ]);
+
+    await messageHandler.handleDecodedMessage({
+      cmd: "get-tab-list",
+      correlationId: "c-visible",
+      visibleOnly: true,
+    });
+
+    expect((browser as any).tabGroups.query).toHaveBeenCalledWith({
+      collapsed: true,
+    });
+    const sent = transport.sendResourceToServer.mock.calls[0][0] as any;
+    expect(sent.tabs.map((t: { id: number }) => t.id)).toEqual([1, 3]);
+  });
+
+  it("visibleOnly does not touch tab groups when the caller did not ask", async () => {
+    (browser.tabs.query as jest.Mock).mockResolvedValue([
+      { id: 2, windowId: 7, url: "https://b.com", groupId: 5 },
+    ]);
+
+    await messageHandler.handleDecodedMessage({
+      cmd: "get-tab-list",
+      correlationId: "c-all",
+    });
+
+    expect((browser as any).tabGroups.query).not.toHaveBeenCalled();
+    const sent = transport.sendResourceToServer.mock.calls[0][0] as any;
+    expect(sent.tabs).toHaveLength(1);
+  });
+
+  it("visibleOnly still lists every tab when the browser has no tabGroups API", async () => {
+    (browser.tabs.query as jest.Mock).mockResolvedValue([
+      { id: 1, windowId: 7, url: "https://a.com", groupId: 5 },
+    ]);
+    const saved = (browser as any).tabGroups;
+    (browser as any).tabGroups = undefined;
+    try {
+      await messageHandler.handleDecodedMessage({
+        cmd: "get-tab-list",
+        correlationId: "c-nogroups",
+        visibleOnly: true,
+      });
+    } finally {
+      (browser as any).tabGroups = saved;
+    }
+
+    const sent = transport.sendResourceToServer.mock.calls[0][0] as any;
+    expect(sent.tabs.map((t: { id: number }) => t.id)).toEqual([1]);
+  });
+});
