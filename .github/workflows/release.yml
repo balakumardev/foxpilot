@@ -16,6 +16,10 @@ on:
         description: "Only publish the version already on main to npm (no bump, no GitHub release, no store uploads)"
         type: boolean
         default: false
+      chrome_only:
+        description: "Only publish the version already on main to the Chrome Web Store (no bump, no GitHub release, no npm/AMO). Use this when publish-chrome went green but hit ITEM_NOT_UPDATABLE (another upload was still pending review) and the store never actually updated."
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -26,7 +30,7 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
-    if: "!contains(github.event.head_commit.message, '[skip ci]') && !inputs.npm_only"
+    if: "!contains(github.event.head_commit.message, '[skip ci]') && !inputs.npm_only && !inputs.chrome_only"
     outputs:
       version: ${{ steps.version.outputs.VERSION }}
     steps:
@@ -148,6 +152,41 @@ jobs:
           # only uses this token when the exchange is refused.
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
+  chrome-only:
+    # Manual retry for the Chrome Web Store alone (Actions -> Release -> Run
+    # workflow -> chrome_only): publishes the version already on main, for
+    # when publish-chrome went green but actually hit ITEM_NOT_UPDATABLE
+    # (another upload from the same release burst was still pending review)
+    # and the store never got the update.
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.chrome_only }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build + package Chrome extension
+        id: build
+        run: |
+          npm run package --prefix chrome-extension
+          VERSION=$(node -p "require('./chrome-extension/package.json').version")
+          echo "VERSION=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Publish to Chrome Web Store
+        uses: mobilefirstllc/cws-publish@latest
+        with:
+          action: publish
+          client_id: ${{ secrets.CWS_CLIENT_ID }}
+          client_secret: ${{ secrets.CWS_CLIENT_SECRET }}
+          refresh_token: ${{ secrets.CWS_REFRESH_TOKEN }}
+          extension_id: ${{ secrets.CWS_EXTENSION_ID }}
+          zip_file: chrome-extension/web-ext-artifacts/foxpilot-chrome-${{ steps.build.outputs.VERSION }}.zip
+
   publish-amo:
     # Republish the Firefox add-on to addons.mozilla.org on every commit.
     # Skipped unless the AMO API credentials are configured.
@@ -235,6 +274,7 @@ jobs:
         run: npm run package --prefix chrome-extension
 
       - name: Publish to Chrome Web Store
+        id: chrome_publish
         if: steps.cws.outputs.ok == 'true'
         continue-on-error: true
         uses: mobilefirstllc/cws-publish@latest
@@ -245,3 +285,14 @@ jobs:
           refresh_token: ${{ secrets.CWS_REFRESH_TOKEN }}
           extension_id: ${{ secrets.CWS_EXTENSION_ID }}
           zip_file: chrome-extension/web-ext-artifacts/foxpilot-chrome-${{ needs.release.outputs.version }}.zip
+
+      - name: Flag a failed Chrome Web Store publish
+        # A failure here is often ITEM_NOT_UPDATABLE (another upload from this
+        # same release burst is still pending review) rather than a real error,
+        # so it must not fail the release — but it must not go silently green
+        # either, or the store drifts behind npm/AMO unnoticed. Retry later with
+        # workflow_dispatch -> chrome_only once the pending review clears.
+        if: steps.cws.outputs.ok == 'true' && steps.chrome_publish.outcome == 'failure'
+        run: |
+          echo "::error title=Chrome Web Store publish failed::foxpilot v${{ needs.release.outputs.version }} was NOT published to the Chrome Web Store (likely ITEM_NOT_UPDATABLE — another upload still pending review). Retry via Actions -> Release -> Run workflow -> chrome_only once review clears."
+          echo "### Chrome Web Store publish failed: v${{ needs.release.outputs.version }} is not live on the store" >> "$GITHUB_STEP_SUMMARY"
