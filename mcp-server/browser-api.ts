@@ -737,6 +737,7 @@ export class BrowserAPI {
       doubleClick?: boolean;
       button?: "left" | "middle" | "right";
       engine?: "synthetic" | "cdp";
+      activateTab?: boolean;
     }
   ): Promise<PointActionResultExtensionMessage> {
     // Returned unchanged (NOT thrown on ok:false) so the tool can report the
@@ -749,6 +750,7 @@ export class BrowserAPI {
       doubleClick: opts?.doubleClick,
       button: opts?.button,
       engine: opts?.engine,
+      activateTab: opts?.activateTab,
     });
   }
 
@@ -759,7 +761,8 @@ export class BrowserAPI {
     text: string,
     submit?: boolean,
     engine?: "synthetic" | "cdp",
-    commit?: boolean
+    commit?: boolean,
+    activateTab?: boolean
   ): Promise<PointActionResultExtensionMessage> {
     // Returned unchanged (NOT thrown on ok:false) so the tool can report the
     // element descriptor even when the point missed / hit a non-typable node.
@@ -772,6 +775,7 @@ export class BrowserAPI {
       submit,
       engine,
       commit,
+      activateTab,
     });
   }
 
@@ -779,7 +783,8 @@ export class BrowserAPI {
     tabId: number,
     x: number,
     y: number,
-    engine?: "synthetic" | "cdp"
+    engine?: "synthetic" | "cdp",
+    activateTab?: boolean
   ): Promise<PointActionResultExtensionMessage> {
     // Returned unchanged (NOT thrown on ok:false) so the tool can report the
     // element descriptor even when the point missed.
@@ -789,6 +794,7 @@ export class BrowserAPI {
       x,
       y,
       engine,
+      activateTab,
     });
   }
 
@@ -796,7 +802,12 @@ export class BrowserAPI {
     tabId: number,
     x: number,
     y: number,
-    opts?: { dx?: number; dy?: number; engine?: "synthetic" | "cdp" }
+    opts?: {
+      dx?: number;
+      dy?: number;
+      engine?: "synthetic" | "cdp";
+      activateTab?: boolean;
+    }
   ): Promise<PointActionResultExtensionMessage> {
     // Returned unchanged (NOT thrown on ok:false) so the tool can report the
     // scrolled container's descriptor (or the element at the point when it falls
@@ -809,30 +820,35 @@ export class BrowserAPI {
       dx: opts?.dx,
       dy: opts?.dy,
       engine: opts?.engine,
+      activateTab: opts?.activateTab,
     });
   }
 
   async scrollTo(
     tabId: number,
     x?: number,
-    y?: number
+    y?: number,
+    activateTab?: boolean
   ): Promise<ActionResultExtensionMessage> {
     return await this.sendTool<ActionResultExtensionMessage>({
       cmd: "scroll-to",
       tabId,
       x,
       y,
+      activateTab,
     });
   }
 
   async scrollIntoView(
     tabId: number,
-    uid: string
+    uid: string,
+    activateTab?: boolean
   ): Promise<ActionResultExtensionMessage> {
     return await this.sendTool<ActionResultExtensionMessage>({
       cmd: "scroll-into-view",
       tabId,
       uid,
+      activateTab,
     });
   }
 

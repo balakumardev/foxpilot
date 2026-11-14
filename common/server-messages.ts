@@ -434,6 +434,8 @@ export interface CaptureResponseBodiesServerMessage extends ServerMessageBase {
 // is a backward-compatible Phase 3 addition.
 export interface ClickAtServerMessage extends ServerMessageBase {
   cmd: "click-at";
+  // See GetTabContentServerMessage.activateTab.
+  activateTab?: boolean;
   // Dispatch engine. "synthetic" (default) runs covertly in the isolated world
   // (isTrusted:false). "cdp" (Chrome/Edge only) dispatches TRUSTED Input.*
   // events via chrome.debugger (isTrusted:true; shows the debugger banner;
@@ -453,6 +455,8 @@ export interface ClickAtServerMessage extends ServerMessageBase {
 // requestSubmit()s the enclosing form if there is one).
 export interface TypeAtServerMessage extends ServerMessageBase {
   cmd: "type-at";
+  // See GetTabContentServerMessage.activateTab.
+  activateTab?: boolean;
   // See ClickAtServerMessage.engine.
   engine?: "synthetic" | "cdp";
   tabId: number;
@@ -470,6 +474,8 @@ export interface TypeAtServerMessage extends ServerMessageBase {
 // the isolated content-script world. Reports the element under the point.
 export interface HoverAtServerMessage extends ServerMessageBase {
   cmd: "hover-at";
+  // See GetTabContentServerMessage.activateTab.
+  activateTab?: boolean;
   // See ClickAtServerMessage.engine.
   engine?: "synthetic" | "cdp";
   tabId: number;
@@ -486,6 +492,8 @@ export interface HoverAtServerMessage extends ServerMessageBase {
 // container-viewport down. Runs covertly in the isolated content-script world.
 export interface ScrollAtServerMessage extends ServerMessageBase {
   cmd: "scroll-at";
+  // See GetTabContentServerMessage.activateTab.
+  activateTab?: boolean;
   // See ClickAtServerMessage.engine.
   engine?: "synthetic" | "cdp";
   tabId: number;
@@ -501,6 +509,8 @@ export interface ScrollAtServerMessage extends ServerMessageBase {
 // screenshot). Runs in the ISOLATED content-script world.
 export interface ScrollToServerMessage extends ServerMessageBase {
   cmd: "scroll-to";
+  // See GetTabContentServerMessage.activateTab.
+  activateTab?: boolean;
   tabId: number;
   x?: number;
   y?: number;
@@ -512,6 +522,8 @@ export interface ScrollToServerMessage extends ServerMessageBase {
 // script world.
 export interface ScrollIntoViewServerMessage extends ServerMessageBase {
   cmd: "scroll-into-view";
+  // See GetTabContentServerMessage.activateTab.
+  activateTab?: boolean;
   tabId: number;
   uid: string;
 }

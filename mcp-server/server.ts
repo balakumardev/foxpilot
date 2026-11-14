@@ -30,14 +30,23 @@ dayjs.extend(relativeTime);
 // Shared zod field + description for the opt-in tab-activation flag. Tools that
 // read from or drive a specific tab accept this so an agent can recover when a
 // BACKGROUND tab returns empty/times out (Chrome Memory Saver / Edge Sleeping
-// Tabs freeze background tabs). When true the extension foregrounds the target
-// tab for the call, then restores the user's previous foreground tab.
+// Tabs can freeze background tabs). When true the extension foregrounds the
+// target tab for the call, then restores the user's previous foreground tab.
+//
+// It is a RETRY-ONLY escape hatch. Every call that sets it visibly switches the
+// user's tab and back, and fires focus/visibility events at machine cadence.
+// An audit of real agent sessions (2026-11) found most calls that set it
+// followed a call on the same tab that had NOT failed (88% of 2054 Firefox
+// calls, 61% of 28 Chrome calls; only 8% / 21% followed a failing or empty
+// result, and a further 4% / 18% were the first call on the tab), so it was
+// habit, not recovery. The old wording ("pass it on background tabs", "the tab
+// is frozen") taught agents to add it everywhere. Keep this text conditional.
 const activateTabField = {
   activateTab: z
     .boolean()
     .optional()
     .describe(
-      "Set true to briefly foreground the target tab for this call, then restore the user's previous tab. Use it when a BACKGROUND tab returns empty content or times out (background tabs get frozen by Chrome Memory Saver / Edge Sleeping Tabs)."
+      "RETRY-ONLY. Do NOT set this on the first attempt: a background tab normally works without it, and every call that sets it switches the user's visible tab and back, interrupting their browsing. Set true only to retry ONE call that came back empty or timed out on a tab that is not in front (a frozen Chrome Memory Saver / Edge Sleeping Tab is the usual reason); it briefly foregrounds the target tab for that call, then restores the user's previous tab."
     ),
 };
 
@@ -64,11 +73,12 @@ const baseInstructions =
   "FIND ELEMENTS BY TEXT: pass textContains:'visible label' to take-snapshot to locate a control " +
   "by its on-screen text (case-insensitive) instead of dumping the whole page; this is the reliable " +
   "way to click nav items, tabs, and menu entries. " +
-  "BACKGROUND TABS: if the target tab is NOT the user's foreground tab, its content is frozen by " +
-  "Chrome Memory Saver / Edge Sleeping Tabs — take-snapshot returns empty and clicks time out. " +
-  "PASS activateTab:true on take-snapshot / click-element / fill-element / navigate-tab / etc. to " +
-  "briefly foreground the tab for that one call and restore the user's tab after. When a snapshot " +
-  "comes back empty or a call times out on a tab you did not just navigate, retry with activateTab:true. " +
+  "BACKGROUND TABS: a tab that is not in front normally still works, so drive it as it is and leave the " +
+  "user's visible tab alone. Do NOT pass activateTab:true up front: every call that sets it switches the " +
+  "user's tab and back, which interrupts their browsing and gives the page a burst of focus/visibility " +
+  "changes that can look like automation to a site. Only if one call on a background tab comes back empty " +
+  "or times out (Chrome Memory Saver / Edge Sleeping Tabs can freeze it), retry THAT call once with " +
+  "activateTab:true. Avoid select-tab for this: it moves the user's window focus and does not switch back. " +
   "SPA NAVIGATION: after a click that expands a menu or changes the view, take a fresh snapshot before " +
   "the next click; content may render lazily. Prefer take-snapshot over evaluate-script (many app pages " +
   "have a strict CSP that blocks page-world script). Custom dropdowns (react-select/Radix) use select-option, " +
@@ -273,7 +283,7 @@ mcpServer.tool(
 
 mcpServer.tool(
   "take-snapshot",
-  "Take an accessibility snapshot of a browser tab's page — the START of the drive-a-page loop (snapshot → act on a uid → fresh snapshot). Returns interactive elements each tagged with a uid (e.g. [uid=e12]) for the uid-based tools (click-element / fill-element / hover-element / select-option / etc.). IMPORTANT: a [uid=eN] is only valid until the NEXT take-snapshot on the same tab — snapshot, then act on its uids before snapshotting again; a second snapshot reassigns every uid, so a uid from an earlier snapshot will resolve to the wrong element or fail. BACKGROUND TAB: if this returns an empty/near-empty tree for a tab that is NOT the user's foreground tab, the tab is frozen by Chrome Memory Saver / Edge Sleeping Tabs — retry with activateTab:true to briefly foreground it for the call. TO FIND A SPECIFIC CONTROL by its visible text or label (nav item, tab, menu entry, icon-only button), pass textContains:'the label' rather than reading the whole page. By default it now also captures visually-clickable elements (cursor:pointer, e.g. React <div onClick> cards) — set includePointer:false to suppress that, or maxInteractive to cap how many are added. SHADOW DOM: web-component content in open AND closed shadow roots is included, in reading order (iframes are not walked). Query modes: 'selector' returns exactly the CSS-selector matches (even non-interactive, e.g. selector:'[contenteditable]' for a chat box), matched inside each shadow root separately (CSS combinators never cross a shadow boundary); 'textContains' matches case-insensitively against an element's text content OR its accessible name (aria-label, aria-labelledby, <label>, alt, title, placeholder), and when an element and its descendant both match, only the deepest one is returned — except that text rendered through a web component's slot counts for the control around it (e.g. the component's button), text hidden with CSS counts only for a visible control around it, and a match by name alone (e.g. an icon's alt) never hides a control that matches by its own text. A row whose trailing (states) end with 'via inner button' (or link, checkbox, ...) is a menu item / option / tab / tree item that wraps exactly one control of the same name: its uid targets that inner control and the row also shows that control's states and value, so click-element on it reaches the control. A list or grid wrapper (listitem, row, gridcell) around one same-named control is not listed; the control's own row stands for it. In selector mode a matched wrapper keeps its own uid and '(wraps button [uid=eN])' gives the inner control's uid. Scope with 'rootSelector' to collect only within one subtree (e.g. the main panel, excluding a huge sidebar; it may point at a shadow host or inside a shadow root), and page large results with 'offset'/'limit' (the reply reports total collected and whether more remain). verbose:true additionally includes headings and aria-labelled elements.",
+  "Take an accessibility snapshot of a browser tab's page — the START of the drive-a-page loop (snapshot → act on a uid → fresh snapshot). Returns interactive elements each tagged with a uid (e.g. [uid=e12]) for the uid-based tools (click-element / fill-element / hover-element / select-option / etc.). IMPORTANT: a [uid=eN] is only valid until the NEXT take-snapshot on the same tab — snapshot, then act on its uids before snapshotting again; a second snapshot reassigns every uid, so a uid from an earlier snapshot will resolve to the wrong element or fail. BACKGROUND TAB: a tab that is not in front normally snapshots fine, so do not pass activateTab:true up front. Only if this returns an empty/near-empty tree for such a tab (it may be frozen by Chrome Memory Saver / Edge Sleeping Tabs), retry once with activateTab:true to briefly foreground it for the call. TO FIND A SPECIFIC CONTROL by its visible text or label (nav item, tab, menu entry, icon-only button), pass textContains:'the label' rather than reading the whole page. By default it now also captures visually-clickable elements (cursor:pointer, e.g. React <div onClick> cards) — set includePointer:false to suppress that, or maxInteractive to cap how many are added. SHADOW DOM: web-component content in open AND closed shadow roots is included, in reading order (iframes are not walked). Query modes: 'selector' returns exactly the CSS-selector matches (even non-interactive, e.g. selector:'[contenteditable]' for a chat box), matched inside each shadow root separately (CSS combinators never cross a shadow boundary); 'textContains' matches case-insensitively against an element's text content OR its accessible name (aria-label, aria-labelledby, <label>, alt, title, placeholder), and when an element and its descendant both match, only the deepest one is returned — except that text rendered through a web component's slot counts for the control around it (e.g. the component's button), text hidden with CSS counts only for a visible control around it, and a match by name alone (e.g. an icon's alt) never hides a control that matches by its own text. A row whose trailing (states) end with 'via inner button' (or link, checkbox, ...) is a menu item / option / tab / tree item that wraps exactly one control of the same name: its uid targets that inner control and the row also shows that control's states and value, so click-element on it reaches the control. A list or grid wrapper (listitem, row, gridcell) around one same-named control is not listed; the control's own row stands for it. In selector mode a matched wrapper keeps its own uid and '(wraps button [uid=eN])' gives the inner control's uid. Scope with 'rootSelector' to collect only within one subtree (e.g. the main panel, excluding a huge sidebar; it may point at a shadow host or inside a shadow root), and page large results with 'offset'/'limit' (the reply reports total collected and whether more remain). verbose:true additionally includes headings and aria-labelled elements.",
   {
     tabId: z.number(),
     verbose: z.boolean().optional(),
@@ -485,7 +495,7 @@ mcpServer.tool(
 
 mcpServer.tool(
   "wait-for-text",
-  "Wait until text appears on a tab's page, polling until found or the timeout elapses (default 30000ms). 'text' may be a single string OR an array of strings — with an array it resolves as soon as ANY of them appears and reports which one matched. If the target tab is in the BACKGROUND, pass activateTab:true — a frozen background tab never renders the awaited text, so the call would otherwise poll for the full timeout and report 'did not appear' even though the page is fine.",
+  "Wait until text appears on a tab's page, polling until found or the timeout elapses (default 30000ms). 'text' may be a single string OR an array of strings — with an array it resolves as soon as ANY of them appears and reports which one matched. Do not pass activateTab:true up front. Only if waiting on a BACKGROUND tab reports 'did not appear' while the page is fine (a frozen background tab never renders the awaited text), retry once with activateTab:true.",
   {
     tabId: z.number(),
     text: z.union([z.string(), z.array(z.string()).nonempty()]),
@@ -768,9 +778,15 @@ mcpServer.tool(
     doubleClick: z.boolean().optional(),
     button: z.enum(["left", "middle", "right"]).optional(),
     engine: z.enum(["synthetic", "cdp"]).optional(),
+    ...activateTabField,
   },
-  async ({ tabId, x, y, doubleClick, button, engine }) => {
-    const result = await browserApi.clickAt(tabId, x, y, { doubleClick, button, engine });
+  async ({ tabId, x, y, doubleClick, button, engine, activateTab }) => {
+    const result = await browserApi.clickAt(tabId, x, y, {
+      doubleClick,
+      button,
+      engine,
+      activateTab,
+    });
     return formatPointResult("Clicked", tabId, x, y, result);
   }
 );
@@ -786,9 +802,19 @@ mcpServer.tool(
     submit: z.boolean().optional(),
     commit: z.boolean().optional(),
     engine: z.enum(["synthetic", "cdp"]).optional(),
+    ...activateTabField,
   },
-  async ({ tabId, x, y, text, submit, commit, engine }) => {
-    const result = await browserApi.typeAt(tabId, x, y, text, submit, engine, commit);
+  async ({ tabId, x, y, text, submit, commit, engine, activateTab }) => {
+    const result = await browserApi.typeAt(
+      tabId,
+      x,
+      y,
+      text,
+      submit,
+      engine,
+      commit,
+      activateTab
+    );
     return formatPointResult("Typed", tabId, x, y, result);
   }
 );
@@ -801,9 +827,10 @@ mcpServer.tool(
     x: z.number(),
     y: z.number(),
     engine: z.enum(["synthetic", "cdp"]).optional(),
+    ...activateTabField,
   },
-  async ({ tabId, x, y, engine }) => {
-    const result = await browserApi.hoverAt(tabId, x, y, engine);
+  async ({ tabId, x, y, engine, activateTab }) => {
+    const result = await browserApi.hoverAt(tabId, x, y, engine, activateTab);
     return formatPointResult("Hovered", tabId, x, y, result);
   }
 );
@@ -818,9 +845,15 @@ mcpServer.tool(
     dx: z.number().optional(),
     dy: z.number().optional(),
     engine: z.enum(["synthetic", "cdp"]).optional(),
+    ...activateTabField,
   },
-  async ({ tabId, x, y, dx, dy, engine }) => {
-    const result = await browserApi.scrollAt(tabId, x, y, { dx, dy, engine });
+  async ({ tabId, x, y, dx, dy, engine, activateTab }) => {
+    const result = await browserApi.scrollAt(tabId, x, y, {
+      dx,
+      dy,
+      engine,
+      activateTab,
+    });
     return formatPointResult("Scrolled", tabId, x, y, result);
   }
 );
@@ -828,9 +861,14 @@ mcpServer.tool(
 mcpServer.tool(
   "scroll-to",
   "Scroll the page to absolute coordinates via window.scrollTo(x, y). Omit x or y to leave that axis unchanged. Useful to position content before a viewport screenshot.",
-  { tabId: z.number(), x: z.number().optional(), y: z.number().optional() },
-  async ({ tabId, x, y }) => {
-    const result = await browserApi.scrollTo(tabId, x, y);
+  {
+    tabId: z.number(),
+    x: z.number().optional(),
+    y: z.number().optional(),
+    ...activateTabField,
+  },
+  async ({ tabId, x, y, activateTab }) => {
+    const result = await browserApi.scrollTo(tabId, x, y, activateTab);
     if (!result.ok) {
       return {
         content: [
@@ -853,9 +891,9 @@ mcpServer.tool(
 mcpServer.tool(
   "scroll-into-view",
   "Scroll the element with the given snapshot uid into view (centered). Take a fresh take-snapshot first to get a current uid (uids are reassigned each snapshot).",
-  { tabId: z.number(), uid: z.string() },
-  async ({ tabId, uid }) => {
-    const result = await browserApi.scrollIntoView(tabId, uid);
+  { tabId: z.number(), uid: z.string(), ...activateTabField },
+  async ({ tabId, uid, activateTab }) => {
+    const result = await browserApi.scrollIntoView(tabId, uid, activateTab);
     if (!result.ok) {
       return {
         content: [

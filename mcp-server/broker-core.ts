@@ -154,9 +154,10 @@ const TAB_DRIVING_COMMANDS: ReadonlySet<string> = new Set<
   "type-text",
   "drag-element",
   "hover-element",
-  // Coordinate input actions. NOTE: these four do NOT accept `activateTab`
-  // today, which is why the hint leads with `select-tab` — the one remedy that
-  // works for every command in this set.
+  // Coordinate input actions. They accept `activateTab` like the uid-based
+  // ones. They did not before: the hint then had to lead with `select-tab`,
+  // which takes the user's window focus and never switches back — the agent
+  // behaviour behind "the browser keeps jumping to the agent's tab".
   "click-at",
   "type-at",
   "hover-at",
@@ -217,8 +218,10 @@ export function timeoutMessageFor(
     ` LIKELY CAUSE: if this tab is not the user's foreground tab it may be ` +
     `frozen (Chrome Memory Saver / Edge Sleeping Tabs). A frozen tab still ` +
     `returns a full snapshot, so a healthy tree does NOT rule this out — only ` +
-    `input stalls. Foreground the tab with select-tab, or pass ` +
-    `activateTab:true on the tools that accept it, before you retry.`
+    `input stalls. Before you retry, pass activateTab:true on this call: it ` +
+    `foregrounds the tab for that one call and then restores the user's ` +
+    `previous tab. select-tab is a last resort: it moves the user's window ` +
+    `focus and does not switch back.`
   );
 }
 
