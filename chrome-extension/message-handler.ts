@@ -53,6 +53,7 @@ import {
   cdpInputKey,
 } from "./cdp-input";
 import { cdpEval } from "./cdp-eval";
+import { allSitesRequestUrl, allSitesMissingMessage } from "./all-sites-access";
 import { raceInputAgainstNavigation } from "./nav-race";
 import {
   waitForTabReady,
@@ -774,6 +775,13 @@ export class MessageHandler {
       });
       if (!granted) {
         const optionsUrl = browser.runtime.getURL("options.html");
+        // Automation Mode promises access to every site. A missing per-origin
+        // grant then means the browser never gave (or took back) the all-sites
+        // grant, so ask for THAT once instead of prompting host by host.
+        if (await isAutomationModeEnabled()) {
+          await browser.tabs.create({ url: allSitesRequestUrl(optionsUrl) });
+          throw new Error(allSitesMissingMessage(origin));
+        }
         const urlWithParams = `${optionsUrl}?requestUrl=${encodeURIComponent(url)}`;
         await browser.tabs.create({ url: urlWithParams });
         throw new Error(

@@ -177,6 +177,75 @@ describe("MessageHandler (chrome) — foreground-tab preservation", () => {
     });
   });
 
+  describe("host access when the browser has not granted the page's origin", () => {
+    beforeEach(() => {
+      (browser.tabs.get as jest.Mock).mockResolvedValue({
+        id: 123,
+        url: "https://example.com/page",
+      });
+      (browser.permissions.contains as jest.Mock).mockResolvedValue(false);
+      (browser.tabs.create as jest.Mock).mockResolvedValue({ id: 500 });
+    });
+
+    it("Automation Mode ON: opens the ALL-SITES grant dialog, not a per-host one", async () => {
+      (browser.storage.local.get as jest.Mock).mockResolvedValue({
+        config: { ...baseConfig, automationMode: true },
+      });
+
+      await expect(
+        messageHandler.handleDecodedMessage({
+          cmd: "take-snapshot",
+          tabId: 123,
+          correlationId: "all1",
+        } as ServerMessageRequest)
+      ).rejects.toThrow(/Automation Mode is on.*all sites/s);
+
+      expect(browser.tabs.create).toHaveBeenCalledTimes(1);
+      expect(browser.tabs.create).toHaveBeenCalledWith({
+        url: "chrome-extension://test/options.html?requestAllSites=1",
+      });
+      // The per-origin request must NOT be what the user is asked to approve.
+      const url = (browser.tabs.create as jest.Mock).mock.calls[0][0].url;
+      expect(url).not.toContain("requestUrl");
+      expect(browser.tabs.sendMessage).not.toHaveBeenCalled();
+    });
+
+    it("Automation Mode OFF: keeps the per-host dialog for that origin", async () => {
+      await expect(
+        messageHandler.handleDecodedMessage({
+          cmd: "get-tab-content",
+          tabId: 123,
+          correlationId: "all2",
+        } as ServerMessageRequest)
+      ).rejects.toThrow(/has not yet granted permission to access the domain/);
+
+      expect(browser.tabs.create).toHaveBeenCalledWith({
+        url:
+          "chrome-extension://test/options.html?requestUrl=" +
+          encodeURIComponent("https://example.com/page"),
+      });
+    });
+
+    it("Automation Mode ON but the origin IS granted: no dialog at all", async () => {
+      (browser.storage.local.get as jest.Mock).mockResolvedValue({
+        config: { ...baseConfig, automationMode: true },
+      });
+      (browser.permissions.contains as jest.Mock).mockResolvedValue(true);
+      (browser.tabs.sendMessage as jest.Mock).mockResolvedValue({
+        tree: "",
+        isTruncated: false,
+      });
+
+      await messageHandler.handleDecodedMessage({
+        cmd: "take-snapshot",
+        tabId: 123,
+        correlationId: "all3",
+      } as ServerMessageRequest);
+
+      expect(browser.tabs.create).not.toHaveBeenCalled();
+    });
+  });
+
   describe("take-screenshot command", () => {
     const automationConfig = {
       ...baseConfig,

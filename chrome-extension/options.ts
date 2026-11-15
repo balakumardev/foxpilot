@@ -29,6 +29,13 @@ import {
 } from "./extension-config";
 import { NativeInputClient } from "./native-input-client";
 import {
+  ALL_SITES_ORIGINS,
+  REQUEST_ALL_SITES_PARAM,
+  MISSING_ACCESS_WARNING,
+  hasAllSitesAccess,
+  automationToggleView,
+} from "./all-sites-access";
+import {
   applyActiveStatus,
   selectThisBrowser,
   fetchInitialActiveStatus,
@@ -422,7 +429,19 @@ async function setAllTools(enabled: boolean) {
  */
 async function loadAutomationMode() {
   try {
-    automationModeToggle.checked = await isAutomationModeEnabled();
+    // The stored flag alone is not the truth: Automation Mode only works across
+    // sites while the browser holds the all-sites grant. Show the real state.
+    const flagOn = await isAutomationModeEnabled();
+    const hasAccess = flagOn ? await hasAllSitesAccess() : false;
+    const view = automationToggleView(flagOn, hasAccess);
+    automationModeToggle.checked = view.checked;
+    if (view.warning) {
+      automationModeStatus.textContent = view.warning;
+      automationModeStatus.style.color = "var(--danger)";
+    } else if (automationModeStatus.textContent === MISSING_ACCESS_WARNING) {
+      automationModeStatus.textContent = "";
+      automationModeStatus.style.color = "";
+    }
   } catch (error) {
     console.error("Error loading automation mode:", error);
   }
@@ -440,7 +459,7 @@ async function handleAutomationModeToggle(event: Event) {
   try {
     if (enabled) {
       const granted = await browser.permissions.request({
-        origins: ["<all_urls>"],
+        origins: ALL_SITES_ORIGINS,
       });
       if (!granted) {
         automationModeToggle.checked = false;
@@ -1208,6 +1227,58 @@ function showPermissionRequest(url: string) {
   };
 }
 
+/**
+ * Opened by the background when Automation Mode is on but the browser has not
+ * granted access to all sites. One Grant click requests `<all_urls>`, so the user
+ * is not asked again for each new host.
+ */
+function showAllSitesPermissionRequest() {
+  const modal = document.getElementById("permission-modal") as HTMLDivElement;
+  const mainContent = document.getElementById("main-content") as HTMLDivElement;
+  const domainElement = document.getElementById("permission-domain") as HTMLDivElement;
+  const grantBtn = document.getElementById("grant-btn") as HTMLButtonElement;
+  const cancelBtn = document.getElementById("cancel-btn") as HTMLButtonElement;
+  const permissionText = document.getElementById("permission-text") as HTMLParagraphElement;
+
+  domainElement.textContent = "All websites";
+  permissionText.textContent =
+    "Automation Mode lets the MCP server drive any tab. Grant access to all sites once and FoxPilot will stop asking for each site.";
+
+  modal.classList.remove("hidden");
+  mainContent.classList.add("modal-open");
+
+  const handleGrant = async () => {
+    try {
+      const granted = await browser.permissions.request({
+        origins: ALL_SITES_ORIGINS,
+      });
+      if (granted) {
+        window.close();
+      } else {
+        hidePermissionModal();
+        void loadAutomationMode();
+      }
+    } catch (error) {
+      console.error("Error requesting all-sites permission:", error);
+      hidePermissionModal();
+    }
+  };
+
+  const handleCancel = () => {
+    hidePermissionModal();
+  };
+
+  grantBtn.addEventListener("click", handleGrant);
+  cancelBtn.addEventListener("click", handleCancel);
+
+  (window as any).permissionHandlers = {
+    handleGrant,
+    handleCancel,
+    grantBtn,
+    cancelBtn,
+  };
+}
+
 function showGlobalPermissionRequest(permissions: string[]) {
   // Show the modal and hide the main content
   const modal = document.getElementById("permission-modal") as HTMLDivElement;
@@ -1308,6 +1379,14 @@ browser.runtime.onMessage.addListener((msg: any) => {
     applyActiveStatus(!!msg.active);
   }
 });
+// Keep the Automation Mode toggle honest when the grant changes from outside
+// this page (the all-sites dialog tab, or the browser's Site access setting).
+browser.permissions.onAdded?.addListener(() => {
+  void loadAutomationMode();
+});
+browser.permissions.onRemoved?.addListener(() => {
+  void loadAutomationMode();
+});
 toolSearchInput.addEventListener("input", () => filterTools(toolSearchInput.value));
 toolsEnableAllButton.addEventListener("click", (e) => {
   if (e.isTrusted) void setAllTools(true);
@@ -1344,8 +1423,12 @@ document.addEventListener("DOMContentLoaded", () => {
   const params = new URLSearchParams(window.location.search);
   const requestUrl = params.get("requestUrl");
   const requestPermissions = params.get("requestPermissions");
+  const requestAllSites = params.get(REQUEST_ALL_SITES_PARAM);
 
-  if (requestUrl) {
+  if (requestAllSites) {
+    // Automation Mode is on but the browser lacks the all-sites grant
+    showAllSitesPermissionRequest();
+  } else if (requestUrl) {
     // Show UI for requesting permission for this specific URL
     showPermissionRequest(requestUrl);
   } else if (requestPermissions) {
