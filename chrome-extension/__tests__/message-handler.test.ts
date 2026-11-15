@@ -813,13 +813,51 @@ describe("MessageHandler (chrome) — foreground-tab preservation", () => {
       expect(browser.tabs.sendMessage).toHaveBeenCalledWith(5, {
         type: "waitForText",
         text: ["Loading", "Ready"],
-        timeoutMs: 500,
+        timeoutMs: 0,
       });
       expect(transport.sendResourceToServer).toHaveBeenCalledWith({
         resource: "wait-for-text-result",
         correlationId: "cw",
         found: true,
         matched: "Ready",
+      });
+    });
+
+    // The background loop owns the deadline and the spacing between polls. The
+    // page is asked for ONE immediate check per round (timeoutMs 0), never to
+    // wait or poll on its own: an in-page timer is clamped to one tick per
+    // second in a hidden tab, and to one per minute once the tab has been hidden
+    // for 5+ minutes, which would stretch each round far past the call budget.
+    it("asks the page for a single immediate check per round and keeps polling from the background", async () => {
+      (browser.storage.local.get as jest.Mock).mockResolvedValue({
+        config: automationConfig,
+      });
+      (browser.tabs.get as jest.Mock).mockResolvedValue({
+        id: 5,
+        url: "https://example.com",
+      });
+      (browser.tabs.sendMessage as jest.Mock)
+        .mockResolvedValueOnce({ found: false })
+        .mockResolvedValueOnce({ found: false })
+        .mockResolvedValueOnce({ found: true });
+
+      await messageHandler.handleDecodedMessage({
+        cmd: "wait-for-text",
+        tabId: 5,
+        text: "Ready",
+        timeoutMs: 5000,
+        correlationId: "cw2",
+      } as ServerMessageRequest);
+
+      const rounds = (browser.tabs.sendMessage as jest.Mock).mock.calls;
+      expect(rounds).toHaveLength(3);
+      for (const c of rounds) {
+        expect(c[1]).toEqual({ type: "waitForText", text: "Ready", timeoutMs: 0 });
+      }
+      expect(transport.sendResourceToServer).toHaveBeenCalledWith({
+        resource: "wait-for-text-result",
+        correlationId: "cw2",
+        found: true,
       });
     });
   });
@@ -1853,6 +1891,133 @@ describe("MessageHandler (chrome) — foreground-tab preservation", () => {
       expect(
         (browser as any).tabs.onUpdated.removeListener
       ).toHaveBeenCalled();
+    });
+  });
+
+  // Chrome clamps every timer in a HIDDEN tab to one tick per second. The
+  // humanized (default "synthetic") input used to run its whole paced loop
+  // inside the page's content script, so a click (8-40 cursor steps) took 8-40 s
+  // in a background tab and blew the 15 s broker budget, while the action still
+  // landed later. The pacing must live in the background (service worker), whose
+  // timers do not depend on tab visibility; the page only runs one step per
+  // message. Firefox always worked this way.
+  describe("synthetic input is paced from the background, not inside the page", () => {
+    const automationConfig = { ...baseConfig, automationMode: true };
+
+    // Every content-script message the handler sent, in order.
+    const sentTypes = (): string[] =>
+      (browser.tabs.sendMessage as jest.Mock).mock.calls.map(
+        (c: any[]) => c[1] && c[1].type
+      );
+    const stepCalls = (type: string): any[][] =>
+      (browser.tabs.sendMessage as jest.Mock).mock.calls.filter(
+        (c: any[]) => c[1] && c[1].type === type
+      );
+
+    beforeEach(() => {
+      (browser.storage.local.get as jest.Mock).mockResolvedValue({
+        config: automationConfig,
+      });
+      (browser.tabs.get as jest.Mock).mockResolvedValue({
+        id: 11,
+        url: "https://example.com",
+      });
+      (browser.permissions.contains as jest.Mock).mockResolvedValue(true);
+      (browser.tabs.sendMessage as jest.Mock).mockImplementation(
+        (_id: number, msg: any) => {
+          switch (msg && msg.type) {
+            case "readElementRect":
+              return Promise.resolve({ x: 500, y: 300, width: 100, height: 40, dpr: 1 });
+            case "dispatchMouseMoveStep":
+              return Promise.resolve({ ok: true });
+            case "typeCharStep":
+              return Promise.resolve({ ok: true });
+            case "performInputAction":
+              return Promise.resolve({ ok: true });
+            default:
+              // "runHumanInput" is the in-page paced loop: a hidden tab would
+              // stall it, so reaching it is the bug.
+              return Promise.resolve({
+                ok: false,
+                error: "unexpected in-page message: " + (msg && msg.type),
+              });
+          }
+        }
+      );
+    });
+
+    it("click-element sends the cursor path one step per message, then ONE real click, and never the in-page loop", async () => {
+      await messageHandler.handleDecodedMessage({
+        cmd: "click-element",
+        tabId: 11,
+        uid: "e1",
+        correlationId: "pace1",
+      } as ServerMessageRequest);
+
+      expect(sentTypes()).not.toContain("runHumanInput");
+      const types = sentTypes();
+      expect(types[0]).toBe("readElementRect");
+      expect(stepCalls("dispatchMouseMoveStep").length).toBeGreaterThanOrEqual(8);
+      // Exactly one authoritative click, after the whole path.
+      const clicks = stepCalls("performInputAction");
+      expect(clicks).toHaveLength(1);
+      expect(clicks[0][1].args).toMatchObject({ action: "click", uid: "e1" });
+      expect(types[types.length - 1]).toBe("performInputAction");
+      expect(transport.sendResourceToServer).toHaveBeenCalledWith(
+        expect.objectContaining({
+          resource: "action-result",
+          correlationId: "pace1",
+          ok: true,
+        })
+      );
+    });
+
+    it("remembers where the cursor ended, so the next click on the same target moves the minimum path", async () => {
+      const click = (id: string) =>
+        messageHandler.handleDecodedMessage({
+          cmd: "click-element",
+          tabId: 11,
+          uid: "e1",
+          correlationId: id,
+        } as ServerMessageRequest);
+
+      await click("cur1");
+      const firstPath = stepCalls("dispatchMouseMoveStep").length;
+      (browser.tabs.sendMessage as jest.Mock).mockClear();
+      (browser.tabs.sendMessage as jest.Mock).mockImplementation(
+        (_id: number, msg: any) =>
+          Promise.resolve(
+            msg.type === "readElementRect"
+              ? { x: 500, y: 300, width: 100, height: 40, dpr: 1 }
+              : { ok: true }
+          )
+      );
+      await click("cur2");
+      const secondPath = stepCalls("dispatchMouseMoveStep").length;
+
+      // The cursor starts at (100,100), far from the target: a long path. After
+      // the click it sits ON the target, so the second path is the 8-step floor.
+      expect(firstPath).toBeGreaterThan(8);
+      expect(secondPath).toBe(8);
+    });
+
+    it("type-text types one character per message and never sends the in-page loop", async () => {
+      await messageHandler.handleDecodedMessage({
+        cmd: "type-text",
+        tabId: 11,
+        text: "abc",
+        correlationId: "pace2",
+      } as ServerMessageRequest);
+
+      expect(sentTypes()).not.toContain("runHumanInput");
+      expect(stepCalls("typeCharStep").map((c) => c[1].char)).toEqual(["a", "b", "c"]);
+      expect(transport.sendResourceToServer).toHaveBeenCalledWith(
+        expect.objectContaining({
+          resource: "action-result",
+          correlationId: "pace2",
+          ok: true,
+        })
+      );
     });
   });
 

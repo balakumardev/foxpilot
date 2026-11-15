@@ -43,6 +43,11 @@ import {
   isDebuggerAttached,
 } from "./network-capture";
 import { Point, mousePath, typingPlan } from "./humanize/motion-model";
+import {
+  runHumanInput,
+  type HumanInputDeps,
+  type StepResult,
+} from "./humanize/run-human-input";
 import { performPointAction, type PointElementDescriptor } from "./injected/point-action-script";
 import {
   cdpInputClick,
@@ -1445,21 +1450,59 @@ export class MessageHandler {
     });
   }
 
+  // Runs the humanized orchestrator HERE, in the service worker, one content-
+  // script message per step. The pacing (`sleep`) must not live in the page:
+  // Chrome clamps every page timer in a hidden tab to one tick per second, so
+  // an in-page loop made a click (8-40 cursor steps) take 8-40 s and a typed
+  // character cost a second each in any background tab — past the 15 s broker
+  // budget, with the action landing late. A service-worker timer does not care
+  // whether the tab is visible. Same shape as Firefox's runHumanInputAction.
+  //
+  // RAW sender throughout: a covert-input ok:false (stale uid, intercepted
+  // overlay, no focused field) is a legitimate action-result, not a thrown
+  // tool-error — it preserves the structured {ok:false, intercepted, disabled,
+  // dispatchedTo} that the real step (`instant`) hands back and runHumanInput
+  // returns untouched.
   private async runHumanInputAction(tabId: number, args: InputActionArgs): Promise<any> {
-    const cursor = this.cursorByTab.get(tabId) || { x: 100, y: 100 };
-    // RAW sender: a covert-input ok:false (stale uid, intercepted overlay, no
-    // focused field) is a legitimate action-result, not a thrown tool-error —
-    // preserves the structured {ok:false, intercepted} the server forwards
-    // (mirrors Firefox, which never had the throwing wrapper on this path).
-    const result = await sendMessageToTabRaw(tabId, {
-      type: "runHumanInput",
-      args,
-      cursor,
+    const stepFailed = (what: string): StepResult => ({
+      ok: false,
+      error: `${what} step returned no result`,
     });
-    if (result.ok && result.cursor) {
-      this.cursorByTab.set(tabId, result.cursor);
-    }
-    return result;
+
+    const deps: HumanInputDeps = {
+      rng: Math.random,
+      sleep,
+      getCursor: () => this.cursorByTab.get(tabId) || { x: 100, y: 100 },
+      setCursor: (p) => {
+        this.cursorByTab.set(tabId, p);
+      },
+      readTargetInfo: async (uid) => {
+        const info = await sendMessageToTabRaw(tabId, {
+          type: "readElementRect",
+          uid,
+        });
+        return info || null;
+      },
+      mouseMove: async (x, y) => {
+        await sendMessageToTabRaw(tabId, { type: "dispatchMouseMoveStep", x, y });
+      },
+      typeChar: async (ch) => {
+        const r = await sendMessageToTabRaw(tabId, {
+          type: "typeCharStep",
+          char: ch,
+        });
+        return r || stepFailed("type");
+      },
+      instant: async (a) => {
+        const r = await sendMessageToTabRaw(tabId, {
+          type: "performInputAction",
+          args: a,
+        });
+        return r || stepFailed("instant");
+      },
+    };
+
+    return runHumanInput(args, deps);
   }
 
   private async runNativeInputAction(tabId: number, args: InputActionArgs): Promise<any> {
@@ -2520,7 +2563,10 @@ export class MessageHandler {
       const result = await sendMessageToTab(tabId, {
         type: "waitForText",
         text,
-        timeoutMs: 500, // short per-check; the loop owns the overall deadline
+        // ONE immediate check per round. This loop owns the deadline and the
+        // 300 ms spacing; an in-page wait would run on a page timer, which a
+        // hidden tab clamps to 1/s (1/min after 5+ min hidden).
+        timeoutMs: 0,
       });
       if (result.found) {
         found = true;
