@@ -55,7 +55,7 @@ if ((window as any).__bcmcpContentScriptLoaded) {
           ok: false,
           cspBlocked: true,
           error:
-            'CSP blocked the injected script (the page forbids inline script execution). On Chrome/Edge retry with engine:"cdp" (runs via the debugger, bypasses page CSP), or read state with the CSP-immune take-snapshot / take-screenshot / coordinate tools / get-cookies.',
+            'CSP blocked the injected script (the page forbids inline script execution). First read state with the CSP-immune take-snapshot / get-tab-web-content / coordinate tools / get-cookies. Only if you must run page JS, on Chrome/Edge retry with engine:"cdp" (runs via the debugger and bypasses page CSP, but the user sees a "FoxPilot started debugging this browser" bar and the page can detect it).',
         };
       }
       document.documentElement.removeAttribute(startedAttr);

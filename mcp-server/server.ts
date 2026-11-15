@@ -15,6 +15,7 @@ import { formatClickResult } from "./click-format";
 import { formatSelectTabResult } from "./select-tab-format";
 import { formatNavigateResult } from "./navigate-format";
 import { formatTabList } from "./tab-list-format";
+import { installNudges, screenshotWarningText } from "./agent-nudges";
 import { allowedNavUrl, NAV_URL_MESSAGE } from "./url-policy";
 import {
   SEND_FEEDBACK_ANNOTATIONS,
@@ -46,7 +47,19 @@ const activateTabField = {
     .boolean()
     .optional()
     .describe(
-      "RETRY-ONLY. Do NOT set this on the first attempt: a background tab normally works without it, and every call that sets it switches the user's visible tab and back, interrupting their browsing. Set true only to retry ONE call that came back empty or timed out on a tab that is not in front (a frozen Chrome Memory Saver / Edge Sleeping Tab is the usual reason); it briefly foregrounds the target tab for that call, then restores the user's previous tab."
+      "RETRY-ONLY. Do NOT set this on the first attempt: a background tab normally works without it, and every call that sets it switches the user's visible tab and back, interrupting their browsing. Set true only to retry ONE call that timed out, errored or came back empty on a tab that is not in front, and only after checking that a timed-out action did not already apply. Do NOT leave it on for follow-up calls once that retry works, and do not use it when a snapshot merely found nothing interactive (the page is the cause, not the tab). It briefly foregrounds the target tab for that call, then restores the user's previous tab."
+    ),
+};
+
+// Shared zod field for the trusted-input tier. engine:"cdp" attaches Chrome's
+// debugger: the user sees "FoxPilot started debugging this browser" and the page
+// can detect it. Like activateTab it is a last resort, not a default.
+const engineField = {
+  engine: z
+    .enum(["synthetic", "cdp"])
+    .optional()
+    .describe(
+      "Omit this: the default (synthetic) is covert. engine:\"cdp\" (Chrome/Edge only) attaches Chrome's debugger to send TRUSTED input, so the user sees a \"FoxPilot started debugging this browser\" bar and the page can detect it. Never use it first or \"to be safe\"; use it only after the default call ran and the page demonstrably ignored it (a strict editor that rejects untrusted events), or the reply said trusted input is needed."
     ),
 };
 
@@ -76,9 +89,15 @@ const baseInstructions =
   "BACKGROUND TABS: a tab that is not in front normally still works, so drive it as it is and leave the " +
   "user's visible tab alone. Do NOT pass activateTab:true up front: every call that sets it switches the " +
   "user's tab and back, which interrupts their browsing and gives the page a burst of focus/visibility " +
-  "changes that can look like automation to a site. Only if one call on a background tab comes back empty " +
-  "or times out (Chrome Memory Saver / Edge Sleeping Tabs can freeze it), retry THAT call once with " +
-  "activateTab:true. Avoid select-tab for this: it moves the user's window focus and does not switch back. " +
+  "changes that can look like automation to a site. Only if one call on a background tab times out, errors " +
+  "or comes back empty (first check a timed-out action did not already apply), retry THAT call once with " +
+  "activateTab:true, then go back to omitting it. Avoid select-tab for this: it moves the user's window " +
+  "focus and does not switch back. " +
+  "DEBUGGER BANNER (Chrome/Edge): engine:\"cdp\", capture-response-bodies and evaluate-script engine:\"cdp\" attach " +
+  "Chrome's debugger, which shows the user a \"FoxPilot started debugging this browser\" bar and is detectable by the " +
+  "page; take-screenshot can also fall back to it on its own. Treat all of these as last resorts: read with " +
+  "take-snapshot / get-tab-web-content / get-network-requests, act with the default engine, and reach for the " +
+  "debugger only after the covert call ran and demonstrably did not work. " +
   "SPA NAVIGATION: after a click that expands a menu or changes the view, take a fresh snapshot before " +
   "the next click; content may render lazily. Prefer take-snapshot over evaluate-script (many app pages " +
   "have a strict CSP that blocks page-world script). Custom dropdowns (react-select/Radix) use select-option, " +
@@ -99,6 +118,10 @@ const mcpServer = new McpServer(
     instructions,
   }
 );
+
+// Must run before the first mcpServer.tool(): adds the "omit it next time"
+// reminder to successful replies that used activateTab:true or engine:"cdp".
+installNudges(mcpServer);
 
 mcpServer.tool(
   "open-browser-tab",
@@ -535,7 +558,7 @@ mcpServer.tool(
     uid: z.string(),
     doubleClick: z.boolean().optional(),
     failIfIntercepted: z.boolean().optional(),
-    engine: z.enum(["synthetic", "cdp"]).optional(),
+    ...engineField,
     ...activateTabField,
   },
   async ({ tabId, uid, doubleClick, failIfIntercepted, engine, activateTab }) => {
@@ -559,7 +582,7 @@ mcpServer.tool(
   {
     tabId: z.number(),
     uid: z.string(),
-    engine: z.enum(["synthetic", "cdp"]).optional(),
+    ...engineField,
     ...activateTabField,
   },
   async ({ tabId, uid, engine, activateTab }) => {
@@ -577,7 +600,7 @@ mcpServer.tool(
     tabId: z.number(),
     uid: z.string(),
     value: z.string(),
-    engine: z.enum(["synthetic", "cdp"]).optional(),
+    ...engineField,
     commit: z.boolean().optional(),
     ...activateTabField,
   },
@@ -595,7 +618,7 @@ mcpServer.tool(
   {
     tabId: z.number(),
     fields: z.array(z.object({ uid: z.string(), value: z.string() })),
-    engine: z.enum(["synthetic", "cdp"]).optional(),
+    ...engineField,
     commit: z.boolean().optional(),
     ...activateTabField,
   },
@@ -644,7 +667,7 @@ mcpServer.tool(
     tabId: z.number(),
     key: z.string(),
     modifiers: z.array(z.enum(["ctrl", "shift", "alt", "meta"])).optional(),
-    engine: z.enum(["synthetic", "cdp"]).optional(),
+    ...engineField,
     ...activateTabField,
   },
   async ({ tabId, key, modifiers, engine, activateTab }) => {
@@ -751,7 +774,12 @@ mcpServer.tool(
     function: z.string(),
     args: z.array(z.any()).optional(),
     world: z.enum(["main", "isolated", "auto"]).optional(),
-    engine: z.enum(["auto", "cdp"]).optional(),
+    engine: z
+      .enum(["auto", "cdp"])
+      .optional()
+      .describe(
+        "Omit this. engine:\"cdp\" runs the code through Chrome's debugger, so the user sees a \"FoxPilot started debugging this browser\" bar and the page can detect it. Use it only when the covert path is CSP-blocked AND take-snapshot / get-tab-web-content / get-cookies cannot answer."
+      ),
   },
   async ({ tabId, function: functionSource, args, world, engine }) => {
     const value = await browserApi.evaluateScript(
@@ -777,7 +805,7 @@ mcpServer.tool(
     y: z.number(),
     doubleClick: z.boolean().optional(),
     button: z.enum(["left", "middle", "right"]).optional(),
-    engine: z.enum(["synthetic", "cdp"]).optional(),
+    ...engineField,
     ...activateTabField,
   },
   async ({ tabId, x, y, doubleClick, button, engine, activateTab }) => {
@@ -801,7 +829,7 @@ mcpServer.tool(
     text: z.string(),
     submit: z.boolean().optional(),
     commit: z.boolean().optional(),
-    engine: z.enum(["synthetic", "cdp"]).optional(),
+    ...engineField,
     ...activateTabField,
   },
   async ({ tabId, x, y, text, submit, commit, engine, activateTab }) => {
@@ -826,7 +854,7 @@ mcpServer.tool(
     tabId: z.number(),
     x: z.number(),
     y: z.number(),
-    engine: z.enum(["synthetic", "cdp"]).optional(),
+    ...engineField,
     ...activateTabField,
   },
   async ({ tabId, x, y, engine, activateTab }) => {
@@ -844,7 +872,7 @@ mcpServer.tool(
     y: z.number(),
     dx: z.number().optional(),
     dy: z.number().optional(),
-    engine: z.enum(["synthetic", "cdp"]).optional(),
+    ...engineField,
     ...activateTabField,
   },
   async ({ tabId, x, y, dx, dy, engine, activateTab }) => {
@@ -997,7 +1025,7 @@ mcpServer.tool(
 
 mcpServer.tool(
   "take-screenshot",
-  "Take a screenshot of a browser tab and return it as an image. By default captures the visible viewport. Set fullPage to true to capture the entire scrollable page (stitched together). Pass a 'uid' from a recent take-snapshot to capture just that element (cropped). Choose 'png' (default, lossless) or 'jpeg' (smaller) for the format. Provide an absolute filePath to also save the image to disk on the machine running the MCP server. COVERTNESS: on Chrome/Edge, if captureVisibleTab returns an empty readback on all 3 attempts (a persistent failure some GPU/compositor configs hit), the DEFAULT viewport capture falls back to a CDP screenshot — that attaches the debugger, so it briefly shows the 'started debugging this browser' banner and is DETECTABLE by the page. The reply says so when it happens (a 'Warning:' line ahead of the image), and the debugger is detached immediately after. Only the default viewport path does this: fullPage and element ('uid') captures never attach the debugger, they fail instead. Firefox has no such fallback.",
+  "Take a screenshot of a browser tab and return it as an image. By default captures the visible viewport. Set fullPage to true to capture the entire scrollable page (stitched together). Pass a 'uid' from a recent take-snapshot to capture just that element (cropped). Choose 'png' (default, lossless) or 'jpeg' (smaller) for the format. Provide an absolute filePath to also save the image to disk on the machine running the MCP server. COVERTNESS: on Chrome/Edge, if captureVisibleTab returns an empty readback on all 3 attempts (a persistent failure some GPU/compositor configs hit), the DEFAULT viewport capture falls back to a CDP screenshot — that attaches the debugger, so it briefly shows the 'started debugging this browser' banner and is DETECTABLE by the page. The reply says so when it happens (a 'Warning:' line ahead of the image), and the debugger is detached immediately after. Only the default viewport path does this: fullPage and element ('uid') captures never attach the debugger, they fail instead. Firefox has no such fallback. Screenshots are the most common cause of the debugger banner and cost many tokens: to read text or check state prefer take-snapshot or get-tab-web-content, and use take-screenshot only when you need to see the rendering.",
   {
     tabId: z.number(),
     fullPage: z.boolean().optional(),
@@ -1030,7 +1058,7 @@ mcpServer.tool(
     // viewport capture was returned instead) so the model knows the image is not
     // the full page it asked for.
     if (result.warning) {
-      content.push({ type: "text", text: `Warning: ${result.warning}` });
+      content.push({ type: "text", text: screenshotWarningText(result.warning) });
     }
 
     // Always return the image itself as MCP image content.
@@ -1336,7 +1364,7 @@ mcpServer.tool(
 
 mcpServer.tool(
   "capture-response-bodies",
-  "Attach or detach the Chrome/Edge DEBUGGER on a tab to capture RESPONSE bodies, which the covert get-network-requests path CANNOT read on Chrome/Edge (MV3). Use this ONLY when you specifically need response bodies. WARNING: enabling it shows a 'FoxPilot started debugging this browser' banner and is DETECTABLE by the page — it BREAKS covert observation. Set enabled:false to detach and return to covert capture as soon as you're done. Typical flow: capture-response-bodies(tabId,true) → reload the page → get-network-requests(tabId, includeBody:true) now returns response bodies → capture-response-bodies(tabId,false). No-op on Firefox, which already captures response bodies covertly via get-network-requests includeBody (it reports supported:false).",
+  "Attach or detach the Chrome/Edge DEBUGGER on a tab to capture RESPONSE bodies, which the covert get-network-requests path CANNOT read on Chrome/Edge (MV3). Use this only if get-network-requests (URLs, status, headers, request bodies) cannot answer the question and you specifically need response bodies. WARNING: enabling it shows a 'FoxPilot started debugging this browser' banner and is DETECTABLE by the page — it BREAKS covert observation. Set enabled:false to detach and return to covert capture as soon as you're done. Typical flow: capture-response-bodies(tabId,true) → reload the page → get-network-requests(tabId, includeBody:true) now returns response bodies → capture-response-bodies(tabId,false). No-op on Firefox, which already captures response bodies covertly via get-network-requests includeBody (it reports supported:false).",
   { tabId: z.number(), enabled: z.boolean() },
   async ({ tabId, enabled }) => {
     const result = await browserApi.captureResponseBodies(tabId, enabled);
@@ -1366,7 +1394,7 @@ mcpServer.tool(
         {
           type: "text",
           text: enabled
-            ? `Debugger attached to tab ${tabId}: response bodies will now be captured (a debugging banner is showing — detectable by the page). Reload the page, then call get-network-requests with includeBody:true. Call capture-response-bodies with enabled:false when done.`
+            ? `Debugger attached to tab ${tabId}: response bodies will now be captured (a debugging banner is showing — detectable by the page). Reload the page, then call get-network-requests with includeBody:true. Call capture-response-bodies with enabled:false as soon as you have what you need: the banner stays up until you do.`
             : `Debugger detached from tab ${tabId}: back to covert capture.`,
         },
       ],

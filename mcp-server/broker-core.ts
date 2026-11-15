@@ -176,16 +176,21 @@ const TAB_DRIVING_COMMANDS: ReadonlySet<string> = new Set<
  * read as "nothing happened", so agents re-clicked and double-submitted.
  * Read-only commands keep the original string so they are not made scarier.
  *
- * For {@link TAB_DRIVING_COMMANDS} the wording additionally names the frozen
- * background tab. That cause is invisible from the agent's side: a frozen tab
- * still answers `take-snapshot` with a full element tree (one synchronous DOM
- * read), while an input action — which the background paces as several
- * sequential round-trips into the page — stalls for the whole budget. Without
- * this, a healthy-looking snapshot reads as proof the tab is fine.
+ * For {@link TAB_DRIVING_COMMANDS} the wording additionally names the causes a
+ * background tab can have. They are invisible from the agent's side: a stalled
+ * tab still answers `take-snapshot` with a full element tree (one synchronous
+ * DOM read), so a healthy-looking snapshot reads as proof the tab is fine. Known
+ * causes: a tab frozen by Chrome Memory Saver / Edge Sleeping Tabs, and Chrome
+ * extension builds before the 2026-11-15 fix, which paced humanized input with
+ * page timers that a hidden tab clamps to one tick per second.
+ *
+ * `activateTab:true` is a SINGLE, VERIFIED retry, never a reflex: it switches
+ * the user's visible tab, a timed-out action may already have applied, and a
+ * second stall with it set means the cause is the page, not the tab.
  *
  * `activateTabRequested` flips the hint: when the call already foregrounded the
  * tab, repeating that advice would send the agent to redo what it just did, so
- * the message rules the freeze out instead and points at the page.
+ * the message rules the tab out instead and points at the page.
  */
 export function timeoutMessageFor(
   cmd: string,
@@ -210,18 +215,21 @@ export function timeoutMessageFor(
       base +
       ` This call already ran with activateTab:true, so a frozen background ` +
       `tab is NOT the cause — look at the page itself (a modal or overlay ` +
-      `swallowing the event, or a navigation in progress).`
+      `swallowing the event, or a navigation in progress) and do not retry ` +
+      `with activateTab again.`
     );
   }
   return (
     base +
-    ` LIKELY CAUSE: if this tab is not the user's foreground tab it may be ` +
-    `frozen (Chrome Memory Saver / Edge Sleeping Tabs). A frozen tab still ` +
-    `returns a full snapshot, so a healthy tree does NOT rule this out — only ` +
-    `input stalls. Before you retry, pass activateTab:true on this call: it ` +
-    `foregrounds the tab for that one call and then restores the user's ` +
-    `previous tab. select-tab is a last resort: it moves the user's window ` +
-    `focus and does not switch back.`
+    ` POSSIBLE CAUSE: a tab that is not in the foreground can stall input (a ` +
+    `frozen Chrome Memory Saver / Edge Sleeping Tab, or an older Chrome ` +
+    `extension build that paces input with page timers). A healthy ` +
+    `take-snapshot does NOT rule this out — only input stalls. Only if it did ` +
+    `NOT apply, retry that one call ONCE with activateTab:true: it foregrounds ` +
+    `the tab for that call and then restores the user's previous tab, but the ` +
+    `user sees their tab switch. If it stalls again with activateTab:true the ` +
+    `cause is the page, so do not keep adding it. select-tab is a last ` +
+    `resort: it moves the user's window focus and does not switch back.`
   );
 }
 

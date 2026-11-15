@@ -249,6 +249,22 @@ describe("BrokerCore timeout wording: frozen background tab hint", () => {
     );
   });
 
+  it("makes activateTab a verified, single, stoppable retry — not a reflex", () => {
+    const msg = timeoutMessageFor("click-element", 15000);
+    // Check first: a timeout is a missing reply and the action may have landed.
+    expect(msg).toMatch(/may have already been applied/);
+    // Only when it did NOT apply, and only once.
+    expect(msg).toMatch(/Only if it did NOT/);
+    expect(msg).toMatch(/ONCE with activateTab:true/);
+    // The user pays for it with a visible tab switch; say so.
+    expect(msg).toMatch(/user sees their tab switch/);
+    // A second stall means the page, not the tab: stop adding it.
+    expect(msg).toMatch(/cause is the page/);
+    expect(msg).toMatch(/do not keep adding it/);
+    // Names both known causes so an agent can tell they may not apply.
+    expect(msg).toMatch(/older Chrome extension build/);
+  });
+
   it("fires for every tab-driving command", () => {
     for (const cmd of TAB_DRIVING) {
       expect([cmd, timeoutMessageFor(cmd, 1000).includes("Memory Saver")]).toEqual(
