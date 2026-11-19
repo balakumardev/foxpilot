@@ -53,6 +53,7 @@ import {
 import { selectOption } from "../injected/select-option-script";
 import { dismissOverlays } from "../injected/dismiss-overlays-script";
 import { extractPageContent } from "../injected/page-content-script";
+import { fetchInTab, abortFetchInTab } from "../injected/fetch-in-tab-script";
 
 // Tokens that must never appear in the stringified source of an injected
 // function. Each one is either a module-system reference (undefined in a raw
@@ -80,6 +81,8 @@ const INJECTED_FUNCTIONS: ReadonlyArray<[string, (...args: any[]) => any]> = [
   ["selectOption", selectOption as unknown as (...args: any[]) => any],
   ["dismissOverlays", dismissOverlays as unknown as (...args: any[]) => any],
   ["extractPageContent", extractPageContent as unknown as (...args: any[]) => any],
+  ["fetchInTab", fetchInTab as unknown as (...args: any[]) => any],
+  ["abortFetchInTab", abortFetchInTab as unknown as (...args: any[]) => any],
 ];
 
 describe("injected functions are self-contained (safe to stringify-and-inject)", () => {
@@ -101,6 +104,19 @@ describe("injected functions are self-contained (safe to stringify-and-inject)",
       }
     });
   }
+});
+
+describe("fetchInTab stays natively async (no down-levelled helper leak)", () => {
+  const src = fetchInTab.toString();
+  it("stringifies as a native async function using await", () => {
+    expect(src).toMatch(/async\s+function/);
+    expect(src).toContain("await ");
+  });
+  it("contains no transpiler async helper reference", () => {
+    for (const t of ["__awaiter", "__generator", "__async", "regeneratorRuntime"]) {
+      expect(src).not.toContain(t);
+    }
+  });
 });
 
 describe("selectOption stays natively async (no down-levelled helper leak)", () => {

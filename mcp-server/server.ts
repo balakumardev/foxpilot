@@ -14,8 +14,9 @@ import { formatEvalResult } from "./eval-format";
 import { formatClickResult } from "./click-format";
 import { formatSelectTabResult } from "./select-tab-format";
 import { formatNavigateResult } from "./navigate-format";
-import { formatTabList } from "./tab-list-format";
-import { installNudges, screenshotWarningText } from "./agent-nudges";
+import { formatBrowserFetchReply } from "./fetch-format";
+import { listOpenTabs } from "./tab-list-format";
+import { SCREENSHOT_IMAGE_NOTE, installNudges, screenshotWarningText } from "./agent-nudges";
 import { allowedNavUrl, NAV_URL_MESSAGE } from "./url-policy";
 import {
   SEND_FEEDBACK_ANNOTATIONS,
@@ -93,6 +94,11 @@ const baseInstructions =
   "or comes back empty (first check a timed-out action did not already apply), retry THAT call once with " +
   "activateTab:true, then go back to omitting it. Avoid select-tab for this: it moves the user's window " +
   "focus and does not switch back. " +
+  "READING PAGES, IMAGES LAST: take-snapshot and get-tab-web-content return text (no image), are far cheaper, " +
+  "and work even when the browser window is minimized or hidden. Use them to read content, check state and " +
+  "confirm an action worked. Take a screenshot only when you must SEE the rendering (layout, colours, a " +
+  "chart or canvas, an image, a visual bug), take one rather than one after every action, and never to read " +
+  "text. " +
   "DEBUGGER BANNER (Chrome/Edge): engine:\"cdp\", capture-response-bodies and evaluate-script engine:\"cdp\" attach " +
   "Chrome's debugger, which shows the user a \"FoxPilot started debugging this browser\" bar and is detectable by the " +
   "page; take-screenshot can also fall back to it on its own. Treat all of these as last resorts: read with " +
@@ -160,11 +166,15 @@ mcpServer.tool(
 
 mcpServer.tool(
   "get-list-of-open-tabs",
-  "Get the list of open tabs in the user's browser. Use offset and limit for pagination when there are many tabs. " +
-    "With thousands of tabs, narrow the list instead of paging through it: windowId limits it to one window, " +
-    "activeOnly to the active tab of each window (a quick way to discover window ids), and visibleOnly skips tabs " +
-    "the user cannot see in the tab strip (hidden tabs in Firefox, tabs in a collapsed tab group in Chrome/Edge). " +
-    "Every line ends with its window id.",
+  "Get the list of open tabs in the user's browser. URLs are redacted by default: only scheme + host + path are shown, " +
+    "and a removed query string or #fragment appears as '?[redacted]' / '#[redacted]' (they often hold login or OAuth " +
+    "tokens). Pass fullUrls:true only when you need the exact URL. " +
+    "To find tabs, filter instead of paging: urlContains / titleContains (case-insensitive substring, both given = AND; " +
+    "urlContains matches the redacted URL unless fullUrls is true), windowId (one window), activeOnly (the active tab of " +
+    "each window, a quick way to discover window ids) and visibleOnly (skip tabs the user cannot see in the tab strip: " +
+    "hidden tabs in Firefox, tabs in a collapsed tab group in Chrome/Edge). " +
+    "compact:true prints one short line per tab (id, window, host+path, shortened title) instead of the full line. " +
+    "Use offset and limit for pagination when there are many matching tabs.",
   {
     offset: z.number().int().min(0).default(0).describe("Starting index for pagination (0-based, must be >= 0)"),
     limit: z.number().default(100).describe("Maximum number of tabs to return (default: 100, max: 500)"),
@@ -183,19 +193,32 @@ mcpServer.tool(
       .describe(
         "Skip tabs the user cannot see in the tab strip: hidden tabs (Firefox) and tabs in a collapsed tab group (Chrome/Edge)"
       ),
+    urlContains: z
+      .string()
+      .optional()
+      .describe(
+        "Only tabs whose URL contains this text (case-insensitive). Matches the redacted URL (scheme + host + path) unless fullUrls is true"
+      ),
+    titleContains: z
+      .string()
+      .optional()
+      .describe(
+        "Only tabs whose title contains this text (case-insensitive). With urlContains, both must match"
+      ),
+    fullUrls: z
+      .boolean()
+      .optional()
+      .describe(
+        "Show raw URLs including query string, #fragment and credentials (default false: redacted). They can contain tokens, so use only when needed"
+      ),
+    compact: z
+      .boolean()
+      .optional()
+      .describe(
+        "One short line per tab: id, window, host+path (no scheme), title cut to ~60 characters (default false)"
+      ),
   },
-  async ({ offset, limit, windowId, activeOnly, visibleOnly }) => {
-    const filter = { windowId, activeOnly, visibleOnly };
-    const openTabs = await browserApi.getTabList(filter);
-    return {
-      content: formatTabList(openTabs, {
-        offset,
-        limit,
-        filtered:
-          windowId !== undefined || activeOnly === true || visibleOnly === true,
-      }),
-    };
-  }
+  async (args) => ({ content: await listOpenTabs(browserApi, args) })
 );
 
 mcpServer.tool(
@@ -306,7 +329,7 @@ mcpServer.tool(
 
 mcpServer.tool(
   "take-snapshot",
-  "Take an accessibility snapshot of a browser tab's page — the START of the drive-a-page loop (snapshot → act on a uid → fresh snapshot). Returns interactive elements each tagged with a uid (e.g. [uid=e12]) for the uid-based tools (click-element / fill-element / hover-element / select-option / etc.). IMPORTANT: a [uid=eN] is only valid until the NEXT take-snapshot on the same tab — snapshot, then act on its uids before snapshotting again; a second snapshot reassigns every uid, so a uid from an earlier snapshot will resolve to the wrong element or fail. BACKGROUND TAB: a tab that is not in front normally snapshots fine, so do not pass activateTab:true up front. Only if this returns an empty/near-empty tree for such a tab (it may be frozen by Chrome Memory Saver / Edge Sleeping Tabs), retry once with activateTab:true to briefly foreground it for the call. TO FIND A SPECIFIC CONTROL by its visible text or label (nav item, tab, menu entry, icon-only button), pass textContains:'the label' rather than reading the whole page. By default it now also captures visually-clickable elements (cursor:pointer, e.g. React <div onClick> cards) — set includePointer:false to suppress that, or maxInteractive to cap how many are added. SHADOW DOM: web-component content in open AND closed shadow roots is included, in reading order (iframes are not walked). Query modes: 'selector' returns exactly the CSS-selector matches (even non-interactive, e.g. selector:'[contenteditable]' for a chat box), matched inside each shadow root separately (CSS combinators never cross a shadow boundary); 'textContains' matches case-insensitively against an element's text content OR its accessible name (aria-label, aria-labelledby, <label>, alt, title, placeholder), and when an element and its descendant both match, only the deepest one is returned — except that text rendered through a web component's slot counts for the control around it (e.g. the component's button), text hidden with CSS counts only for a visible control around it, and a match by name alone (e.g. an icon's alt) never hides a control that matches by its own text. A row whose trailing (states) end with 'via inner button' (or link, checkbox, ...) is a menu item / option / tab / tree item that wraps exactly one control of the same name: its uid targets that inner control and the row also shows that control's states and value, so click-element on it reaches the control. A list or grid wrapper (listitem, row, gridcell) around one same-named control is not listed; the control's own row stands for it. In selector mode a matched wrapper keeps its own uid and '(wraps button [uid=eN])' gives the inner control's uid. Scope with 'rootSelector' to collect only within one subtree (e.g. the main panel, excluding a huge sidebar; it may point at a shadow host or inside a shadow root), and page large results with 'offset'/'limit' (the reply reports total collected and whether more remain). verbose:true additionally includes headings and aria-labelled elements.",
+  "Take an accessibility snapshot of a browser tab's page — the START of the drive-a-page loop (snapshot → act on a uid → fresh snapshot). Returns interactive elements each tagged with a uid (e.g. [uid=e12]) for the uid-based tools (click-element / fill-element / hover-element / select-option / etc.). IMPORTANT: a [uid=eN] is only valid until the NEXT take-snapshot on the same tab — snapshot, then act on its uids before snapshotting again; a second snapshot reassigns every uid, so a uid from an earlier snapshot will resolve to the wrong element or fail. BACKGROUND TAB: a tab that is not in front normally snapshots fine, so do not pass activateTab:true up front. Only if this returns an empty/near-empty tree for such a tab (it may be frozen by Chrome Memory Saver / Edge Sleeping Tabs), retry once with activateTab:true to briefly foreground it for the call. STILL-LOADING TAB: if the first read has zero elements and the tab is still loading (or its app has not rendered anything yet), the extension re-reads for you, up to about 5 s for a loading page and 1.5 s for a loaded but unrendered shell, and the count line says how long it waited and why it is still empty, e.g. '[snapshot: 0 elements — waited 5.0 s, page still loading (tab status: loading)]'; a settled page that simply has no controls is not waited on. TO FIND A SPECIFIC CONTROL by its visible text or label (nav item, tab, menu entry, icon-only button), pass textContains:'the label' rather than reading the whole page. By default it now also captures visually-clickable elements (cursor:pointer, e.g. React <div onClick> cards) — set includePointer:false to suppress that, or maxInteractive to cap how many are added. SHADOW DOM: web-component content in open AND closed shadow roots is included, in reading order (iframes are not walked). Query modes: 'selector' returns exactly the CSS-selector matches (even non-interactive, e.g. selector:'[contenteditable]' for a chat box), matched inside each shadow root separately (CSS combinators never cross a shadow boundary); 'textContains' matches case-insensitively against an element's text content OR its accessible name (aria-label, aria-labelledby, <label>, alt, title, placeholder), and when an element and its descendant both match, only the deepest one is returned — except that text rendered through a web component's slot counts for the control around it (e.g. the component's button), text hidden with CSS counts only for a visible control around it, and a match by name alone (e.g. an icon's alt) never hides a control that matches by its own text. A row whose trailing (states) end with 'via inner button' (or link, checkbox, ...) is a menu item / option / tab / tree item that wraps exactly one control of the same name: its uid targets that inner control and the row also shows that control's states and value, so click-element on it reaches the control. A list or grid wrapper (listitem, row, gridcell) around one same-named control is not listed; the control's own row stands for it. In selector mode a matched wrapper keeps its own uid and '(wraps button [uid=eN])' gives the inner control's uid. Scope with 'rootSelector' to collect only within one subtree (e.g. the main panel, excluding a huge sidebar; it may point at a shadow host or inside a shadow root), and page large results with 'offset'/'limit' (the reply reports total collected and whether more remain). verbose:true additionally includes headings and aria-labelled elements.",
   {
     tabId: z.number(),
     verbose: z.boolean().optional(),
@@ -768,7 +791,7 @@ mcpServer.tool(
 
 mcpServer.tool(
   "evaluate-script",
-  'Evaluate a JavaScript function in a browser tab and return its result. Pass "function" as a function EXPRESSION string, e.g. "() => document.title" or "(sel) => document.querySelector(sel)?.textContent". By default (world:"main") it runs in the page\'s real world (sees the page\'s window/frameworks/DOM, is awaited if it returns a promise) — but a page with a strict Content-Security-Policy can block it. Set world:"isolated" to run in the extension\'s isolated content-script world instead: CSP-immune, can read the DOM, element rects, and non-httpOnly document.cookie, but CANNOT see the page\'s own JS globals/framework state and runs SYNCHRONOUSLY (a returned Promise is not awaited). Browser support for world:"isolated" is asymmetric: Firefox runs it fully (the source is compiled, so it is genuinely CSP-immune), but on Chrome MV3 the isolated-world CSP blocks arbitrary-source eval, so it honestly degrades to a clear ok:false — on Chrome use engine:"cdp" or world:"main", or read state with the CSP-immune snapshot/screenshot/coordinate tools instead. Pass "args" to forward arguments to the function. world defaults to "auto" (main-world, with an isolated fallback on Firefox). On a strict-CSP page where you must run real page JS, pass engine:"cdp" (Chrome/Edge only): it runs via the debugger so it bypasses the page CSP, at the cost of showing the debugger banner (detectable) — reach for it only when the covert path is CSP-blocked.',
+  'Evaluate a JavaScript function in a browser tab and return its result. Pass "function" as a function EXPRESSION string, e.g. "() => document.title" or "(sel) => document.querySelector(sel)?.textContent"; "args" are forwarded to it and the result is JSON-serialized (undefined becomes null). WORLDS: world defaults to "auto". In the main world (world:"main", "auto" or omitted) it runs in the page\'s real world (sees the page\'s window, frameworks and DOM) and a returned Promise is awaited. On Chrome/Edge that works on any page unless the PAGE\'s Content-Security-Policy forbids eval (a script-src without \'unsafe-eval\'): then it returns an ok:false saying so, "auto" does not fall back to the isolated world (Chrome\'s isolated world cannot eval either), and only engine:"cdp" can still run it. On Firefox it uses an injected <script>, which a strict page CSP can block: world:"auto" then falls back to the isolated world by itself, while world:"main" does NOT fall back and reports the block. Set world:"isolated" to run in the extension\'s isolated content-script world: CSP-immune, can read the DOM, element rects and non-httpOnly document.cookie, but CANNOT see the page\'s own JS globals/framework state and runs SYNCHRONOUSLY (a returned Promise is not awaited). Firefox runs it fully (the source is compiled, so it is genuinely CSP-immune); on Chrome MV3 the isolated-world CSP blocks arbitrary-source eval, so it honestly degrades to a clear ok:false. When a page\'s CSP forbids eval, read state with the CSP-immune take-snapshot / get-tab-web-content / get-network-requests / get-cookies / coordinate tools. engine:"cdp" (Chrome/Edge only) is the last resort for running page JS there: it goes through the debugger, which bypasses the CSP, at the cost of the "FoxPilot started debugging this browser" bar (detectable by the page) — reach for it only after the normal route reported the CSP block.',
   {
     tabId: z.number(),
     function: z.string(),
@@ -1025,7 +1048,7 @@ mcpServer.tool(
 
 mcpServer.tool(
   "take-screenshot",
-  "Take a screenshot of a browser tab and return it as an image. By default captures the visible viewport. Set fullPage to true to capture the entire scrollable page (stitched together). Pass a 'uid' from a recent take-snapshot to capture just that element (cropped). Choose 'png' (default, lossless) or 'jpeg' (smaller) for the format. Provide an absolute filePath to also save the image to disk on the machine running the MCP server. COVERTNESS: on Chrome/Edge, if captureVisibleTab returns an empty readback on all 3 attempts (a persistent failure some GPU/compositor configs hit), the DEFAULT viewport capture falls back to a CDP screenshot — that attaches the debugger, so it briefly shows the 'started debugging this browser' banner and is DETECTABLE by the page. The reply says so when it happens (a 'Warning:' line ahead of the image), and the debugger is detached immediately after. Only the default viewport path does this: fullPage and element ('uid') captures never attach the debugger, they fail instead. Firefox has no such fallback. Screenshots are the most common cause of the debugger banner and cost many tokens: to read text or check state prefer take-snapshot or get-tab-web-content, and use take-screenshot only when you need to see the rendering.",
+  "Take a screenshot of a browser tab and return it as an image. IMAGES ARE THE COSTLIEST READ: to read text, check state or find a control use take-snapshot or get-tab-web-content (no image, far cheaper, and they work on a minimized window). Take a screenshot only when you must SEE the rendering (layout, colours, a chart or canvas, an image, a visual bug), and take one, not one after every action. By default captures the visible viewport. Set fullPage to true to capture the entire scrollable page (stitched together). Pass a 'uid' from a recent take-snapshot to capture just that element (cropped). Choose 'png' (default, lossless) or 'jpeg' (smaller) for the format. Provide an absolute filePath to also save the image to disk on the machine running the MCP server. CHROME/EDGE: THE BROWSER WINDOW MUST BE VISIBLE for a normal capture. When it is minimized or hidden (another Space, the app hidden) Chrome paints no frames: a viewport capture still works if the tab kept its last frame (it then goes through the debugger to render a fresh one, see below), a tab with no frame fails at once with a message saying so, and fullPage and uid captures fail at once. Ask the user to restore the window or use take-snapshot. A page taller than 30 screens returns one viewport capture with a warning instead of a stitched image. CHROME DEBUGGER FALLBACK: Chrome only lets captureVisibleTab run with all-sites access (a grant for one site is not enough), so with a per-site grant the default viewport capture falls back to a CDP screenshot. That attaches the debugger: the user sees 'started debugging this browser' and the page can detect it (screenshots are the most common cause of the debugger banner). The reply puts a 'Warning:' line naming the real cause ahead of the image; when you see it, tell the user to grant all-sites access once instead of taking more screenshots. fullPage and element ('uid') captures never use the debugger, they fail instead. Firefox has no such fallback.",
   {
     tabId: z.number(),
     fullPage: z.boolean().optional(),
@@ -1067,6 +1090,10 @@ mcpServer.tool(
       data: result.base64,
       mimeType: result.mimeType,
     });
+
+    // The image is the most expensive thing FoxPilot returns: remind the agent,
+    // right where it would repeat the habit, that text reads need no image.
+    content.push({ type: "text", text: SCREENSHOT_IMAGE_NOTE });
 
     return { content };
   }
@@ -1216,9 +1243,13 @@ mcpServer.tool(
 
 mcpServer.tool(
   "browser-fetch",
-  'A privileged fetch issued from the extension background context. Because it runs at the extension origin it is immune to the visited page\'s Content-Security-Policy, it uses the browser\'s real session (credentials:"include" attaches that site\'s cookies, including httpOnly, when host permission is granted), and it is browser-originated so it passes WAFs that block curl. Provide EITHER "body" (UTF-8 text) or "bodyBase64" (binary). Requires Automation Mode + host permission for the target; there is a ~60s hard ceiling. IMPORTANT: a non-2xx status (e.g. 403) is a SUCCESSFUL result, not an error — only a network failure/timeout/permission denial is an error.',
+  'Fetch a URL from the browser and return the status, headers and body. It runs in one of two contexts. ' +
+    '(1) Default, no tabId: the extension BACKGROUND. The visited page\'s CSP and CORS do not apply (host permission covers the target), and with credentials:"include" (the default) or useSessionCookies it sends that site\'s cookies from the browser\'s own jar, httpOnly ones included. It is NOT the page: the request\'s Origin is the extension\'s (chrome-extension://... or moz-extension://...) and it has no page Referer, so an API that checks Origin, Referer or a CSRF token can answer 403/401, often with an EMPTY body. It is not WAF-proof either. ' +
+    '(2) With tabId: the fetch runs INSIDE that tab (Chrome: the extension\'s isolated content-script world; Firefox: the page-principal content.fetch) and is sent as the page: the page\'s Origin, Referer and cookies, credentials defaulting to "same-origin", relative URLs resolved against the tab. To call a same-site API exactly as the page would, pass the tabId of a tab on that site. The tab must show an http(s) page; a cross-origin target is subject to normal CORS there, and a strict page CSP connect-src may also apply; useSessionCookies has no effect (the page\'s own cookies are sent). The reply then starts with a line saying it ran inside the tab. ' +
+    'Provide EITHER "body" (UTF-8 text) or "bodyBase64" (binary). Requires Automation Mode and host permission for the site (the tab\'s site with tabId, else the target). timeoutMs defaults to 30000 and the whole call is cut off at 45 s. IMPORTANT: a non-2xx status (e.g. 403) is a SUCCESSFUL result, not an error — only a network failure/timeout/permission denial is an error.',
   {
     url: z.string(),
+    tabId: z.number().optional(),
     method: z.string().optional(),
     headers: z.record(z.string(), z.string()).optional(),
     body: z.string().optional(),
@@ -1231,42 +1262,20 @@ mcpServer.tool(
   },
   async (params) => {
     const result = await browserApi.browserFetch(params);
-    if (!result.ok) {
-      // Only a transport-level failure (network/timeout/permission/abort) is an
-      // error; a non-2xx HTTP status is handled as success below.
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Fetch failed: ${result.error ?? "unknown error"}`,
-          },
-        ],
-        isError: true,
-      };
-    }
-    const statusLine = `${result.status ?? "?"} ${result.statusText ?? ""}  ${
-      result.finalUrl ?? params.url
-    }`;
-    const headersBlock = JSON.stringify(result.headers ?? {}, null, 2);
-    const bodyBlock =
-      result.bodyText !== undefined
-        ? result.bodyText
-        : `[binary body: base64 length ${result.bodyBase64?.length ?? 0}]`;
-    const truncatedNote = result.truncated ? "\n(truncated)" : "";
+    // Formatting (tab banner, the old-extension guard, the empty-body 401/403
+    // hint) lives in fetch-format.ts, which self-executing server.ts cannot
+    // export for tests.
+    const formatted = formatBrowserFetchReply(params, result);
     return {
-      content: [
-        {
-          type: "text",
-          text: `${statusLine}\n\n${headersBlock}\n\n${bodyBlock}${truncatedNote}`,
-        },
-      ],
+      content: [{ type: "text", text: formatted.text }],
+      ...(formatted.isError ? { isError: true } : {}),
     };
   }
 );
 
 mcpServer.tool(
   "stream-start",
-  "Open an SSE/chunked-transfer request from the extension background and return a streamId once the response HEADERS arrive (NOT once the body completes — a streaming body never completes). The streamId model exists because a single MCP call cannot stream. Same privileged fetch semantics as browser-fetch (CSP-immune, real session, credentials/useSessionCookies/redirect). After it returns, drain buffered frames with stream-poll (pass the streamId and a sinceIndex cursor) and call stream-close when you are done. Requires Automation Mode + host permission.",
+  "Open an SSE/chunked-transfer request from the extension background and return a streamId once the response HEADERS arrive (NOT once the body completes — a streaming body never completes). The streamId model exists because a single MCP call cannot stream. Same background-context semantics as browser-fetch without tabId (immune to the page's CSP and CORS, uses the browser's cookie jar, credentials/useSessionCookies/redirect), including that the request carries the extension's Origin and no page Referer, not the app's. After it returns, drain buffered frames with stream-poll (pass the streamId and a sinceIndex cursor) and call stream-close when you are done. Requires Automation Mode + host permission.",
   {
     url: z.string(),
     method: z.string().optional(),

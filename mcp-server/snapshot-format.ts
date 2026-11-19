@@ -5,6 +5,8 @@
 // the BrowserAPI, connects stdio, and wires process exit, so it cannot be
 // imported into a test) — for the same reason formatPointResult lives in
 // point-format.ts and formatNetworkHeaders in network-format.ts.
+import { redactTabUrl } from "@foxpilot/common";
+
 type DocState = { readyState: string; url: string; bodyChildren: number };
 
 // A document is treated as mid-navigation when it is still parsing. "" covers
@@ -16,10 +18,20 @@ function isNavigating(readyState: string): boolean {
 }
 
 // Keep a pathological URL from dominating the line; the origin + start of the
-// path is what identifies which document was snapshotted.
+// path is what identifies which document was snapshotted. The URL is REDACTED
+// first (no query, fragment or userinfo): a tab that is mid-navigation is often
+// on a login or OAuth redirect whose query/fragment carries a token, and this
+// text goes straight into the model's context.
 function shortUrl(url: string): string {
   if (!url) return "(unknown)";
-  return url.length > 120 ? `${url.slice(0, 117)}...` : url;
+  const shown = redactTabUrl(url);
+  if (!shown) return "(unknown)";
+  return shown.length > 120 ? `${shown.slice(0, 117)}...` : shown;
+}
+
+// "12.3 s" style duration for the wait notes: one decimal, always.
+function seconds(ms: number): string {
+  return `${(ms / 1000).toFixed(1)} s`;
 }
 
 /**
@@ -34,8 +46,10 @@ function shortUrl(url: string): string {
  */
 function explainDocState(
   total: number,
-  docState?: DocState
+  docState?: DocState,
+  waited?: { waitedMs: number; tabStatus?: string }
 ): [suffix: string, note: string] {
+  if (waited) return explainWait(total, waited, docState);
   if (!docState) return ["", ""];
   const navigating = isNavigating(docState.readyState);
   const rs = docState.readyState || "unknown";
@@ -71,6 +85,59 @@ function explainDocState(
   ];
 }
 
+/**
+ * The extension WAITED before answering (it read an empty snapshot off a tab that
+ * was still loading, or off an unrendered app shell, and re-read until elements
+ * appeared or its budget ran out). Says how long, and why the answer is what it
+ * is. Replaces the docState suffix: the wait already tells the same story, and
+ * without a URL there is nothing here that could carry a token.
+ */
+function explainWait(
+  total: number,
+  waited: { waitedMs: number; tabStatus?: string },
+  docState?: DocState
+): [suffix: string, note: string] {
+  const took = seconds(waited.waitedMs);
+  const rs = docState ? docState.readyState || "unknown" : undefined;
+  const stillLoading =
+    (waited.tabStatus !== undefined && waited.tabStatus !== "complete") ||
+    (docState !== undefined && isNavigating(docState.readyState)) ||
+    (rs !== undefined && rs !== "complete");
+
+  if (total > 0) {
+    return [
+      ` — waited ${took} for the page to render` +
+        (docState && isNavigating(docState.readyState)
+          ? ", document still loading — tree may be incomplete"
+          : ""),
+      "",
+    ];
+  }
+  if (stillLoading) {
+    // Name what the browser reported. readyState only when the tab status does
+    // not already say "still loading" by itself.
+    const facts: string[] = [];
+    if (waited.tabStatus !== undefined) facts.push(`tab status: ${waited.tabStatus}`);
+    if (rs !== undefined && rs !== "complete" && (waited.tabStatus === undefined || waited.tabStatus === "complete")) {
+      facts.push(`readyState: ${rs}`);
+    }
+    return [
+      ` — waited ${took}, page still loading` + (facts.length ? ` (${facts.join(", ")})` : ""),
+      "The page was still loading when the wait ended, so this is NOT necessarily an empty page. " +
+        "Take a fresh snapshot once it settles — or gate on the new content first with wait-for-text, " +
+        "or navigate-tab's waitForSelector/waitForText. " +
+        "If you passed selector/textContains/rootSelector, the page may also simply not contain a match.",
+    ];
+  }
+  return [
+    ` — waited ${took}, page loaded but rendered nothing interactive yet`,
+    "The page finished loading but had rendered nothing interactive yet (a client-rendered app " +
+      "that is still starting, or a page with no controls). Take a fresh snapshot in a moment — or " +
+      "gate on the content first with wait-for-text, or navigate-tab's waitForSelector/waitForText. " +
+      "If you passed selector/textContains/rootSelector, it may also have filtered everything out.",
+  ];
+}
+
 export function formatSnapshotResult(result: {
   snapshot: string;
   isTruncated: boolean;
@@ -78,6 +145,9 @@ export function formatSnapshotResult(result: {
   hasMore?: boolean;
   error?: string;
   docState?: DocState;
+  // Set only when the extension waited before answering (see explainWait).
+  waitedMs?: number;
+  tabStatus?: string;
 }) {
   if (result.error) {
     return {
@@ -93,7 +163,13 @@ export function formatSnapshotResult(result: {
   // undefined (an older extension that predates the count field) — fall back to
   // the prior output (no count line) so it cannot crash.
   if (typeof result.total === "number") {
-    const [docSuffix, docNote] = explainDocState(result.total, result.docState);
+    const [docSuffix, docNote] = explainDocState(
+      result.total,
+      result.docState,
+      typeof result.waitedMs === "number"
+        ? { waitedMs: result.waitedMs, tabStatus: result.tabStatus }
+        : undefined
+    );
     const countLine =
       `[snapshot: ${result.total} element${result.total === 1 ? "" : "s"}` +
       (result.isTruncated

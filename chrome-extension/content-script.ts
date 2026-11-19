@@ -11,7 +11,6 @@ import { dispatchMouseMoveStep, typeCharStep, readElementScreenRect } from "./in
 import { runHumanInput, HumanInputDeps } from "./humanize/run-human-input";
 import { mousePath, typingPlan, Point } from "./humanize/motion-model";
 import {
-  buildEvalPageScript,
   buildDialogPageScript,
   buildEmulatePageScript,
   evalInIsolatedWorld,
@@ -33,33 +32,18 @@ if ((window as any).__bcmcpContentScriptLoaded) {
   (window as any).__bcmcpContentScriptLoaded = true;
 
   // Helper to inject a script into the page's MAIN world and poll for a result.
+  // Used by handle-dialog and emulate. (evaluate-script no longer goes through
+  // here: the service worker runs it with scripting.executeScript({world:"MAIN"}),
+  // see main-world-eval.ts.)
   async function runInPageWorld(
     pageScript: string,
     resultAttr: string,
-    timeoutMs: number,
-    startedAttr?: string
-  ): Promise<{ ok: boolean; value?: any; error?: string; cspBlocked?: boolean }> {
+    timeoutMs: number
+  ): Promise<{ ok: boolean; value?: any; error?: string }> {
     const script = document.createElement("script");
     script.textContent = pageScript;
     (document.documentElement || document.head || document.body).appendChild(script);
     script.remove();
-
-    // Definitive CSP detection: an ALLOWED inline <script> executes
-    // synchronously during appendChild, so its `startedAttr` marker is already
-    // present here. If the caller asked for a marker and it is absent, the page
-    // CSP blocked the injection — fail instantly instead of waiting out the 10s
-    // timeout (which must stay long for legitimately-slow async evals).
-    if (startedAttr) {
-      if (document.documentElement.getAttribute(startedAttr) === null) {
-        return {
-          ok: false,
-          cspBlocked: true,
-          error:
-            'CSP blocked the injected script (the page forbids inline script execution). First read state with the CSP-immune take-snapshot / get-tab-web-content / coordinate tools / get-cookies. Only if you must run page JS, on Chrome/Edge retry with engine:"cdp" (runs via the debugger and bypasses page CSP, but the user sees a "FoxPilot started debugging this browser" bar and the page can detect it).',
-        };
-      }
-      document.documentElement.removeAttribute(startedAttr);
-    }
 
     return new Promise((resolve) => {
       const start = Date.now();
@@ -388,18 +372,6 @@ if ((window as any).__bcmcpContentScriptLoaded) {
 
           case "scrollElementIntoView": {
             const result = scrollElementIntoView(document, message.uid);
-            sendResponse(result);
-            break;
-          }
-
-          case "evaluateScript": {
-            const startedAttr = message.resultAttr + "-started";
-            const result = await runInPageWorld(
-              buildEvalPageScript(message.functionSource, message.args, message.resultAttr, startedAttr),
-              message.resultAttr,
-              message.timeoutMs,
-              startedAttr
-            );
             sendResponse(result);
             break;
           }

@@ -123,6 +123,7 @@ describe("injected/* is mirrored across the two extensions", () => {
   const MIRRORED = [
     "action-script.ts",
     "dismiss-overlays-script.ts",
+    "fetch-in-tab-script.ts",
     "humanize-steps.ts",
     "page-content-script.ts",
     "point-action-script.ts",

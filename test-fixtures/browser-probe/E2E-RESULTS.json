@@ -1,0 +1,456 @@
+{
+  "meta": {
+    "startedAt": "2026-11-19T08:28:44.148Z",
+    "node": "v24.22.2",
+    "platform": "darwin-arm64",
+    "strict": false,
+    "only": "all",
+    "seatbelt": true,
+    "ports": {
+      "fixture": 62152,
+      "broker": 62153,
+      "sidecar": 62154,
+      "canary": 62156
+    },
+    "fingerprint": {
+      "extension dist/background.js": "a8b58017de4d5d01",
+      "extension dist/content-script.js": "57ca3f445c2154e8",
+      "mcp-server dist/server.js": "0564e47a3a3917e1",
+      "mcp-server dist/broker-main.js": "6e882871c6ef737c",
+      "extensionVersion": "1.0.36"
+    },
+    "browser": {
+      "product": "Chrome/140.0.7339.16",
+      "headless": true,
+      "pid": 3148
+    },
+    "toolCount": 46,
+    "runtimeMs": 36359,
+    "cleanup": {
+      "killedPids": [
+        2993
+      ],
+      "leftoverProcessesFoundAndKilled": 0,
+      "tempRemoved": true
+    }
+  },
+  "safety": {
+    "patch": {
+      "patched": [
+        "dist/background.js: DEFAULT_WS_PORT 8089 -> 62153, DEFAULT_SIDECAR_PORT 8090 -> 62154 (1 occurrence each)",
+        "dist/options.js: DEFAULT_WS_PORT 8089 -> 62153, DEFAULT_SIDECAR_PORT 8090 -> 62154 (1 occurrence each)",
+        "options.html: display text"
+      ],
+      "remaining": [],
+      "manifestHostPermissions": [
+        "http://localhost/*",
+        "http://127.0.0.1/*"
+      ],
+      "manifestOptionalHostPermissions": [
+        "<all_urls>"
+      ]
+    },
+    "seatbelt": {
+      "enabled": true,
+      "profile": "(version 1)(allow default)(deny network-outbound (remote ip \"*:8089\") (remote ip \"*:8090\") (remote ip \"*:<CANARY_PORT>\"))",
+      "preflight": [
+        {
+          "name": "canary-127.0.0.1",
+          "result": "error:EPERM"
+        },
+        {
+          "name": "control-127.0.0.1 (fixture)",
+          "result": "connected"
+        },
+        {
+          "name": "canary-[::1]",
+          "result": "error:EPERM"
+        },
+        {
+          "name": "control-[::1]",
+          "result": "connected"
+        }
+      ],
+      "canaryIpv6": true
+    },
+    "browserCanary": {
+      "results": {
+        "canary4": "blocked: Failed to fetch",
+        "canaryLocalhost": "blocked: Failed to fetch",
+        "ctl4": "reached",
+        "canary6": "blocked: Failed to fetch",
+        "ctl6": "reached"
+      },
+      "canaryHitsFromBrowser": 0,
+      "ipv6ControlHits": 1
+    },
+    "extensionPorts": [
+      62153
+    ],
+    "brokerHealthAfterConnect": {
+      "status": "ok",
+      "version": "1.0.36",
+      "extensionConnected": true,
+      "browsers": 1,
+      "clients": 0,
+      "remoteClients": 0,
+      "link": {
+        "enabled": false,
+        "relayConnected": false,
+        "sessions": 0
+      }
+    },
+    "automationMode": {
+      "automationMode": true,
+      "ports": [
+        62153
+      ]
+    },
+    "controlSecretInTempHome": true,
+    "lsof": [
+      {
+        "label": "after the extension and MCP server connected",
+        "pids": 8,
+        "perPort": {
+          "8089": [],
+          "8090": []
+        },
+        "listeners8089": "",
+        "allTcp": [
+          "node 2993 <USER> 14u IPv4 0xcb69f93d14788104 0t0 TCP 127.0.0.1:<BROKER_PORT> (LISTEN)",
+          "node 2993 <USER> 15u IPv6 0xfd78b78769b26dd0 0t0 TCP [::1]:<BROKER_PORT> (LISTEN)",
+          "node 2993 <USER> 16u IPv4 0x77c367e63ff72576 0t0 TCP 127.0.0.1:<BROKER_PORT>->127.0.0.1:62165 (ESTABLISHED)",
+          "node 2993 <USER> 17u IPv4 0x2aac1939286b7699 0t0 TCP 127.0.0.1:<BROKER_PORT>->127.0.0.1:62175 (ESTABLISHED)",
+          "node 2993 <USER> 18u IPv6 0x7a54839455db60c5 0t0 TCP [::1]:<BROKER_PORT>->[::1]:62178 (ESTABLISHED)",
+          "Chromium 3148 <USER> 67u IPv4 0x28969d9e2f404e8a 0t0 TCP 127.0.0.1:62170 (LISTEN)",
+          "Chromium 3148 <USER> 68u IPv4 0x7c93aa279a2b727f 0t0 TCP 127.0.0.1:62170->127.0.0.1:62171 (ESTABLISHED)",
+          "Chromium 3234 <USER> 29u IPv4 0x6d65b857b18b7542 0t0 TCP 127.0.0.1:62175->127.0.0.1:<BROKER_PORT> (ESTABLISHED)",
+          "Chromium 3234 <USER> 30u IPv4 0x9b73a59ed4f002d3 0t0 TCP 127.0.0.1:62176->127.0.0.1:<PORT> (ESTABLISHED)",
+          "Chromium 3234 <USER> 31u IPv6 0xa236a9eec4121821 0t0 TCP [::1]:62177->[::1]:62157 (ESTABLISHED)",
+          "node 3326 <USER> 14u IPv6 0x8dc88dc05ae2fa02 0t0 TCP [::1]:62178->[::1]:<BROKER_PORT> (ESTABLISHED)"
+        ],
+        "ok": true
+      },
+      {
+        "label": "after the last case",
+        "pids": 9,
+        "perPort": {
+          "8089": [],
+          "8090": []
+        },
+        "listeners8089": "",
+        "allTcp": [
+          "node 2993 <USER> 14u IPv4 0xcb69f93d14788104 0t0 TCP 127.0.0.1:<BROKER_PORT> (LISTEN)",
+          "node 2993 <USER> 15u IPv6 0xfd78b78769b26dd0 0t0 TCP [::1]:<BROKER_PORT> (LISTEN)",
+          "node 2993 <USER> 17u IPv4 0x2aac1939286b7699 0t0 TCP 127.0.0.1:<BROKER_PORT>->127.0.0.1:62175 (ESTABLISHED)",
+          "node 2993 <USER> 18u IPv6 0x7a54839455db60c5 0t0 TCP [::1]:<BROKER_PORT>->[::1]:62178 (ESTABLISHED)",
+          "Chromium 3148 <USER> 67u IPv4 0x28969d9e2f404e8a 0t0 TCP 127.0.0.1:62170 (LISTEN)",
+          "Chromium 3148 <USER> 68u IPv4 0x7c93aa279a2b727f 0t0 TCP 127.0.0.1:62170->127.0.0.1:62171 (ESTABLISHED)",
+          "Chromium 3234 <USER> 29u IPv4 0x6d65b857b18b7542 0t0 TCP 127.0.0.1:62175->127.0.0.1:<BROKER_PORT> (ESTABLISHED)",
+          "Chromium 3234 <USER> 30u IPv4 0x9b73a59ed4f002d3 0t0 TCP 127.0.0.1:62176->127.0.0.1:<PORT> (CLOSE_WAIT)",
+          "Chromium 3234 <USER> 31u IPv6 0xa236a9eec4121821 0t0 TCP [::1]:62177->[::1]:62157 (CLOSE_WAIT)",
+          "Chromium 3234 <USER> 32u IPv4 0x5d71f1b1efdea0f2 0t0 TCP 127.0.0.1:62323->127.0.0.1:<PORT> (ESTABLISHED)",
+          "Chromium 3234 <USER> 33u IPv4 0x6616a19fa011829f 0t0 TCP 127.0.0.1:62322->127.0.0.1:<PORT> (ESTABLISHED)",
+          "node 3326 <USER> 14u IPv6 0x8dc88dc05ae2fa02 0t0 TCP [::1]:62178->[::1]:<BROKER_PORT> (ESTABLISHED)"
+        ],
+        "ok": true
+      }
+    ],
+    "sitePermissions": {
+      "allUrls": false,
+      "unGranted": false,
+      "loopback": true
+    },
+    "netlog": {
+      "bytes": 764063,
+      "attemptsTo8089or8090": 0,
+      "samples": [],
+      "extensionWebSocketEventsToTestBroker": 3,
+      "blockedCanaryAttemptsVisibleInLog": 47,
+      "ok": true
+    },
+    "ok": true
+  },
+  "cases": [
+    {
+      "id": "1.1",
+      "title": "default listing hides fake-token-123 / fake-jwt-abc and shows scheme+host+path with ?[redacted]/#[redacted]",
+      "status": "PASS",
+      "observed": "tab id=22452967, tab url=http://127.0.0.1:<PORT>/page?[redacted]#[redacted], tab title=Secret Tab, last accessed=a few seconds ago, window id=22452965 | tab id=22452968, tab url=http://127.0.0.1:<PORT>/p/alpha-docs?[redacted], tab title=Alpha Docs, last accessed=a few seconds ago, window id=22452965 | tab id=22452969, tab url=http://127.0.0.1:<PORT>/p/beta-report?[redacted], tab title=Beta Report, last accessed=a few seconds ago, window id=22452965"
+    },
+    {
+      "id": "1.2",
+      "title": "urlContains matches on the PATH (/p/alpha -> exactly the alpha tab, header says matching)",
+      "status": "PASS",
+      "observed": "Showing tabs 1-1 of 1 matching tabs tab id=22452968, tab url=http://127.0.0.1:<PORT>/p/alpha-docs?[redacted], tab title=Alpha Docs, last accessed=a few seconds ago, window id=22452965"
+    },
+    {
+      "id": "1.3",
+      "title": "urlContains '/page' finds the secret tab, still redacted",
+      "status": "PASS",
+      "observed": "Showing tabs 1-1 of 1 matching tabs tab id=22452967, tab url=http://127.0.0.1:<PORT>/page?[redacted]#[redacted], tab title=Secret Tab, last accessed=a few seconds ago, window id=22452965"
+    },
+    {
+      "id": "1.4",
+      "title": "urlContains with the secret text finds NOTHING by default (and lists no tab / leaks no token)",
+      "status": "PASS",
+      "observed": "No open tabs match the given filters (windowId / activeOnly / visibleOnly / urlContains / titleContains)."
+    },
+    {
+      "id": "1.5",
+      "title": "fullUrls:true + urlContains secret finds the tab and prints the full URL",
+      "status": "PASS",
+      "observed": "Showing tabs 1-1 of 1 matching tabs tab id=22452967, tab url=http://127.0.0.1:<PORT>/page?csp=none&title=Secret%20Tab&next=%2Fcb%3Faccess_token%3Dfake-token-123#id_token=fake-jwt-abc, tab title=Secret Tab, last accessed=a few seconds ago, window id=22452965"
+    },
+    {
+      "id": "1.6",
+      "title": "titleContains is case-insensitive and finds only the beta tab",
+      "status": "PASS",
+      "observed": "Showing tabs 1-1 of 1 matching tabs tab id=22452969, tab url=http://127.0.0.1:<PORT>/p/beta-report?[redacted], tab title=Beta Report, last accessed=a few seconds ago, window id=22452965"
+    },
+    {
+      "id": "1.7",
+      "title": "urlContains + titleContains are ANDed",
+      "status": "PASS",
+      "observed": "Showing tabs 1-1 of 1 matching tabs tab id=22452968, tab url=http://127.0.0.1:<PORT>/p/alpha-docs?[redacted], tab title=Alpha Docs, last accessed=a few seconds ago, window id=22452965"
+    },
+    {
+      "id": "1.8",
+      "title": "compact prints one short line per tab (id, win, host+path | title), no scheme, still redacted",
+      "status": "PASS",
+      "observed": "Showing tabs 1-3 of 3 matching tabs id=22452967 win=22452965 127.0.0.1:<PORT>/page?[redacted]#[redacted] | Secret Tab id=22452968 win=22452965 127.0.0.1:<PORT>/p/alpha-docs?[redacted] | Alpha Docs id=22452969 win=22452965 127.0.0.1:<PORT>/p/beta-report?[redacted] | Beta Report"
+    },
+    {
+      "id": "1.9",
+      "title": "filters narrow the count; header says 'matching' when filtered and 'total' when not",
+      "status": "PASS",
+      "observed": "unfiltered: Showing tabs 1-4 of 4 total tabs ; filtered: Showing tabs 1-3 of 3 matching tabs"
+    },
+    {
+      "id": "2.1",
+      "title": "no tabId (extension background): POST /api/guarded -> 403, empty body, Hint suggests tabId",
+      "status": "PASS",
+      "observed": "403 Forbidden http://127.0.0.1:<PORT>/api/guarded { \"cache-control\": \"no-store\", \"connection\": \"keep-alive\", \"content-length\": \"0\", \"date\": \"Thu, 19 Nov 2026 08:28:46 GMT\", \"keep-alive\": \"timeout=5\" } [binary body: base64 length 0] Hint: this request ran in the extension background, so it carried the extension's Origin (not the app's) and no page Referer. A site that checks Origin, Referer or a CSRF token often answers that with an empty 401/403. Retry with tabId set to a tab on the same site to send it as the page."
+    },
+    {
+      "id": "2.2",
+      "title": "with tabId of a same-origin tab: banner line first, status 200 {\"ok\":true}",
+      "status": "PASS",
+      "observed": "[ran inside tab 22452973 as the page: origin http://127.0.0.1:<PORT>] 200 OK http://127.0.0.1:<PORT>/api/guarded { \"cache-control\": \"no-store\", \"connection\": \"keep-alive\", \"content-type\": \"application/json\", \"date\": \"Thu, 19 Nov 2026 08:28:46 GMT\", \"keep-alive\": \"timeout=5\", \"transfer-encoding\": \"chunked\" } {\"ok\":true}"
+    },
+    {
+      "id": "2.3",
+      "title": "in-tab GET /api/echo shows the page's Referer and the cookie sid=fake-session-1",
+      "status": "PASS",
+      "observed": "{\"origin\":null,\"referer\":\"http://127.0.0.1:<PORT>/page?csp=none&title=Fetch%20Tab\",\"cookie\":\"sid=fake-session-1\",\"secFetchSite\":\"same-origin\",\"secFetchMode\":\"cors\",\"host\":\"127.0.0.1:<PORT>\",\"method\":\"GET\"}"
+    },
+    {
+      "id": "2.4",
+      "title": "browser-fetch with tabId of a chrome://version tab -> clear error, no hang (< 15 s)",
+      "status": "PASS",
+      "observed": "3 ms: Tab 22452974 is showing a chrome: page, which extensions cannot run a fetch inside (browser-internal, file, extension and blank pages are off limits). Navigate it to an http(s) page of the site first, or use browser-fetch without tabId."
+    },
+    {
+      "id": "3.info",
+      "title": "TODAY: default-world evaluate-script `() => document.title` on each CSP variant",
+      "status": "INFO",
+      "observed": "csp=none: ok probe page || csp=self-eval: ok probe page || csp=self-inline-eval: ok probe page || csp=self: ERROR The page's Content-Security-Policy forbids eval (its script-src has no 'unsafe-eval'), so page-world script cannot run through the normal r..."
+    },
+    {
+      "id": "3.info2",
+      "title": "evaluate-script change in the build (marker: \"forbids eval\")",
+      "status": "INFO",
+      "observed": "yes"
+    },
+    {
+      "id": "3.1",
+      "title": "csp=none default world returns document.title",
+      "status": "PASS",
+      "observed": "probe page"
+    },
+    {
+      "id": "3.2",
+      "title": "csp=none default world awaits a promise and returns an object",
+      "status": "PASS",
+      "observed": "{ \"answer\": 42, \"title\": \"probe page\" }"
+    },
+    {
+      "id": "3.3.self-eval",
+      "title": "csp=self-eval default world returns the value",
+      "status": "PASS",
+      "observed": "probe page"
+    },
+    {
+      "id": "3.3.self-inline-eval",
+      "title": "csp=self-inline-eval default world returns the value",
+      "status": "PASS",
+      "observed": "probe page"
+    },
+    {
+      "id": "3.4",
+      "title": "csp=self (eval forbidden): default world -> isError naming the page CSP / unsafe-eval AND engine:\"cdp\"",
+      "status": "PASS",
+      "observed": "The page's Content-Security-Policy forbids eval (its script-src has no 'unsafe-eval'), so page-world script cannot run through the normal route on this page (the browser said: Refused to evaluate a string as JavaScript because 'unsafe-eval' is not an allowed source of script in the following Content Security Policy directive: \"script-src 'self'\".). Reading state still works: use take-snapshot, get-tab-web-content, get-network-requests, get-cookies or the coordinate tools. Only as a last resort, engine:\"cdp\" runs it through the debugger (Chrome/Edge): that shows the \"FoxPilot started debugging this browser\" bar and the page can detect it."
+    },
+    {
+      "id": "3.5",
+      "title": "csp=self with engine:\"cdp\" returns the value",
+      "status": "PASS",
+      "observed": "probe page Note: engine:\"cdp\" attached Chrome's debugger for this call, so the user saw a \"FoxPilot started debugging this browser\" banner and the page can detect it. Omit engine next time; use it again only if the default call ran but the page ignored it."
+    },
+    {
+      "id": "3.6",
+      "title": "never-settling promise -> timeout error within ~15 s (<= 20 s)",
+      "status": "PASS",
+      "observed": "10010 ms: Timed out waiting for the script result (the function may be hanging or awaiting a promise that never resolves)."
+    },
+    {
+      "id": "3.7",
+      "title": "the tab is not wedged: the call after the hang works",
+      "status": "PASS",
+      "observed": "probe page"
+    },
+    {
+      "id": "3.8",
+      "title": "world:\"isolated\" still returns the honest-degrade error (isError, names the CSP/eval limit)",
+      "status": "PASS",
+      "observed": "isolated-world evaluation is not available on this Chrome build (the extension's isolated-world CSP blocks eval). Use engine:\"cdp\" (Chrome/Edge — runs via the debugger, bypasses CSP) or world:\"main\"; or read DOM state with the CSP-immune take-snapshot / take-screenshot / coordinate tools / get-cookies."
+    },
+    {
+      "id": "4.info",
+      "title": "wait markers in the built bundles",
+      "status": "INFO",
+      "observed": "found: /\\bsettleSnapshot\\b/ /\\bwaitedMs\\b/ /waited \\$\\{\\w+\\} for the page/"
+    },
+    {
+      "id": "4.1",
+      "title": "SPA shell: snapshot right after open contains the rendered button, or its count line says it waited / is still loading (never a bare 0-element snapshot)",
+      "status": "PASS",
+      "observed": "open 29 ms; snapshot 1567 ms (ok); tab complete after 0 ms; page {\"button\":true,\"loadedAt\":31.5,\"renderedAt\":3020.5,\"rs\":\"complete\",\"vis\":\"hidden\"}; first line: [snapshot: 0 elements — waited 1.5 s, page loaded but rendered nothing interactive yet] :: [snapshot: 0 elements — waited 1.5 s, page loaded but rendered nothing interactive yet] The page finished loading but had rendered nothing interactive yet (a client-rendered app that is still starting, or a page with no controls). Take a fresh snapshot in a moment — or gate on the content first with wait-for-text, or navigate-tab's waitForSelector/waitForText. If you passed selector/textContains/rootSelector, it may also have filtered everything out."
+    },
+    {
+      "id": "4.2",
+      "title": "/slow?ms=3000 (document still loading): count line says the extension waited / the page is still loading, not a bare 0-element snapshot",
+      "status": "PASS",
+      "observed": "open 31 ms; snapshot 4599 ms (ok); tab complete after 0 ms; page null; first line: [snapshot: 0 elements — waited 1.5 s, page loaded but rendered nothing interactive yet] :: [snapshot: 0 elements — waited 1.5 s, page loaded but rendered nothing interactive yet] The page finished loading but had rendered nothing interactive yet (a client-rendered app that is still starting, or a page with no controls). Take a fresh snapshot in a moment — or gate on the content first with wait-for-text, or navigate-tab's waitForSelector/waitForText. If you passed selector/textContains/rootSelector, it may also have filtered everything out."
+    },
+    {
+      "id": "4.3",
+      "title": "/slow-ui?ms=3000: snapshot contains the Slow Button (the extension waited) or says it waited",
+      "status": "PASS",
+      "observed": "open 28 ms; snapshot 3096 ms (ok); tab complete after 0 ms; page null; first line: [snapshot: 1 element] :: [snapshot: 1 element] button \"Slow Button\" | | [uid=e1]"
+    },
+    {
+      "id": "4.4",
+      "title": "genuinely empty complete page (/empty): returns in < 1.5 s, 0-element count line, no wait wording",
+      "status": "PASS",
+      "observed": "106 ms :: [snapshot: 0 elements — document loaded, nothing interactive matched (readyState=\"complete\")] The page has content but no interactive elements were collected. If you passed selector/textContains/rootSelector, it filtered everything out; otherwise the controls may live in an iframe, which is not walked (open and closed shadow roots are), or be drawn on a canvas."
+    },
+    {
+      "id": "4.info2",
+      "title": "INFO: /empty snapshotted right after open-browser-tab (not asserted)",
+      "status": "INFO",
+      "observed": "open 24 ms; snapshot 201 ms (ok); tab complete after 0 ms; page null; first line: [snapshot: 0 elements — document loaded, nothing interactive matched (readyState=\"complete\")]"
+    },
+    {
+      "id": "5.info",
+      "title": "contract tags found in the built bundles",
+      "status": "INFO",
+      "observed": "TAB DISCARDED: yes ; TAB NOT SCRIPTABLE (restricted page): yes ; TAB SHOWS A BROWSER ERROR PAGE: yes ; SITE ACCESS NOT GRANTED: yes"
+    },
+    {
+      "id": "5.1",
+      "title": "discarded tab: take-snapshot starts with TAB DISCARDED:, no misleading permission advice, no URL tokens",
+      "status": "PASS",
+      "observed": "106 ms :: TAB DISCARDED: Tab 22452995 (http://127.0.0.1:<PORT>): the browser unloaded this tab (Memory Saver), so there is no page in it to read or act on. Its page state is already gone, so reloading loses nothing. Retry this call with activateTab:true (it loads the tab, then returns the user to their previous tab), or use navigate-page-history with direction \"reload\", or open-browser-tab for a fresh tab. Original error: Could not establish connection. Receiving end does not exist."
+    },
+    {
+      "id": "5.2",
+      "title": "discarded tab: evaluate-script starts with TAB DISCARDED:, no misleading permission advice, no URL tokens",
+      "status": "PASS",
+      "observed": "29 ms :: TAB DISCARDED: Tab 22452995 (http://127.0.0.1:<PORT>): the browser unloaded this tab (Memory Saver), so there is no page in it to read or act on. Its page state is already gone, so reloading loses nothing. Retry this call with activateTab:true (it loads the tab, then returns the user to their previous tab), or use navigate-page-history with direction \"reload\", or open-browser-tab for a fresh tab. Original error: Cannot access contents of the page. Extension manifest must request permission to access the respective host."
+    },
+    {
+      "id": "5.3",
+      "title": "the discarded tab works again after activateTab:true (reload) or chrome.tabs.reload",
+      "status": "PASS",
+      "observed": "via take-snapshot activateTab:true; tab before: discarded=true; [snapshot: 1 element] button \"OK\" | | [uid=e1] Note: activateTab:true briefly switched the user's visible tab for this call. Omit it on your next call on this tab; set it again only if a call on this..."
+    },
+    {
+      "id": "5.4",
+      "title": "chrome://version tab -> TAB NOT SCRIPTABLE (restricted page): within 5 s",
+      "status": "PASS",
+      "observed": "3 ms :: TAB NOT SCRIPTABLE (restricted page): This tab shows a chrome: page, which browsers never let extensions read or act on, so retrying will fail the same way and nothing can be granted to change it. Open the page you want in a normal http(s) tab with open-browser-tab and use that tab id instead. Original error: none (FoxPilot checked this before running the command, so the browser was never asked)"
+    },
+    {
+      "id": "5.4b",
+      "title": "chrome://version tab -> TAB NOT SCRIPTABLE (restricted page): within 5 s (evaluate-script)",
+      "status": "PASS",
+      "observed": "3 ms :: TAB NOT SCRIPTABLE (restricted page): This tab shows a chrome: page, which browsers never let extensions read or act on, so retrying will fail the same way and nothing can be granted to change it. Open the page you want in a normal http(s) tab with open-browser-tab and use that tab id instead. Original error: none (FoxPilot checked this before running the command, so the browser was never asked)"
+    },
+    {
+      "id": "5.5",
+      "title": "about:blank tab -> TAB NOT SCRIPTABLE (restricted page):",
+      "status": "PASS",
+      "observed": "3 ms :: TAB NOT SCRIPTABLE (restricted page): This tab shows a blank page (about:blank), which browsers never let extensions read or act on, so retrying will fail the same way and nothing can be granted to change it. It has no content yet: use navigate-tab to load an http(s) page in it, or open-browser-tab for a new tab. Original error: none (FoxPilot checked this before running the command, so the browser was never asked)"
+    },
+    {
+      "id": "5.6",
+      "title": "data: URL tab -> restricted tag, the data: payload is not echoed",
+      "status": "PASS",
+      "observed": "7 ms :: TAB NOT SCRIPTABLE (restricted page): This tab shows a data: page, which browsers never let extensions read or act on, so retrying will fail the same way and nothing can be granted to change it. Open the page you want in a normal http(s) tab with open-browser-tab and use that tab id instead. Original error: none (FoxPilot checked this before running the command, so the browser was never asked)"
+    },
+    {
+      "id": "5.7",
+      "title": "view-source: tab -> restricted tag, no hang",
+      "status": "PASS",
+      "observed": "3 ms :: TAB NOT SCRIPTABLE (restricted page): This tab shows a view-source: page (the source of a page, not the page), which browsers never let extensions read or act on, so retrying will fail the same way and nothing can be granted to change it. Open the page you want in a normal http(s) tab with open-browser-tab and use that tab id instead. Original error: none (FoxPilot checked this before running the command, so the browser was never asked)"
+    },
+    {
+      "id": "5.8",
+      "title": "connection-refused tab (http://127.0.0.1:1/) -> TAB SHOWS A BROWSER ERROR PAGE:",
+      "status": "PASS",
+      "observed": "8111 ms :: TAB SHOWS A BROWSER ERROR PAGE: Tab 22453007 could not load its page (offline, connection refused, a DNS failure or a blocked request), so the browser is showing its own error page, which extensions cannot read. This is not a permission problem. Fix the address or the network, then retry the load with navigate-tab, or use navigate-page-history with direction \"reload\". Original error: Frame with ID 0 is showing error page"
+    },
+    {
+      "id": "5.8.slow",
+      "title": "INFO: the diagnosis for this tab took 8111 ms (the contract only bounds it at 15000 ms)",
+      "status": "INFO",
+      "observed": ""
+    },
+    {
+      "id": "5.9",
+      "title": "un-granted host http://a.example.test -> SITE ACCESS NOT GRANTED: naming chrome://extensions and Site access",
+      "status": "PASS",
+      "observed": "31 ms :: SITE ACCESS NOT GRANTED: Automation Mode is on, but the browser has not given FoxPilot access to all sites, so FoxPilot has no access to http://a.example.test:<PORT>. A dialog to grant access to all sites is now being opened: ask the user to click Grant, then retry. Where to fix it: open chrome://extensions (brave://extensions in Brave, edge://extensions in Edge) → FoxPilot → Details → Site access → \"On all sites\" (or add this site under \"On specific sites\"). If Automation Mode is on, switching it off and on again in FoxPilot's options page asks the browser again. Original error: none (FoxPilot checked this before running the command, so the browser was never asked)"
+    },
+    {
+      "id": "5.9b",
+      "title": "un-granted host http://a.example.test -> SITE ACCESS NOT GRANTED: naming chrome://extensions and Site access (evaluate-script)",
+      "status": "PASS",
+      "observed": "23 ms :: SITE ACCESS NOT GRANTED: Automation Mode is on, but the browser has not given FoxPilot access to all sites, so FoxPilot has no access to http://a.example.test:<PORT>. A dialog to grant access to all sites is now being opened: ask the user to click Grant, then retry. Where to fix it: open chrome://extensions (brave://extensions in Brave, edge://extensions in Edge) → FoxPilot → Details → Site access → \"On all sites\" (or add this site under \"On specific sites\"). If Automation Mode is on, switching it off and on again in FoxPilot's options page asks the browser again. Original error: none (FoxPilot checked this before running the command, so the browser was never asked)"
+    },
+    {
+      "id": "5.9.side",
+      "title": "INFO: tabs left open after the un-granted-host call (side effects, closed before the next case)",
+      "status": "INFO",
+      "observed": "http://a.example.test:<PORT>/page?... | |"
+    },
+    {
+      "id": "5.10",
+      "title": "fresh tab on 127.0.0.1 -> normal success (count line + uid'd button)",
+      "status": "PASS",
+      "observed": "[snapshot: 1 element] button \"OK\" | | [uid=e1]"
+    },
+    {
+      "id": "SAFETY.netlog",
+      "title": "browser net-log shows no connection attempt to 8089/8090 (and does show the test broker websocket)",
+      "status": "PASS",
+      "observed": "764063 bytes scanned, 0 attempts to 8089/8090, 3 websocket events to the test broker, 47 denied-canary events visible (the log does record blocked attempts)"
+    }
+  ],
+  "summary": {
+    "PASS": 39,
+    "INFO": 7
+  }
+}

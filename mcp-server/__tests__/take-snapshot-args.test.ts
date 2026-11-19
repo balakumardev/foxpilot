@@ -92,6 +92,21 @@ describe("BrowserAPI.takeSnapshot query args over the broker", () => {
           },
         };
       }
+      if ((req as any).textContains === "__waited__") {
+        // The extension waited for a loading tab: waitedMs/tabStatus ride along.
+        return {
+          resource: "snapshot",
+          correlationId: req.correlationId,
+          tabId: (req as any).tabId,
+          snapshot: "",
+          isTruncated: false,
+          total: 0,
+          hasMore: false,
+          docState: { readyState: "loading", url: "https://app.example.test/", bodyChildren: 1 },
+          waitedMs: 5003,
+          tabStatus: "loading",
+        };
+      }
       if (typeof (req as any).limit === "number") {
         return {
           resource: "snapshot",
@@ -168,6 +183,17 @@ describe("BrowserAPI.takeSnapshot query args over the broker", () => {
       url: "https://example.com/callback?code=abc",
       bodyChildren: 0,
     });
+  });
+
+  it("surfaces waitedMs and tabStatus across the broker hop, and leaves them absent otherwise", async () => {
+    const waited = await api.takeSnapshot(9, { textContains: "__waited__" });
+    expect(waited.waitedMs).toBe(5003);
+    expect(waited.tabStatus).toBe("loading");
+    expect(waited.error).toBeUndefined();
+
+    const plain = await api.takeSnapshot(9, { selector: "[contenteditable]" });
+    expect(plain.waitedMs).toBeUndefined();
+    expect(plain.tabStatus).toBeUndefined();
   });
 
   it("omits docState when the extension predates the field", async () => {

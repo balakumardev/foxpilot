@@ -26,6 +26,18 @@ export interface GetTabListServerMessage extends ServerMessageBase {
    * tabs inside a collapsed tab group (Chrome/Edge).
    */
   visibleOnly?: boolean;
+  /** Only tabs whose URL contains this text (case-insensitive). See redactUrls. */
+  urlContains?: string;
+  /** Only tabs whose title contains this text (case-insensitive). Both = AND. */
+  titleContains?: string;
+  /**
+   * true: the extension replaces every URL in the reply with its redacted form
+   * (scheme + host + path, no query / fragment / userinfo, see redactTabUrl) and
+   * matches urlContains against that form, so tokens never leave the browser and
+   * the filter cannot be used to probe them. Absent or false: raw URLs, matched
+   * raw, exactly as before this field existed.
+   */
+  redactUrls?: boolean;
 }
 
 export interface GetBrowserRecentHistoryServerMessage extends ServerMessageBase {
@@ -233,13 +245,16 @@ export interface EvaluateScriptServerMessage extends ServerMessageBase {
   tabId: number;
   function: string;
   args?: unknown[];
-  // Which JS world to run in. "auto" (default) tries the page's real "main"
-  // world first and, if a strict page CSP blocks the injected <script>, on
-  // Firefox transparently retries "isolated" (which is genuinely CSP-immune
-  // there); on Chrome it returns a fast, actionable CSP error (isolated eval is
-  // also blocked on Chrome MV3 — use engine:"cdp"). "main" forces the page world
-  // (no fallback). "isolated" forces the isolated content-script world (CSP-
-  // immune, sees the DOM but not page-JS globals, synchronous).
+  // Which JS world to run in. "auto" (default), "main" and an omitted world all
+  // run in the page's real world. Firefox: an injected <script>; if a strict page
+  // CSP blocks it, "auto" transparently retries "isolated" (genuinely CSP-immune
+  // there) and "main" reports the block without retrying. Chrome:
+  // scripting.executeScript({world:"MAIN"}), which a page can refuse only through
+  // its own CSP (script-src without 'unsafe-eval'); that comes back as an
+  // actionable ok:false and there is no isolated fallback (isolated eval is also
+  // blocked on Chrome MV3) — use engine:"cdp" as the last resort. "isolated"
+  // forces the isolated content-script world (CSP-immune on Firefox, sees the
+  // DOM but not page-JS globals, synchronous).
   world?: "main" | "isolated" | "auto";
   // Dispatch engine. "auto" (default) uses the world above (covert injection).
   // "cdp" (Chrome/Edge only) runs the eval via chrome.debugger Runtime.evaluate,
@@ -351,19 +366,35 @@ export interface GetCookiesServerMessage extends ServerMessageBase {
   names?: string[];
 }
 
-// A privileged one-shot fetch executed from the extension background context.
-// Because it runs at the extension origin (not the page), the visited page's CSP
-// does NOT apply. With host permission for the target and credentials:"include"
-// the browser attaches that site's cookies (incl. httpOnly) automatically, and
-// the request looks browser-originated (passing WAFs that reject curl). Provide
-// EITHER `body` (UTF-8 text) or `bodyBase64` (binary). `useSessionCookies` opts
-// into injecting a `Cookie` header from the jar (the default credentialed request
-// can miss SameSite=Strict cookies); it is applied via a declarativeNetRequest
-// session rule (Chrome) or a blocking webRequest listener (Firefox) because
-// `Cookie` is a forbidden header for fetch() and would otherwise be dropped.
+// A one-shot fetch. WITHOUT `tabId` it runs in the extension BACKGROUND context:
+// the visited page's CSP and CORS do not apply, and with host permission for the
+// target and credentials:"include" the browser attaches that site's cookies
+// (incl. httpOnly). It is NOT a page request: its Origin is the extension's
+// (chrome-extension:// / moz-extension://) and it carries no page Referer, so an
+// API that checks Origin/Referer/CSRF can answer 403/401 (often with an empty
+// body). It is not WAF-proof either. Provide EITHER `body` (UTF-8 text) or
+// `bodyBase64` (binary). `useSessionCookies` opts into injecting a `Cookie`
+// header from the jar (the default credentialed request can miss
+// SameSite=Strict cookies); it is applied via a declarativeNetRequest session
+// rule (Chrome) or a blocking webRequest listener (Firefox) because `Cookie` is
+// a forbidden header for fetch() and would otherwise be dropped.
+//
+// WITH `tabId` the fetch runs INSIDE that tab's page context (the extension's
+// isolated content-script world, so the page's CSP connect-src and a
+// monkey-patched page fetch are not involved), as the page: the page's Origin,
+// Referer and cookies, subject to normal CORS, `credentials` defaulting to
+// "same-origin", relative URLs resolved against the tab. `useSessionCookies` has
+// no effect there. An extension that predates this field ignores it and replies
+// WITHOUT `context:"tab"`; the server must then refuse to present that
+// background response as a tab response.
+//
+// `tabId` makes the broker serialize the call per tab and lease-check it like
+// any other tab-targeted command.
 export interface BrowserFetchServerMessage extends ServerMessageBase {
   cmd: "browser-fetch";
   url: string;
+  // Run the fetch inside this tab as the page (see above).
+  tabId?: number;
   method?: string;
   headers?: Record<string, string>;
   body?: string;

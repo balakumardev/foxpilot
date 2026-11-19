@@ -12,6 +12,8 @@
  * Everything here reads the real permission state; nothing trusts the stored flag.
  */
 
+import { buildTabAccessMessage } from "@foxpilot/common";
+
 export const ALL_SITES_ORIGINS = ["<all_urls>"];
 
 /** Query parameter that makes options.html open the all-sites grant dialog. */
@@ -57,12 +59,16 @@ export function allSitesRequestUrl(optionsUrl: string): string {
   return `${optionsUrl}?${REQUEST_ALL_SITES_PARAM}=1`;
 }
 
-/** Error text for a tool call that hit an origin the browser has not granted. */
+/**
+ * Error text for a tool call that hit an origin the browser has not granted while
+ * Automation Mode is on. Tagged SITE ACCESS NOT GRANTED, with the exact place to
+ * fix it (chrome://extensions -> FoxPilot -> Details -> Site access).
+ */
 export function allSitesMissingMessage(origin: string): string {
-  return (
-    `Automation Mode is on, but the browser has not given FoxPilot access to all sites, ` +
-    `so "${origin}" is not covered. A dialog is now being opened to grant access to all sites. ` +
-    `Ask the user to click Grant, then retry. If it does not stick, the user can set FoxPilot's ` +
-    `Site access to "On all sites" on the browser's extensions page.`
-  );
+  return buildTabAccessMessage("notGranted", {
+    browser: "chrome",
+    origin,
+    automationMode: true,
+    dialog: "all-sites",
+  });
 }

@@ -2,6 +2,12 @@ import { MessageHandler } from "../message-handler";
 import type { ExtensionTransport } from "../transport";
 import type { ServerMessageRequest } from "@foxpilot/common";
 import { cdpEval } from "../cdp-eval";
+import { mainWorldEval } from "../main-world-eval";
+import {
+  SNAPSHOT_SETTLE_POLL_MS,
+  SNAPSHOT_SETTLE_LOADING_MS,
+  SNAPSHOT_SETTLE_SHELL_MS,
+} from "@foxpilot/common";
 import { addConsoleEntry, clearConsoleEntries } from "../console-capture";
 
 // The native-input client is mocked so importing/constructing the handler never
@@ -16,6 +22,14 @@ jest.mock("../native-input-client", () => ({
 // Mock the module so the routing can be asserted without a real debugger attach.
 jest.mock("../cdp-eval", () => ({
   cdpEval: jest.fn(),
+}));
+
+// The capture pacing (Chrome allows 2 captureVisibleTab calls per second) is real
+// time in production; these handler tests use real timers, so run them with no
+// gap. The pacing itself is covered by viewport-capture.test.ts.
+jest.mock("../viewport-capture", () => ({
+  ...jest.requireActual("../viewport-capture"),
+  CAPTURE_MIN_GAP_MS: 0,
 }));
 
 // Poll the macrotask queue until `pred` holds — used to await the point at which
@@ -198,7 +212,7 @@ describe("MessageHandler (chrome) — foreground-tab preservation", () => {
           tabId: 123,
           correlationId: "all1",
         } as ServerMessageRequest)
-      ).rejects.toThrow(/Automation Mode is on.*all sites/s);
+      ).rejects.toThrow(/^SITE ACCESS NOT GRANTED:.*Automation Mode is on.*all sites/s);
 
       expect(browser.tabs.create).toHaveBeenCalledTimes(1);
       expect(browser.tabs.create).toHaveBeenCalledWith({
@@ -217,7 +231,7 @@ describe("MessageHandler (chrome) — foreground-tab preservation", () => {
           tabId: 123,
           correlationId: "all2",
         } as ServerMessageRequest)
-      ).rejects.toThrow(/has not yet granted permission to access the domain/);
+      ).rejects.toThrow(/^SITE ACCESS NOT GRANTED:.*https:\/\/example\.com.*Site access/s);
 
       expect(browser.tabs.create).toHaveBeenCalledWith({
         url:
@@ -402,6 +416,223 @@ describe("MessageHandler (chrome) — foreground-tab preservation", () => {
           warning: expect.stringContaining("CDP screenshot fallback"),
         })
       );
+    });
+    it("hidden (minimized) window whose tab has a frame: probes once, then the debugger renders a fresh image, naming the cause", async () => {
+      (browser.storage.local.get as jest.Mock).mockResolvedValue({
+        config: automationConfig,
+      });
+      (browser.tabs.get as jest.Mock).mockResolvedValue({
+        id: 123,
+        url: "https://example.com",
+        windowId: 7,
+      });
+      (browser.tabs.query as jest.Mock).mockResolvedValue([{ id: 123 }]);
+      (browser.tabs.update as jest.Mock).mockResolvedValue(undefined);
+      (browser.permissions.contains as jest.Mock).mockResolvedValue(true);
+      // A minimized window: the page reports hidden, the window reports minimized.
+      (browser as any).scripting.executeScript = jest
+        .fn()
+        .mockResolvedValue([{ result: "hidden" }]);
+      (browser as any).windows.get = jest.fn().mockResolvedValue({ id: 7, state: "minimized" });
+      // The tab kept its last frame, so captureVisibleTab returns it (STALE).
+      (browser.tabs.captureVisibleTab as jest.Mock)
+        .mockReset()
+        .mockResolvedValue("data:image/png;base64,STALE");
+      const dbg = (chrome as any).debugger;
+      dbg.attach.mockReset().mockResolvedValue(undefined);
+      dbg.detach.mockReset().mockResolvedValue(undefined);
+      dbg.sendCommand.mockReset().mockResolvedValue({ data: "Q0RQ" });
+
+      await messageHandler.handleDecodedMessage({
+        cmd: "take-screenshot",
+        tabId: 123,
+        correlationId: "hid",
+      } as ServerMessageRequest);
+
+      // One probe only, no retries against a window that paints nothing, and the
+      // fresh debugger render is what the agent gets, not the stale probe.
+      expect(browser.tabs.captureVisibleTab).toHaveBeenCalledTimes(1);
+      expect(dbg.sendCommand).toHaveBeenCalledWith(
+        { tabId: 123 },
+        "Page.captureScreenshot",
+        expect.objectContaining({ format: "png" })
+      );
+      expect(transport.sendResourceToServer).toHaveBeenCalledWith(
+        expect.objectContaining({
+          resource: "screenshot",
+          base64: "Q0RQ",
+          warning: expect.stringMatching(/minimized[\s\S]*CDP screenshot fallback/),
+        })
+      );
+      delete (browser as any).scripting.executeScript;
+      delete (browser as any).windows.get;
+    });
+
+    it("hidden window whose tab has NO frame: fails at once with the cause and never attaches the debugger", async () => {
+      (browser.storage.local.get as jest.Mock).mockResolvedValue({
+        config: automationConfig,
+      });
+      (browser.tabs.get as jest.Mock).mockResolvedValue({
+        id: 123,
+        url: "https://example.com",
+        windowId: 7,
+      });
+      (browser.tabs.query as jest.Mock).mockResolvedValue([{ id: 123 }]);
+      (browser.tabs.update as jest.Mock).mockResolvedValue(undefined);
+      (browser.permissions.contains as jest.Mock).mockResolvedValue(true);
+      (browser as any).scripting.executeScript = jest
+        .fn()
+        .mockResolvedValue([{ result: "hidden" }]);
+      (browser as any).windows.get = jest.fn().mockResolvedValue({ id: 7, state: "minimized" });
+      (browser.tabs.captureVisibleTab as jest.Mock)
+        .mockReset()
+        .mockRejectedValue(new Error("Failed to capture tab: image readback failed"));
+      const dbg = (chrome as any).debugger;
+      dbg.attach.mockReset().mockResolvedValue(undefined);
+
+      await expect(
+        messageHandler.handleDecodedMessage({
+          cmd: "take-screenshot",
+          tabId: 123,
+          correlationId: "noframe",
+        } as ServerMessageRequest)
+      ).rejects.toThrow(/minimized[\s\S]*no frame[\s\S]*take-snapshot/);
+
+      // The debugger would wait forever for a frame that never comes: do not attach it.
+      expect(dbg.attach).not.toHaveBeenCalled();
+      expect(browser.tabs.captureVisibleTab).toHaveBeenCalledTimes(1);
+      delete (browser as any).scripting.executeScript;
+      delete (browser as any).windows.get;
+    });
+
+    it("hidden window: a full-page screenshot fails at once with the cause, not a bare readback error", async () => {
+      (browser.storage.local.get as jest.Mock).mockResolvedValue({
+        config: automationConfig,
+      });
+      (browser.tabs.get as jest.Mock).mockResolvedValue({
+        id: 123,
+        url: "https://example.com",
+        windowId: 7,
+      });
+      (browser.tabs.query as jest.Mock).mockResolvedValue([{ id: 123 }]);
+      (browser.tabs.update as jest.Mock).mockResolvedValue(undefined);
+      (browser.permissions.contains as jest.Mock).mockResolvedValue(true);
+      (browser as any).scripting.executeScript = jest
+        .fn()
+        .mockResolvedValue([{ result: "hidden" }]);
+      (browser as any).windows.get = jest.fn().mockResolvedValue({ id: 7, state: "minimized" });
+      (browser.tabs.captureVisibleTab as jest.Mock).mockReset();
+
+      await expect(
+        messageHandler.handleDecodedMessage({
+          cmd: "take-screenshot",
+          tabId: 123,
+          fullPage: true,
+          correlationId: "hidfp",
+        } as ServerMessageRequest)
+      ).rejects.toThrow(/full-page screenshot[\s\S]*minimized[\s\S]*take-snapshot/);
+      expect(browser.tabs.captureVisibleTab).not.toHaveBeenCalled();
+      delete (browser as any).scripting.executeScript;
+      delete (browser as any).windows.get;
+    });
+    describe("timeouts that keep a screenshot from hanging (measured 2026-11-15)", () => {
+      beforeEach(() => {
+        (browser.storage.local.get as jest.Mock).mockResolvedValue({
+          config: automationConfig,
+        });
+        (browser.tabs.get as jest.Mock).mockResolvedValue({
+          id: 123,
+          url: "https://example.com",
+          windowId: 7,
+        });
+        (browser.tabs.query as jest.Mock).mockResolvedValue([{ id: 123 }]);
+        (browser.tabs.update as jest.Mock).mockResolvedValue(undefined);
+        (browser.permissions.contains as jest.Mock).mockResolvedValue(true);
+        jest.useFakeTimers();
+      });
+      afterEach(() => {
+        jest.useRealTimers();
+        delete (browser as any).scripting.executeScript;
+        delete (browser as any).windows.get;
+      });
+
+      it("a debugger capture that never returns is cut off at 6s and the stale frame is returned, labelled", async () => {
+        (browser as any).scripting.executeScript = jest
+          .fn()
+          .mockResolvedValue([{ result: "hidden" }]);
+        (browser as any).windows.get = jest.fn().mockResolvedValue({ id: 7, state: "minimized" });
+        (browser.tabs.captureVisibleTab as jest.Mock)
+          .mockReset()
+          .mockResolvedValue("data:image/png;base64,STALE");
+        const dbg = (chrome as any).debugger;
+        dbg.attach.mockReset().mockResolvedValue(undefined);
+        dbg.detach.mockReset().mockResolvedValue(undefined);
+        dbg.sendCommand.mockReset().mockReturnValue(new Promise(() => {})); // never settles
+
+        const done = messageHandler.handleDecodedMessage({
+          cmd: "take-screenshot",
+          tabId: 123,
+          correlationId: "hang",
+        } as ServerMessageRequest);
+        await jest.advanceTimersByTimeAsync(10_000);
+        await done;
+
+        expect(transport.sendResourceToServer).toHaveBeenCalledWith(
+          expect.objectContaining({
+            resource: "screenshot",
+            base64: "STALE",
+            warning: expect.stringMatching(/produced no frame within 6s[\s\S]*out of date/),
+          })
+        );
+        // The debugger is released even though the capture never answered.
+        expect(dbg.detach).toHaveBeenCalledWith({ tabId: 123 });
+      });
+
+      it("a visible window whose debugger capture never returns fails with the reason, not a hang", async () => {
+        (browser.tabs.captureVisibleTab as jest.Mock)
+          .mockReset()
+          .mockRejectedValue(new Error("Failed to capture tab: image readback failed"));
+        const dbg = (chrome as any).debugger;
+        dbg.attach.mockReset().mockResolvedValue(undefined);
+        dbg.detach.mockReset().mockResolvedValue(undefined);
+        dbg.sendCommand.mockReset().mockReturnValue(new Promise(() => {}));
+
+        const done = messageHandler
+          .handleDecodedMessage({
+            cmd: "take-screenshot",
+            tabId: 123,
+            correlationId: "hang2",
+          } as ServerMessageRequest)
+          .then(
+            () => "resolved",
+            (e: Error) => e.message
+          );
+        await jest.advanceTimersByTimeAsync(20_000);
+        expect(await done).toMatch(/produced no frame within 6s[\s\S]*readback failed/);
+        expect(dbg.detach).toHaveBeenCalledWith({ tabId: 123 });
+      });
+
+      it("a busy page cannot stall the screenshot through the visibility read", async () => {
+        (browser as any).scripting.executeScript = jest.fn().mockReturnValue(new Promise(() => {}));
+        (browser.tabs.captureVisibleTab as jest.Mock)
+          .mockReset()
+          .mockResolvedValue("data:image/png;base64,GOOD");
+
+        const done = messageHandler.handleDecodedMessage({
+          cmd: "take-screenshot",
+          tabId: 123,
+          correlationId: "busy",
+        } as ServerMessageRequest);
+        await jest.advanceTimersByTimeAsync(5_000);
+        await done;
+
+        expect(transport.sendResourceToServer).toHaveBeenCalledWith({
+          resource: "screenshot",
+          correlationId: "busy",
+          mimeType: "image/png",
+          base64: "GOOD",
+        });
+      });
     });
   });
 
@@ -928,35 +1159,455 @@ describe("MessageHandler (chrome) — foreground-tab preservation", () => {
       });
     });
 
-    it('world:auto forwards the content-script CSP error (naming engine:"cdp") as eval-result ok:false when the main world is blocked', async () => {
-      // On Chrome, world:"auto" does not retry isolated; the started-marker probe
-      // in the content script reports the CSP block as a non-throwing
-      // {ok:false,cspBlocked} result via the RAW sender, and the handler forwards
-      // that actionable error as the eval-result.
-      (browser.tabs.sendMessage as jest.Mock).mockResolvedValue({
-        ok: false,
-        cspBlocked: true,
-        error:
-          'CSP blocked the injected script (the page forbids inline script execution). On Chrome/Edge retry with engine:"cdp" (runs via the debugger, bypasses page CSP).',
+    describe("main world via scripting.executeScript (world main / auto / omitted)", () => {
+      // The page script's own outcome, as mainWorldEval returns it to the worker.
+      // Fake data only; the exact CSP refusal text is the Chromium 140 wording
+      // recorded in test-fixtures/browser-probe/OBSERVED.json (case 3, "self").
+      const CSP_REFUSAL =
+        "Refused to evaluate a string as JavaScript because 'unsafe-eval' is not an allowed source of script in the following Content Security Policy directive: \"script-src 'self'\".\n";
+
+      beforeEach(() => {
+        (browser as any).scripting.executeScript = jest.fn();
+      });
+      afterEach(() => {
+        jest.useRealTimers();
+        (browser as any).scripting.executeScript = jest.fn().mockResolvedValue([]);
       });
 
-      await messageHandler.handleDecodedMessage({
-        cmd: "evaluate-script",
-        tabId: 5,
-        function: "() => 1",
-        world: "auto",
-        correlationId: "ca",
-      } as ServerMessageRequest);
+      const evalCall = (extra: Record<string, unknown>, id: string) =>
+        messageHandler.handleDecodedMessage({
+          cmd: "evaluate-script",
+          tabId: 5,
+          function: "(a) => a + 1",
+          args: [1],
+          correlationId: id,
+          ...extra,
+        } as ServerMessageRequest);
 
-      // Reached the main-world inject (not cdpEval).
-      expect(cdpEval).not.toHaveBeenCalled();
-      const call = (transport.sendResourceToServer as jest.Mock).mock.calls.find(
-        (c: any[]) => c[0].correlationId === "ca"
+      const lastEvalResult = (id: string) =>
+        (transport.sendResourceToServer as jest.Mock).mock.calls.find(
+          (c: any[]) => c[0].correlationId === id
+        )![0];
+
+      it.each([
+        ["main", { world: "main" }],
+        ["auto", { world: "auto" }],
+        ["undefined", {}],
+        // Any non-isolated world string takes the main-world route, as before.
+        ["an unknown world string", { world: "bogus" }],
+      ])("world %s injects mainWorldEval into the MAIN world and forwards the value", async (_label, extra) => {
+        (browser as any).scripting.executeScript.mockResolvedValue([
+          { frameId: 0, result: { ok: true, value: { n: 2 } } },
+        ]);
+
+        await evalCall(extra as Record<string, unknown>, "m1");
+
+        const exec = (browser as any).scripting.executeScript as jest.Mock;
+        expect(exec).toHaveBeenCalledTimes(1);
+        const injection = exec.mock.calls[0][0];
+        expect(injection.world).toBe("MAIN");
+        expect(injection.target).toEqual({ tabId: 5 });
+        expect(injection.func).toBe(mainWorldEval);
+        expect(injection.args).toEqual(["(a) => a + 1", [1]]);
+        // No content-script <script> route, no debugger.
+        expect(browser.tabs.sendMessage).not.toHaveBeenCalled();
+        expect(cdpEval).not.toHaveBeenCalled();
+        expect(transport.sendResourceToServer).toHaveBeenCalledWith({
+          resource: "eval-result",
+          correlationId: "m1",
+          ok: true,
+          value: { n: 2 },
+          error: undefined,
+        });
+      });
+
+      it("defaults args to [] when none are given", async () => {
+        (browser as any).scripting.executeScript.mockResolvedValue([
+          { frameId: 0, result: { ok: true, value: null } },
+        ]);
+        await messageHandler.handleDecodedMessage({
+          cmd: "evaluate-script",
+          tabId: 5,
+          function: "() => undefined",
+          correlationId: "m2",
+        } as ServerMessageRequest);
+        expect(
+          ((browser as any).scripting.executeScript as jest.Mock).mock.calls[0][0].args
+        ).toEqual(["() => undefined", []]);
+        expect(lastEvalResult("m2")).toMatchObject({ ok: true, value: null });
+      });
+
+      it("a function that throws is a plain ok:false carrying its own message (not the CSP text)", async () => {
+        (browser as any).scripting.executeScript.mockResolvedValue([
+          { frameId: 0, result: { ok: false, error: "fake page error" } },
+        ]);
+        await evalCall({ world: "auto" }, "m3");
+        const r = lastEvalResult("m3");
+        expect(r.ok).toBe(false);
+        expect(r.error).toBe("fake page error");
+      });
+
+      it("cspBlocked becomes the page-CSP message: real cause, what still works, debugger only as the last resort", async () => {
+        (browser as any).scripting.executeScript.mockResolvedValue([
+          {
+            frameId: 0,
+            result: { ok: false, error: CSP_REFUSAL, cspBlocked: true },
+          },
+        ]);
+
+        await evalCall({ world: "auto" }, "m4");
+
+        expect(cdpEval).not.toHaveBeenCalled();
+        const r = lastEvalResult("m4");
+        expect(r.ok).toBe(false);
+        // Pins: the cause is the PAGE's CSP (script-src without 'unsafe-eval').
+        expect(r.error).toContain("The page's Content-Security-Policy forbids eval");
+        expect(r.error).toContain("script-src has no 'unsafe-eval'");
+        // The browser's own refusal is quoted so the agent can see the directive.
+        expect(r.error).toContain("Refused to evaluate a string as JavaScript");
+        // Reads still work.
+        for (const tool of [
+          "take-snapshot",
+          "get-tab-web-content",
+          "get-network-requests",
+          "get-cookies",
+          "coordinate tools",
+        ]) {
+          expect(r.error).toContain(tool);
+        }
+        // The debugger is the last resort and its cost is stated.
+        expect(r.error).toContain('engine:"cdp"');
+        expect(r.error).toContain("last resort");
+        expect(r.error).toContain("FoxPilot started debugging this browser");
+        expect(r.error).toContain("the page can detect it");
+        // The old misattribution is gone.
+        expect(r.error).not.toMatch(/inline script/i);
+      });
+
+      it("a hung page function is reported as the same timeout text the old path used, after EVAL_TIMEOUT_MS", async () => {
+        jest.useFakeTimers();
+        (browser as any).scripting.executeScript.mockReturnValue(new Promise(() => {}));
+
+        const done = evalCall({ world: "main" }, "m5");
+        await jest.advanceTimersByTimeAsync(9999);
+        expect(
+          (transport.sendResourceToServer as jest.Mock).mock.calls.some(
+            (c: any[]) => c[0].correlationId === "m5"
+          )
+        ).toBe(false);
+        await jest.advanceTimersByTimeAsync(1);
+        await done;
+
+        const r = lastEvalResult("m5");
+        expect(r.ok).toBe(false);
+        expect(r.error).toBe(
+          "Timed out waiting for the script result (the function may be hanging or awaiting a promise that never resolves)."
+        );
+        // The timeout timer was cleaned up, nothing is left pending.
+        expect(jest.getTimerCount()).toBe(0);
+      });
+
+      it("an executeScript rejection (host access, discarded tab) propagates untouched", async () => {
+        (browser as any).scripting.executeScript.mockRejectedValue(
+          new Error("Cannot access contents of the page. Extension manifest must request permission to access the respective host.")
+        );
+        await expect(evalCall({ world: "main" }, "m6")).rejects.toThrow(
+          /Cannot access contents of the page/
+        );
+        expect(
+          (transport.sendResourceToServer as jest.Mock).mock.calls.some(
+            (c: any[]) => c[0].correlationId === "m6"
+          )
+        ).toBe(false);
+      });
+
+      it("an empty injection reply is reported, never thrown as a TypeError", async () => {
+        (browser as any).scripting.executeScript.mockResolvedValue([]);
+        await evalCall({ world: "main" }, "m7");
+        expect(lastEvalResult("m7")).toMatchObject({
+          ok: false,
+          error: "evaluation produced no result.",
+        });
+      });
+
+      it("the deny list still runs before anything is injected", async () => {
+        (browser.storage.local.get as jest.Mock).mockResolvedValue({
+          config: { ...automationConfig, domainDenyList: ["example.com"] },
+        });
+        await expect(evalCall({ world: "main" }, "m8")).rejects.toThrow(
+          /deny list/
+        );
+        expect((browser as any).scripting.executeScript).not.toHaveBeenCalled();
+      });
+
+      it("engine:cdp stays the debugger route and injects nothing", async () => {
+        (cdpEval as jest.Mock).mockResolvedValue({ ok: true, value: 7 });
+        await evalCall({ engine: "cdp", world: "main" }, "m9");
+        expect(cdpEval).toHaveBeenCalledWith(5, "(a) => a + 1", [1]);
+        expect((browser as any).scripting.executeScript).not.toHaveBeenCalled();
+      });
+
+      it("world:isolated stays on the content-script route and injects nothing", async () => {
+        (browser.tabs.sendMessage as jest.Mock).mockResolvedValue({ ok: true, value: 3 });
+        await evalCall({ world: "isolated" }, "m10");
+        expect((browser as any).scripting.executeScript).not.toHaveBeenCalled();
+        expect(browser.tabs.sendMessage).toHaveBeenCalledWith(5, {
+          type: "evaluateScriptIsolated",
+          functionSource: "(a) => a + 1",
+          args: [1],
+        });
+      });
+    });
+  });
+
+  describe("take-snapshot waits for a tab that is still loading", () => {
+    const automationConfig = { ...baseConfig, automationMode: true };
+    const TAB_URL = "https://app.example.test/";
+
+    // One reply of the content script's buildSnapshot, fake data only.
+    const reply = (total: number, readyState: string, bodyChildren: number) => ({
+      tree: total ? 'button "Go" [uid=e1]' : "",
+      isTruncated: false,
+      total,
+      hasMore: false,
+      docState: { readyState, url: TAB_URL, bodyChildren },
+    });
+    const sendMessage = () => browser.tabs.sendMessage as jest.Mock;
+    const sent = () =>
+      (transport.sendResourceToServer as jest.Mock).mock.calls
+        .map((c: any[]) => c[0])
+        .filter((m: any) => m.resource === "snapshot");
+
+    // tabs.get as the tab looks at each point: `pre` for every lookup before the
+    // first read (the handler's own gates), then `post` in order, one per lookup
+    // the settle loop makes (the last repeats; an Error rejects, as a closed tab).
+    const mockTabs = (pre: any, ...post: any[]) => {
+      let i = 0;
+      (browser.tabs.get as jest.Mock).mockImplementation(async () => {
+        if (sendMessage().mock.calls.length === 0) return pre;
+        const t = post[Math.min(i++, post.length - 1)];
+        if (t instanceof Error) throw t;
+        return t;
+      });
+    };
+    const loadingTab = { id: 7, url: TAB_URL, status: "loading" };
+    const completeTab = { id: 7, url: TAB_URL, status: "complete" };
+
+    // Starts the command and lets its first read land, without moving the clock.
+    const start = (id = "w1") => {
+      const done = messageHandler.handleDecodedMessage({
+        cmd: "take-snapshot",
+        tabId: 7,
+        correlationId: id,
+      } as ServerMessageRequest);
+      // Swallow a rejection that lands before the test awaits `done`.
+      done.catch(() => {});
+      return done;
+    };
+
+    beforeEach(() => {
+      jest.useFakeTimers();
+      (browser.storage.local.get as jest.Mock).mockResolvedValue({ config: automationConfig });
+      (browser.permissions.contains as jest.Mock).mockResolvedValue(true);
+      (browser.tabs.get as jest.Mock).mockReset();
+      (browser.tabs.get as jest.Mock).mockResolvedValue({ id: 7, url: TAB_URL, status: "loading" });
+      sendMessage().mockReset();
+    });
+    afterEach(() => {
+      jest.useRealTimers();
+      // Leave nothing behind for the describes that follow.
+      (browser.tabs.get as jest.Mock).mockReset();
+      sendMessage().mockReset();
+    });
+
+    it("loading tab that fills in after two re-reads: waits 2 x 300 ms and reports it", async () => {
+      sendMessage()
+        .mockResolvedValueOnce(reply(0, "loading", 1))
+        .mockResolvedValueOnce(reply(0, "loading", 1))
+        .mockResolvedValueOnce(reply(4, "complete", 9));
+      // after the first read, then before re-read 1, then before re-read 2
+      mockTabs(loadingTab, loadingTab, loadingTab, completeTab);
+
+      const done = start();
+      await jest.advanceTimersByTimeAsync(SNAPSHOT_SETTLE_POLL_MS - 1);
+      expect(sent()).toHaveLength(0);
+      await jest.advanceTimersByTimeAsync(1);
+      expect(sent()).toHaveLength(0);
+      await jest.advanceTimersByTimeAsync(SNAPSHOT_SETTLE_POLL_MS);
+      await done;
+
+      expect(sendMessage()).toHaveBeenCalledTimes(3);
+      expect(sent()).toHaveLength(1);
+      expect(sent()[0]).toMatchObject({
+        resource: "snapshot",
+        correlationId: "w1",
+        tabId: 7,
+        total: 4,
+        waitedMs: 600,
+        tabStatus: "complete",
+      });
+      expect(jest.getTimerCount()).toBe(0);
+    });
+
+    it("loading tab that stays empty: stops at SNAPSHOT_SETTLE_LOADING_MS and says how long it waited", async () => {
+      sendMessage().mockResolvedValue(reply(0, "loading", 1));
+      const done = start("w2");
+      await jest.advanceTimersByTimeAsync(SNAPSHOT_SETTLE_LOADING_MS - 1);
+      expect(sent()).toHaveLength(0);
+      await jest.advanceTimersByTimeAsync(1);
+      await done;
+
+      expect(sent()).toHaveLength(1);
+      expect(sent()[0]).toMatchObject({
+        total: 0,
+        waitedMs: SNAPSHOT_SETTLE_LOADING_MS,
+        tabStatus: "loading",
+        docState: { readyState: "loading", url: TAB_URL, bodyChildren: 1 },
+      });
+      // The first read plus 17 re-reads (16 x 300 ms and one trimmed to 200 ms).
+      expect(sendMessage()).toHaveBeenCalledTimes(18);
+      expect(jest.getTimerCount()).toBe(0);
+    });
+
+    it("complete but unrendered shell that fills in: waits, then answers with the rendered tree", async () => {
+      (browser.tabs.get as jest.Mock).mockResolvedValue({ id: 7, url: TAB_URL, status: "complete" });
+      sendMessage()
+        .mockResolvedValueOnce(reply(0, "complete", 1))
+        .mockResolvedValueOnce(reply(0, "complete", 2))
+        .mockResolvedValueOnce(reply(6, "complete", 8));
+      const done = start("w3");
+      await jest.advanceTimersByTimeAsync(2 * SNAPSHOT_SETTLE_POLL_MS);
+      await done;
+      expect(sent()[0]).toMatchObject({ total: 6, waitedMs: 600, tabStatus: "complete" });
+    });
+
+    it("complete shell that never renders: gives up after SNAPSHOT_SETTLE_SHELL_MS, not the loading budget", async () => {
+      (browser.tabs.get as jest.Mock).mockResolvedValue({ id: 7, url: TAB_URL, status: "complete" });
+      sendMessage().mockResolvedValue(reply(0, "complete", 1));
+      const done = start("w4");
+      await jest.advanceTimersByTimeAsync(SNAPSHOT_SETTLE_SHELL_MS);
+      await done;
+      expect(sent()[0]).toMatchObject({ total: 0, waitedMs: SNAPSHOT_SETTLE_SHELL_MS, tabStatus: "complete" });
+      expect(sendMessage()).toHaveBeenCalledTimes(6); // the first read plus 5 re-reads
+    });
+
+    it("a genuinely empty, settled page is NOT waited on: exactly one read, no waitedMs", async () => {
+      (browser.tabs.get as jest.Mock).mockResolvedValue({ id: 7, url: TAB_URL, status: "complete" });
+      sendMessage().mockResolvedValue(reply(0, "complete", 12));
+      await start("w5"); // no timer advance: it must not be sleeping
+      expect(sendMessage()).toHaveBeenCalledTimes(1);
+      expect(jest.getTimerCount()).toBe(0);
+      const msg = sent()[0];
+      expect(msg).toMatchObject({ total: 0, docState: { readyState: "complete", bodyChildren: 12 } });
+      expect("waitedMs" in msg).toBe(false);
+      expect("tabStatus" in msg).toBe(false);
+    });
+
+    it("a snapshot with elements never waits (and never asks for the tab again)", async () => {
+      sendMessage().mockResolvedValue(reply(3, "loading", 5));
+      await start("w6");
+      expect(sendMessage()).toHaveBeenCalledTimes(1);
+      // Every tabs.get came BEFORE the read: the tab is not asked again.
+      const gets = (browser.tabs.get as jest.Mock).mock.invocationCallOrder;
+      expect(Math.max(...gets)).toBeLessThan(sendMessage().mock.invocationCallOrder[0]);
+      expect("waitedMs" in sent()[0]).toBe(false);
+    });
+
+    it("a reply with no total or docState (older content script) never waits", async () => {
+      sendMessage().mockResolvedValue({ tree: "", isTruncated: false });
+      await start("w7");
+      expect(sendMessage()).toHaveBeenCalledTimes(1);
+      expect(sent()[0]).toEqual({
+        resource: "snapshot",
+        correlationId: "w7",
+        tabId: 7,
+        snapshot: "",
+        isTruncated: false,
+      });
+    });
+
+    it("a re-read that fails mid-navigation is retried within the budget", async () => {
+      sendMessage()
+        .mockResolvedValueOnce(reply(0, "loading", 0))
+        .mockRejectedValueOnce(new Error("Frame with ID 0 was removed."))
+        .mockResolvedValueOnce(reply(2, "complete", 6));
+      const done = start("w8");
+      await jest.advanceTimersByTimeAsync(2 * SNAPSHOT_SETTLE_POLL_MS);
+      await done;
+      expect(sent()[0]).toMatchObject({ total: 2, waitedMs: 600 });
+    });
+
+    it("keeps failing until the budget is spent, then rethrows the last error", async () => {
+      sendMessage()
+        .mockResolvedValueOnce(reply(0, "loading", 0))
+        .mockRejectedValue(new Error("Frame with ID 0 was removed."));
+      const done = start("w9");
+      const outcome = expect(done).rejects.toThrow("Frame with ID 0 was removed.");
+      await jest.advanceTimersByTimeAsync(SNAPSHOT_SETTLE_LOADING_MS);
+      await outcome;
+      expect(sent()).toHaveLength(0);
+    });
+
+    it("a FIRST read that fails still fails at once, as before", async () => {
+      sendMessage().mockRejectedValue(new Error("Frame with ID 0 was removed."));
+      await expect(start("w10")).rejects.toThrow("Frame with ID 0 was removed.");
+      expect(sendMessage()).toHaveBeenCalledTimes(1);
+    });
+
+    it("a tab closed during the wait ends it with the browser's error", async () => {
+      sendMessage().mockResolvedValue(reply(0, "loading", 0));
+      mockTabs(loadingTab, loadingTab, new Error("No tab with id: 7."));
+      const done = start("w11");
+      const outcome = expect(done).rejects.toThrow("No tab with id: 7.");
+      await jest.advanceTimersByTimeAsync(SNAPSHOT_SETTLE_POLL_MS);
+      await outcome;
+      expect(sendMessage()).toHaveBeenCalledTimes(1);
+    });
+
+    it("a discarded tab is not retried: the real read error comes out at once", async () => {
+      sendMessage()
+        .mockResolvedValueOnce(reply(0, "loading", 0))
+        .mockRejectedValue(
+          new Error("Cannot access contents of the page. Extension manifest must request permission to access the respective host.")
+        );
+      mockTabs(loadingTab, loadingTab, { id: 7, url: TAB_URL, status: "unloaded", discarded: true });
+      const done = start("w12");
+      const outcome = expect(done).rejects.toThrow(/Cannot access contents of the page/);
+      await jest.advanceTimersByTimeAsync(SNAPSHOT_SETTLE_POLL_MS);
+      await outcome;
+      expect(sendMessage()).toHaveBeenCalledTimes(2);
+    });
+
+    it("re-checks the deny list on the tab's CURRENT url (a new tab has none when the gate first runs)", async () => {
+      (browser.storage.local.get as jest.Mock).mockResolvedValue({
+        config: { ...automationConfig, domainDenyList: ["denied.example.test"] },
+      });
+      sendMessage().mockResolvedValue(reply(0, "loading", 0));
+      // No url yet when the gates run, still none after the first read, then the
+      // tab commits to a denied host.
+      mockTabs(
+        { id: 7, url: "", status: "loading" },
+        { id: 7, url: "", status: "loading" },
+        { id: 7, url: "https://denied.example.test/page", status: "loading" }
       );
-      expect(call).toBeDefined();
-      expect(call[0].resource).toBe("eval-result");
-      expect(call[0].ok).toBe(false);
-      expect(call[0].error).toContain('engine:"cdp"');
+      const done = start("w13");
+      const outcome = expect(done).rejects.toThrow("Domain in tab URL is in the deny list");
+      await jest.advanceTimersByTimeAsync(SNAPSHOT_SETTLE_POLL_MS);
+      await outcome;
+      // Nothing was read off the denied page.
+      expect(sendMessage()).toHaveBeenCalledTimes(1);
+      expect(sent()).toHaveLength(0);
+    });
+
+    it("paces the wait from the service worker (setTimeout here), 300 ms at a time", async () => {
+      const spy = jest.spyOn(global, "setTimeout");
+      sendMessage().mockResolvedValue(reply(0, "loading", 0));
+      const done = start("w14");
+      await jest.advanceTimersByTimeAsync(SNAPSHOT_SETTLE_LOADING_MS);
+      await done;
+      const delays = spy.mock.calls.map((c) => c[1]).filter((d) => d === SNAPSHOT_SETTLE_POLL_MS);
+      expect(delays.length).toBeGreaterThanOrEqual(16);
+      spy.mockRestore();
     });
   });
 
@@ -2200,6 +2851,46 @@ describe("MessageHandler (chrome) — foreground-tab preservation", () => {
       );
     });
 
+    it("a page too tall to tile inside the time budget returns one viewport capture with a warning, not a timeout", async () => {
+      // 60 screens tall. Chrome allows 2 captureVisibleTab calls per second, so a
+      // tile costs at least ~0.55 s and the broker gives take-screenshot 45 s.
+      (browser.tabs.sendMessage as jest.Mock).mockImplementation((_id, msg) => {
+        if (msg.type === "readPageDimensions") {
+          return Promise.resolve({
+            scrollWidth: 100,
+            scrollHeight: 60 * 800,
+            clientWidth: 100,
+            clientHeight: 800,
+            dpr: 1,
+            originalScrollY: 0,
+          });
+        }
+        return Promise.resolve({ ok: true });
+      });
+      (browser.tabs.captureVisibleTab as jest.Mock)
+        .mockReset()
+        .mockResolvedValue("data:image/png;base64,GOOD");
+      (browser.runtime.sendMessage as jest.Mock).mockReset();
+
+      await messageHandler.handleDecodedMessage({
+        cmd: "take-screenshot",
+        tabId: 3,
+        fullPage: true,
+        correlationId: "tall",
+      } as ServerMessageRequest);
+
+      // One viewport capture, no 60 tiles, nothing sent to the stitcher.
+      expect(browser.tabs.captureVisibleTab).toHaveBeenCalledTimes(1);
+      expect(browser.runtime.sendMessage).not.toHaveBeenCalled();
+      expect(transport.sendResourceToServer).toHaveBeenCalledWith(
+        expect.objectContaining({
+          resource: "screenshot",
+          base64: "GOOD",
+          warning: expect.stringMatching(/60 screens[\s\S]*limit[\s\S]*take-snapshot/),
+        })
+      );
+    });
+
     it("throws 'image readback failed' when tiles and the fallback are all empty", async () => {
       (browser.tabs.captureVisibleTab as jest.Mock).mockResolvedValue("");
       (browser.runtime.sendMessage as jest.Mock).mockResolvedValue({
@@ -2451,5 +3142,108 @@ describe("MessageHandler (chrome) — get-tab-list", () => {
 
     const sent = transport.sendResourceToServer.mock.calls[0][0] as any;
     expect(sent.tabs.map((t: { id: number }) => t.id)).toEqual([1]);
+  });
+
+  describe("text filters, URL redaction and the filtersApplied marker", () => {
+    const rawTabs = () => [
+      {
+        id: 1,
+        windowId: 7,
+        url: "https://app.example.test/inbox?token=fake-token-123#access_token=fake-token-456",
+        title: "Inbox",
+        lastAccessed: 10,
+        favIconUrl: "data:image/png;base64,AAAA",
+        groupId: -1,
+      },
+      { id: 2, windowId: 7, url: "https://docs.example.test/guide", title: "Guide" },
+      { id: 3, windowId: 8, url: "https://app.example.test/settings", title: "Settings" },
+    ];
+
+    const send = async (extra: Record<string, unknown>) => {
+      (browser.tabs.query as jest.Mock).mockResolvedValue(rawTabs());
+      await messageHandler.handleDecodedMessage({
+        cmd: "get-tab-list",
+        correlationId: "c-text",
+        ...extra,
+      } as any);
+      return transport.sendResourceToServer.mock.calls[0][0] as any;
+    };
+
+    it("marks the reply filtersApplied, with or without filters", async () => {
+      const sent = await send({});
+      expect(sent.filtersApplied).toBe(true);
+      expect(sent.tabs).toHaveLength(3);
+    });
+
+    it("sends raw URLs unless redactUrls is set (an older server asks for nothing)", async () => {
+      const sent = await send({});
+      expect(sent.tabs[0].url).toBe(rawTabs()[0].url);
+    });
+
+    it("redacts every URL in the reply when redactUrls is set, and keeps the slim fields", async () => {
+      const sent = await send({ redactUrls: true });
+      expect(sent.tabs.map((t: { url: string }) => t.url)).toEqual([
+        "https://app.example.test/inbox?[redacted]#[redacted]",
+        "https://docs.example.test/guide",
+        "https://app.example.test/settings",
+      ]);
+      expect(JSON.stringify(sent)).not.toMatch(/fake-token/);
+      expect(Object.keys(sent.tabs[0]).sort()).toEqual([
+        "id",
+        "lastAccessed",
+        "title",
+        "url",
+        "windowId",
+      ]);
+    });
+
+    it("applies urlContains and titleContains (AND, case-insensitive)", async () => {
+      const byUrl = await send({ urlContains: "APP.EXAMPLE", redactUrls: true });
+      expect(byUrl.tabs.map((t: { id: number }) => t.id)).toEqual([1, 3]);
+
+      transport.sendResourceToServer.mockClear();
+      const both = await send({
+        urlContains: "app.example",
+        titleContains: "settings",
+        redactUrls: true,
+      });
+      expect(both.tabs.map((t: { id: number }) => t.id)).toEqual([3]);
+    });
+
+    it("matches urlContains on the redacted URL, so token text finds nothing", async () => {
+      const sent = await send({ urlContains: "fake-token-123", redactUrls: true });
+      expect(sent.tabs).toEqual([]);
+    });
+
+    it("matches urlContains on the raw URL when redaction is off", async () => {
+      const sent = await send({ urlContains: "fake-token-123" });
+      expect(sent.tabs.map((t: { id: number }) => t.id)).toEqual([1]);
+    });
+
+    it("combines the text filters with windowId / activeOnly (those still reach tabs.query)", async () => {
+      const sent = await send({
+        windowId: 7,
+        activeOnly: true,
+        urlContains: "example.test",
+      });
+      expect(browser.tabs.query).toHaveBeenCalledWith({ windowId: 7, active: true });
+      expect(sent.filtersApplied).toBe(true);
+    });
+
+    it("applies the text filters after visibleOnly removed collapsed-group tabs", async () => {
+      (browser as any).tabGroups.query.mockResolvedValue([{ id: 5, collapsed: true }]);
+      (browser.tabs.query as jest.Mock).mockResolvedValue([
+        { id: 1, windowId: 7, url: "https://a.example.test/", title: "A", groupId: 5 },
+        { id: 2, windowId: 7, url: "https://b.example.test/", title: "B", groupId: -1 },
+      ]);
+      await messageHandler.handleDecodedMessage({
+        cmd: "get-tab-list",
+        correlationId: "c-vis-text",
+        visibleOnly: true,
+        urlContains: "example.test",
+      });
+      const sent = transport.sendResourceToServer.mock.calls[0][0] as any;
+      expect(sent.tabs.map((t: { id: number }) => t.id)).toEqual([2]);
+    });
   });
 });

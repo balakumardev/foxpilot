@@ -4,6 +4,7 @@ import {
   ACTIVATE_TAB_REPLY_NOTE,
   ENGINE_CDP_REPLY_NOTE,
   SCREENSHOT_DEBUGGER_NOTE,
+  SCREENSHOT_IMAGE_NOTE,
   installNudges,
   screenshotWarningText,
   withNudges,
@@ -177,7 +178,12 @@ describe("the reminder texts stay short and actionable", () => {
     expect(ACTIVATE_TAB_REPLY_NOTE).toMatch(/times out|errors|empty/);
     expect(ENGINE_CDP_REPLY_NOTE).toMatch(/started debugging this browser/);
     expect(ENGINE_CDP_REPLY_NOTE).toMatch(/Omit engine/);
-    for (const n of [ACTIVATE_TAB_REPLY_NOTE, ENGINE_CDP_REPLY_NOTE, SCREENSHOT_DEBUGGER_NOTE]) {
+    for (const n of [
+      ACTIVATE_TAB_REPLY_NOTE,
+      ENGINE_CDP_REPLY_NOTE,
+      SCREENSHOT_DEBUGGER_NOTE,
+      SCREENSHOT_IMAGE_NOTE,
+    ]) {
       expect(n.length).toBeLessThan(420);
     }
   });
@@ -227,5 +233,31 @@ describe("server.ts wiring and agent-facing guidance", () => {
     expect(src).toMatch(/most common cause of the debugger banner/);
     expect(src).toMatch(/Use this only if get-network-requests/);
     expect(src).toMatch(/enabled:false as soon as you have/);
+  });
+
+  // Screenshots are the costliest thing FoxPilot returns, and the root-cause work
+  // (2026-11-15) found their failures have three real causes, none of which the old
+  // text named. The agent-facing text must steer away from images and say why.
+  it("steers agents to text reads first and reminds them on every screenshot reply", () => {
+    expect(SCREENSHOT_IMAGE_NOTE).toMatch(/take-snapshot/);
+    expect(SCREENSHOT_IMAGE_NOTE).toMatch(/get-tab-web-content/);
+    expect(SCREENSHOT_IMAGE_NOTE).toMatch(/costliest/);
+    expect(src).toMatch(/READING PAGES, IMAGES LAST/);
+    // The note is added after the image, so it is the last thing the agent reads.
+    const handler = src.slice(src.indexOf('"take-screenshot",'));
+    expect(handler.indexOf('type: "image"')).toBeGreaterThan(-1);
+    expect(handler.indexOf("SCREENSHOT_IMAGE_NOTE")).toBeGreaterThan(handler.indexOf('type: "image"'));
+  });
+
+  it("take-screenshot describes the measured causes, not the old guess", () => {
+    const start = src.indexOf('"take-screenshot",');
+    const desc = src.slice(start, src.indexOf("\n", start + 40));
+    expect(desc).toMatch(/MUST BE VISIBLE/);
+    expect(desc).toMatch(/minimized or hidden/);
+    expect(desc).toMatch(/CHROME\/EDGE/);
+    expect(desc).toMatch(/30 screens/);
+    expect(desc).toMatch(/all-sites access/);
+    expect(desc).toMatch(/take one, not one after every action/);
+    expect(desc).not.toMatch(/GPU\/compositor/);
   });
 });

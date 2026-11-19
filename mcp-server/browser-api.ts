@@ -127,6 +127,18 @@ export interface TabListFilter {
   windowId?: number;
   activeOnly?: boolean;
   visibleOnly?: boolean;
+  /** Case-insensitive substring of the URL (the redacted form when redactUrls). */
+  urlContains?: string;
+  /** Case-insensitive substring of the title; with urlContains both must match. */
+  titleContains?: string;
+  /** Ask the extension to redact URLs (and match urlContains on the redacted form). */
+  redactUrls?: boolean;
+}
+
+/** A tab-list reply: the tabs, and whether the extension confirmed it applied the filters. */
+export interface TabListResult {
+  tabs: BrowserTab[];
+  filtersApplied: boolean;
 }
 
 export class BrowserAPI {
@@ -529,13 +541,25 @@ export class BrowserAPI {
   }
 
   async getTabList(filter: TabListFilter = {}): Promise<BrowserTab[]> {
+    return (await this.getTabListResult(filter)).tabs;
+  }
+
+  /**
+   * Like getTabList, but also reports whether the extension confirmed it applied
+   * the filters (an extension older than the text filters does not), which the
+   * caller needs to say so when activeOnly / visibleOnly could not be verified.
+   */
+  async getTabListResult(filter: TabListFilter = {}): Promise<TabListResult> {
     const message = await this.sendTool<TabsExtensionMessage>({
       cmd: "get-tab-list",
       windowId: filter.windowId,
       activeOnly: filter.activeOnly,
       visibleOnly: filter.visibleOnly,
+      urlContains: filter.urlContains,
+      titleContains: filter.titleContains,
+      redactUrls: filter.redactUrls,
     });
-    return message.tabs;
+    return { tabs: message.tabs, filtersApplied: message.filtersApplied === true };
   }
 
   async getBrowserRecentHistory(
@@ -1148,10 +1172,14 @@ export class BrowserAPI {
   async browserFetch(
     params: Omit<BrowserFetchServerMessage, "cmd">
   ): Promise<BrowserFetchResultExtensionMessage> {
-    // A privileged one-shot fetch from the extension background (immune to the
-    // page's CSP, uses the browser's real session). Returned unchanged: a non-2xx
-    // status is still ok:true; only ok:false (network/permission/timeout/abort)
-    // is a failure, and server.ts decides how to present each.
+    // A one-shot fetch: from the extension background (immune to the page's CSP
+    // and CORS, uses the browser's cookie jar, but carries the extension's
+    // Origin), or, with `tabId`, inside that tab's page as the page. Returned
+    // unchanged: a non-2xx status is still ok:true; only ok:false
+    // (network/permission/timeout/abort) is a failure. `context` on the reply
+    // says which of the two ran; fetch-format.ts decides how to present each,
+    // including refusing a tabId request an older extension answered from the
+    // background.
     return await this.sendTool<BrowserFetchResultExtensionMessage>({
       cmd: "browser-fetch",
       ...params,

@@ -22,11 +22,15 @@
  * tested directly. `runInPageWorld` is the orchestrator; its `exec` and `sleep`
  * dependencies are injected so it is testable with mocks.
  *
- * This helper is shared with firefox-extension/injected/page-world.ts. On Chrome
- * the exported `runInPageWorld` orchestrator is currently unused (Chrome drives
- * inject/poll from content-script.ts's own copy); the page-script builders below
- * are what content-script.ts imports, and this file stays byte-identical to
- * Firefox's per the mirror rule.
+ * This helper started as a copy of firefox-extension/injected/page-world.ts and
+ * has since diverged on purpose (mirror.test.ts excludes it). On Chrome the
+ * exported `runInPageWorld` orchestrator is unused (Chrome drives inject/poll
+ * from content-script.ts's own copy); content-script.ts imports only the
+ * dialog/emulate page-script builders and `evalInIsolatedWorld`. There is no
+ * `buildEvalPageScript` here any more: Chrome runs evaluate-script in the page's
+ * main world with scripting.executeScript (main-world-eval.ts), because a
+ * <script> element created from the isolated world is refused by the
+ * extension's own CSP in current Chromium.
  */
 
 const POLL_INTERVAL_MS = 100;
@@ -82,74 +86,6 @@ export function buildPollerCode(resultAttr: string): string {
     ");" +
     "}" +
     "return v;" +
-    "})();"
-  );
-}
-
-/**
- * Builds the PAGE-world script for the `evaluate-script` tool.
- *
- * Returns the source of an async IIFE that:
- *   - evaluates `functionSource` (a JS function expression string like
- *     `"() => document.title"`) and calls it with `args` spread in;
- *   - awaits the result if it is thenable;
- *   - serializes the result via `JSON.parse(JSON.stringify(result))`, falling
- *     back to `String(result)` if it is not JSON-serializable, and mapping
- *     `undefined` to `null`;
- *   - writes `JSON.stringify({ ok: true, value })` to `resultAttr` on
- *     `document.documentElement`;
- *   - on throw, writes `JSON.stringify({ ok: false, error })` instead.
- *
- * `functionSource`, `args`, and `resultAttr` are embedded via `JSON.stringify`
- * so they are injected safely.
- */
-export function buildEvalPageScript(
-  functionSource: string,
-  args: unknown[],
-  resultAttr: string,
-  startedAttr?: string
-): string {
-  return (
-    "(async function () {" +
-    // Synchronous "the injected script executed" marker, emitted only when the
-    // caller passes a startedAttr. It is set as the FIRST statement so that if a
-    // strict page CSP blocks this inline <script>, NEITHER this marker NOR the
-    // result attribute (__attr) is ever set — letting the caller distinguish a
-    // CSP-blocked injection (no marker) from a slow async eval (marker set,
-    // result pending) instead of guessing on the timeout. When startedAttr is
-    // omitted the term is "", so the output is byte-identical to the 3-arg form.
-    (startedAttr === undefined
-      ? ""
-      : "document.documentElement.setAttribute(" +
-        jsonForScript(startedAttr) +
-        ", \"1\");") +
-    "var __attr = " +
-    jsonForScript(resultAttr) +
-    ";" +
-    "try {" +
-    "var __fn = (" +
-    jsonForScript(functionSource) +
-    ");" +
-    "var __args = " +
-    jsonForScript(args) +
-    ";" +
-    // Evaluate the function-expression source into a callable.
-    "var __callable = (0, eval)('(' + __fn + ')');" +
-    "var __result = __callable.apply(null, __args);" +
-    // Await thenables (covers async functions and returned promises).
-    "if (__result && typeof __result.then === 'function') {" +
-    "__result = await __result;" +
-    "}" +
-    // Handle undefined BEFORE the JSON round-trip: JSON.stringify(undefined) is
-    // undefined, so JSON.parse(undefined) would throw and fall into the catch,
-    // turning a top-level `undefined` return into the string "undefined".
-    "var __out;" +
-    "if (__result === undefined) { __out = null; }" +
-    "else { try { __out = JSON.parse(JSON.stringify(__result)); } catch (e) { __out = String(__result); } }" +
-    "document.documentElement.setAttribute(__attr, JSON.stringify({ ok:true, value: __out }));" +
-    "} catch (err) {" +
-    "document.documentElement.setAttribute(__attr, JSON.stringify({ ok:false, error: String(err && err.message || err) }));" +
-    "}" +
     "})();"
   );
 }

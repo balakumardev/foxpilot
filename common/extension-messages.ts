@@ -23,6 +23,13 @@ export interface BrowserTab {
 export interface TabsExtensionMessage extends ExtensionMessageBase {
   resource: "tabs";
   tabs: BrowserTab[];
+  /**
+   * Set by an extension that applied every filter field of the request
+   * (windowId, activeOnly, visibleOnly, urlContains, titleContains, redactUrls).
+   * Absent = an older extension that may have ignored some, which the server
+   * can only partly re-verify.
+   */
+  filtersApplied?: boolean;
 }
 
 export interface OpenedTabIdExtensionMessage extends ExtensionMessageBase {
@@ -77,6 +84,14 @@ export interface SnapshotExtensionMessage extends ExtensionMessageBase {
   // apart from one that was mid-navigation or had no document yet — a bare
   // `[snapshot: 0 elements]` is identical in all three cases.
   docState?: { readyState: string; url: string; bodyChildren: number };
+  // Set only when the extension WAITED before answering (append-only, optional):
+  // the first read found no elements on a tab that was still loading, or on an
+  // unrendered app shell, so it re-read for up to `waitedMs` (paced from the
+  // background, never with page timers). `tabStatus` is the tab's own status at
+  // the end of the wait ("loading", "complete", ...). Lets the server say "page
+  // still loading, waited N s" instead of a bare `[snapshot: 0 elements]`.
+  waitedMs?: number;
+  tabStatus?: string;
 }
 
 export interface NavigatedExtensionMessage extends ExtensionMessageBase {
@@ -282,9 +297,18 @@ export interface CookiesExtensionMessage extends ExtensionMessageBase {
 // describe the response; the body is returned as `bodyText` (UTF-8) or
 // `bodyBase64` (binary / non-text). `truncated` is true when the body was cut off
 // at `maxBytes`.
+//
+// `context` says WHERE the request ran: "tab" = inside the page of the tab named
+// by `tabId` (page Origin/Referer/cookies), "background" = the extension
+// background (extension Origin, no Referer). Extensions that predate `tabId`
+// never send it, so a request that asked for tab mode and got no `context:"tab"`
+// back was NOT run in the page. `tabOrigin` (tab mode only) is the origin
+// (scheme://host[:port], no path or query) of the page the fetch ran in.
 export interface BrowserFetchResultExtensionMessage extends ExtensionMessageBase {
   resource: "browser-fetch-result";
   ok: boolean;
+  context?: "tab" | "background";
+  tabOrigin?: string;
   status?: number;
   statusText?: string;
   headers?: Record<string, string>;

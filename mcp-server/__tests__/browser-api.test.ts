@@ -211,6 +211,9 @@ describe("BrowserAPI over the broker", () => {
     expect(req).not.toHaveProperty("windowId");
     expect(req).not.toHaveProperty("activeOnly");
     expect(req).not.toHaveProperty("visibleOnly");
+    expect(req).not.toHaveProperty("urlContains");
+    expect(req).not.toHaveProperty("titleContains");
+    expect(req).not.toHaveProperty("redactUrls");
   });
 
   it("getConsoleMessages returns the extension's buffered entries", async () => {

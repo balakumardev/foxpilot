@@ -11,6 +11,8 @@
  * (`tabs` is already granted); the readiness handshake mirrors the nav-race
  * convention (Firefox uses the `browser` global; Chrome's copy uses `chrome`).
  */
+import { buildTabAccessMessage, originOfTabUrl } from "@foxpilot/common";
+
 const POLL_MS = 100;
 const READY_DEFAULT_TIMEOUT_MS = 8000;
 // Clamp strictly under the 30s navigate-tab broker budget (timeouts.ts).
@@ -357,14 +359,21 @@ export async function execWithReadyRetry(
   } catch {
     const live = await browser.tabs.get(tabId);
     if (live && live.url) {
-      const origin = new URL(live.url).origin;
-      const granted = await browser.permissions.contains({
-        origins: [`${origin}/*`],
-      });
-      if (!granted) {
-        throw new Error(
-          `Missing host permission for "${origin}" after navigation. Ask the user to grant access to this domain, then retry.`
-        );
+      // A page with no origin (about:blank, a restricted page) has no grant to
+      // check; an unreadable permission state means "proceed".
+      const origin = originOfTabUrl(live.url);
+      if (origin) {
+        let granted: boolean | undefined;
+        try {
+          granted = await browser.permissions.contains({ origins: [`${origin}/*`] });
+        } catch {
+          granted = undefined;
+        }
+        if (granted === false) {
+          throw new Error(
+            buildTabAccessMessage("notGranted", { browser: "firefox", tabId, origin })
+          );
+        }
       }
     }
     await waitForTabReady(tabId, { timeoutMs: 8000 });

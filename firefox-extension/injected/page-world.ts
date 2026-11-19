@@ -477,8 +477,11 @@ export async function runInPageWorld(
       return {
         ok: false,
         cspBlocked: true,
+        // Deliberately says nothing about what happens next: whether the caller
+        // retries in the isolated world (world:"auto") or not (world:"main") is
+        // the caller's decision, and it words that part itself.
         error:
-          "CSP blocked the injected script (the page forbids inline script execution). Retrying in the isolated world.",
+          "CSP blocked the injected script (the page forbids inline script execution).",
       };
     }
   }

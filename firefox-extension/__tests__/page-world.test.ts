@@ -642,6 +642,10 @@ describe("runInPageWorld CSP probe (Task A6)", () => {
 
     expect(r.cspBlocked).toBe(true);
     expect(r.ok).toBe(false);
+    // The helper does not know whether the caller retries (world:"auto") or not
+    // (world:"main"), so it must not promise a retry; the caller words that part.
+    expect(r.error).toContain("CSP blocked the injected script");
+    expect(r.error).not.toMatch(/retry/i);
     nowSpy.mockRestore();
   });
 

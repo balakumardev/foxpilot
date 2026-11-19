@@ -1,4 +1,14 @@
 import type { ServerMessageRequest } from "@foxpilot/common";
+import { settleSnapshot } from "@foxpilot/common";
+import {
+  selectTabs,
+  buildTabAccessMessage,
+  classifyTabUrl,
+  isPageAccessError,
+  originOfTabUrl,
+  redactAccessMessage,
+} from "@foxpilot/common";
+import { diagnoseChromeTabAccess, gateChromeTabUrl } from "./tab-access";
 import { ExtensionTransport } from "./transport";
 import {
   isCommandAllowed,
@@ -58,8 +68,11 @@ import {
   cdpInputKey,
 } from "./cdp-input";
 import { cdpEval } from "./cdp-eval";
+import { runMainWorldEval } from "./main-world-eval";
 import { allSitesRequestUrl, allSitesMissingMessage } from "./all-sites-access";
 import { raceInputAgainstNavigation } from "./nav-race";
+import { resolveTabFetchTarget, runFetchInTab } from "./tab-fetch";
+import { CAPTURE_MIN_GAP_MS, ViewportCapturer } from "./viewport-capture";
 import {
   waitForTabReady,
   navigateAndSettle,
@@ -92,6 +105,15 @@ const sleep = (ms: number): Promise<void> =>
 
 let evalKeyCounter = 0;
 const EVAL_TIMEOUT_MS = 10000;
+const VISIBILITY_READ_TIMEOUT_MS = 1500;
+// Page.captureScreenshot never returns when the page produces no frames (a hidden
+// or minimized window), so it must be bounded: the broker allows a screenshot 45 s.
+const CDP_SCREENSHOT_TIMEOUT_MS = 6000;
+// Full-page capture takes one captureVisibleTab per screen and Chrome allows only 2
+// per second (>= ~0.8 s per tile with scroll + readback), while the broker gives
+// take-screenshot 45 s. Past this many screens the capture would end in a timeout
+// with no image, so return one viewport capture with a warning instead.
+const MAX_FULL_PAGE_TILES = 30;
 const UPLOAD_TIMEOUT_MS = 15000;
 const PAGE_SETUP_TIMEOUT_MS = 5000;
 
@@ -138,21 +160,50 @@ export async function sendMessageToTab(tabId: number, message: any): Promise<any
     const isConnErr =
       msg.includes("Receiving end does not exist") ||
       msg.includes("Could not establish connection");
-    const isPermErr = msg.includes("Missing host permission");
+    const isPermErr = isPageAccessError(msg);
     if (!isConnErr && !isPermErr) {
       throw e;
     }
-    // Re-check host permission for the CURRENT origin.
+    // Re-read the LIVE tab and say what is really wrong before spending 8 s on
+    // waitForTabReady: an unloaded (discarded) tab has no page to wait for, and
+    // a restricted page or an ungranted origin will not become scriptable.
     const live = await browser.tabs.get(tabId);
+    const redactedRaw = redactAccessMessage(msg);
+    if (live && (live.status === "unloaded" || (live.discarded === true && live.status !== "loading"))) {
+      throw new Error(
+        buildTabAccessMessage("discarded", {
+          browser: "chrome",
+          tabId,
+          origin: originOfTabUrl(live.url),
+          rawMessage: redactedRaw,
+        })
+      );
+    }
     if (live && live.url) {
-      const origin = new URL(live.url).origin;
-      const granted = await browser.permissions.contains({
-        origins: [`${origin}/*`],
-      });
-      if (!granted) {
-        throw new Error(
-          `Missing host permission for "${origin}" after navigation. Ask the user to grant access to this domain, then retry.`
-        );
+      const gate = await gateChromeTabUrl(live.url, tabId);
+      if (gate) {
+        throw new Error(gate);
+      }
+      // Re-check host permission for the CURRENT origin (an opaque origin has
+      // none to check; an unreadable permission state means "proceed").
+      const origin = originOfTabUrl(live.url);
+      if (origin) {
+        let granted: boolean | undefined;
+        try {
+          granted = await browser.permissions.contains({ origins: [`${origin}/*`] });
+        } catch {
+          granted = undefined;
+        }
+        if (granted === false) {
+          throw new Error(
+            buildTabAccessMessage("notGranted", {
+              browser: "chrome",
+              tabId,
+              origin,
+              rawMessage: redactedRaw,
+            })
+          );
+        }
       }
     }
     // Wait for the tab to be ready, re-inject the content script, retry ONCE.
@@ -239,9 +290,24 @@ export class MessageHandler {
   private cursorByTab: Map<number, Point> = new Map();
   private nativeCursorByTab: Map<number, Point> = new Map();
   private nativeClient: NativeInputClient | null = null;
+  // Paces captureVisibleTab (Chrome allows 2 calls/second), detects a hidden
+  // window and reports a failed capture with its real cause. One instance so the
+  // pacing is shared by every screenshot this handler serves.
+  private readonly capturer: ViewportCapturer;
 
   constructor(client: ExtensionTransport) {
     this.client = client;
+    this.capturer = new ViewportCapturer(
+      {
+        sleep,
+        now: () => Date.now(),
+        captureVisibleTab: (windowId, format) => this.captureWindow(windowId, format),
+        readVisibility: (tabId) => this.readPageVisibility(tabId),
+        readWindowState: (windowId) => this.readWindowState(windowId),
+        cdpCapture: (tabId, format) => this.captureViewportCdp(tabId, format),
+      },
+      CAPTURE_MIN_GAP_MS
+    );
   }
 
   public async handleDecodedMessage(req: ServerMessageRequest): Promise<void> {
@@ -265,16 +331,47 @@ export class MessageHandler {
     // target tab for the duration of the command, then restore the user's
     // previous tab. Recovers background tabs frozen by Chrome Memory Saver /
     // Edge Sleeping Tabs (empty snapshots / timeouts) without stealing focus.
-    if (
-      "activateTab" in req &&
-      (req as { activateTab?: boolean }).activateTab === true &&
-      "tabId" in req
-    ) {
-      await this.withTabActivated((req as { tabId: number }).tabId, () =>
-        this.routeCommand(req)
+    try {
+      if (
+        "activateTab" in req &&
+        (req as { activateTab?: boolean }).activateTab === true &&
+        "tabId" in req
+      ) {
+        await this.withTabActivated((req as { tabId: number }).tabId, () =>
+          this.routeCommand(req)
+        );
+      } else {
+        await this.routeCommand(req);
+      }
+    } catch (error) {
+      throw await this.explainPageAccessError(req, error);
+    }
+  }
+
+  // The browser refuses to script a page with a few vague strings, and the vaguest
+  // one ("Cannot access contents of the page. Extension manifest must request
+  // permission ...") is what a DISCARDED tab produces even when site access is
+  // granted. When a tab-scoped command fails with one of them, read the real state
+  // of the tab and replace the message with one that names the cause, the place to
+  // fix it and the recovery. Every other error is returned as the very same object.
+  // Never throws, and never reloads or activates a tab.
+  private async explainPageAccessError(
+    req: ServerMessageRequest,
+    error: unknown
+  ): Promise<unknown> {
+    try {
+      const message = (error as { message?: unknown } | null | undefined)?.message;
+      const tabId = (req as { tabId?: unknown }).tabId;
+      if (typeof message !== "string" || typeof tabId !== "number" || !isPageAccessError(message)) {
+        return error;
+      }
+      const activateTabRequested =
+        (req as { activateTab?: boolean }).activateTab === true;
+      return new Error(
+        await diagnoseChromeTabAccess(tabId, message, activateTabRequested)
       );
-    } else {
-      await this.routeCommand(req);
+    } catch {
+      return error;
     }
   }
 
@@ -655,12 +752,23 @@ export class MessageHandler {
     if ("url" in req && req.url) {
       contextUrl = req.url;
     }
-    if ("tabId" in req) {
+    if ("tabId" in req && typeof req.tabId === "number") {
       try {
         const tab = await browser.tabs.get(req.tabId);
         contextUrl = tab.url;
       } catch (error) {
         console.error("Failed to get tab URL for audit log:", error);
+      }
+    }
+
+    // browser-fetch with a tabId: the tab URL above replaced the fetched URL, so
+    // record the fetched one too (a relative URL is resolved against the tab).
+    let targetUrl: string | undefined;
+    if (req.cmd === "browser-fetch" && typeof req.tabId === "number" && req.url) {
+      try {
+        targetUrl = new URL(req.url, contextUrl).href;
+      } catch {
+        targetUrl = req.url;
       }
     }
 
@@ -670,6 +778,7 @@ export class MessageHandler {
       command: req.cmd,
       timestamp: Date.now(),
       url: contextUrl,
+      ...(targetUrl ? { targetUrl } : {}),
     };
 
     await addAuditLogEntry(auditEntry);
@@ -733,16 +842,18 @@ export class MessageHandler {
         );
       }
     }
+    // The text filters and URL redaction live in @foxpilot/common so the server
+    // and both extensions share one definition. filtersApplied tells the server
+    // every filter field above was honoured (an older extension omits it).
     await this.client.sendResourceToServer({
       resource: "tabs",
       correlationId: req.correlationId,
-      tabs: tabs.map((tab) => ({
-        id: tab.id,
-        windowId: tab.windowId,
-        url: tab.url,
-        title: tab.title,
-        lastAccessed: tab.lastAccessed,
-      })),
+      tabs: selectTabs(tabs, {
+        urlContains: req.urlContains,
+        titleContains: req.titleContains,
+        redactUrls: req.redactUrls === true,
+      }),
+      filtersApplied: true,
     });
   }
 
@@ -772,27 +883,54 @@ export class MessageHandler {
     });
   }
 
-  private async checkForUrlPermission(url: string | undefined): Promise<void> {
-    if (url) {
-      const origin = new URL(url).origin;
-      const granted = await browser.permissions.contains({
-        origins: [`${origin}/*`],
-      });
-      if (!granted) {
-        const optionsUrl = browser.runtime.getURL("options.html");
-        // Automation Mode promises access to every site. A missing per-origin
-        // grant then means the browser never gave (or took back) the all-sites
-        // grant, so ask for THAT once instead of prompting host by host.
-        if (await isAutomationModeEnabled()) {
-          await browser.tabs.create({ url: allSitesRequestUrl(optionsUrl) });
-          throw new Error(allSitesMissingMessage(origin));
-        }
-        const urlWithParams = `${optionsUrl}?requestUrl=${encodeURIComponent(url)}`;
-        await browser.tabs.create({ url: urlWithParams });
-        throw new Error(
-          `The user has not yet granted permission to access the domain "${origin}". A dialog is now being opened to request permission. If the user grants permission, you can try the request again.`
-        );
+  // Gate before a command touches a tab (or, with nonTab, before a background
+  // fetch / cookie / stream request to a URL). For a TAB the URL is classified
+  // first: a restricted page, about:blank, or a file: tab while "Allow access to
+  // file URLs" is off gets its tagged message at once, with no permissions.contains
+  // call (it throws for an opaque origin), no options tab and no all-sites dialog
+  // (none of those can help a page no grant can fix). A tab with no URL yet is let
+  // through as before: a tab that is still opening reports url "" and the central
+  // catch in handleDecodedMessage says what is wrong if the dispatch then fails.
+  private async checkForUrlPermission(
+    url: string | undefined,
+    opts?: { nonTab?: boolean }
+  ): Promise<void> {
+    if (!url) {
+      return;
+    }
+    if (!opts?.nonTab) {
+      const blocked = await gateChromeTabUrl(url);
+      if (blocked) {
+        throw new Error(blocked);
       }
+      // Only an http(s) / ftp / blob: page has an origin to ask for. A file: tab
+      // with file access on, or a URL that does not parse, has nothing to request.
+      if (classifyTabUrl(url) !== "web") {
+        return;
+      }
+    }
+    const origin = originOfTabUrl(url) ?? new URL(url).origin;
+    const granted = await browser.permissions.contains({
+      origins: [`${origin}/*`],
+    });
+    if (!granted) {
+      const optionsUrl = browser.runtime.getURL("options.html");
+      // Automation Mode promises access to every site. A missing per-origin
+      // grant then means the browser never gave (or took back) the all-sites
+      // grant, so ask for THAT once instead of prompting host by host.
+      if (await isAutomationModeEnabled()) {
+        await browser.tabs.create({ url: allSitesRequestUrl(optionsUrl) });
+        throw new Error(allSitesMissingMessage(origin));
+      }
+      const urlWithParams = `${optionsUrl}?requestUrl=${encodeURIComponent(url)}`;
+      await browser.tabs.create({ url: urlWithParams });
+      throw new Error(
+        buildTabAccessMessage("notGranted", {
+          browser: "chrome",
+          origin,
+          dialog: "site",
+        })
+      );
     }
   }
 
@@ -859,9 +997,29 @@ export class MessageHandler {
     }
     await this.checkForUrlPermission(tab.url);
 
-    const result = await sendMessageToTab(tabId, {
-      type: "buildSnapshot",
-      options: opts,
+    const readSnapshot = () =>
+      sendMessageToTab(tabId, {
+        type: "buildSnapshot",
+        options: opts,
+      });
+    const first = await readSnapshot();
+
+    // A tab that is still loading (or an app that has not rendered yet) answers
+    // with zero elements, which looks like an empty page. Wait for it, pacing
+    // from this service worker, not the page (a hidden tab's timers are clamped).
+    // Every re-read re-checks the deny list on the tab's CURRENT url, because a
+    // just-opened tab has no url at all when the first check runs above.
+    const { result, waitedMs, tabStatus } = await settleSnapshot(first, {
+      read: readSnapshot,
+      getTab: async () => {
+        const live = await browser.tabs.get(tabId);
+        if (live.url && (await isDomainInDenyList(live.url))) {
+          throw new Error(`Domain in tab URL is in the deny list`);
+        }
+        return { status: live.status, discarded: live.discarded };
+      },
+      sleep,
+      now: Date.now,
     });
 
     await this.client.sendResourceToServer({
@@ -874,6 +1032,8 @@ export class MessageHandler {
       ...(result.hasMore !== undefined ? { hasMore: result.hasMore } : {}),
       ...(result.error !== undefined ? { error: result.error } : {}),
       ...(result.docState !== undefined ? { docState: result.docState } : {}),
+      ...(waitedMs !== undefined ? { waitedMs } : {}),
+      ...(waitedMs !== undefined && tabStatus !== undefined ? { tabStatus } : {}),
     });
   }
 
@@ -1001,7 +1161,7 @@ export class MessageHandler {
         ? r
         : { ok: false, error: "commit step returned no result" };
     } catch (e) {
-      return { ok: false, error: "commit step failed: " + String(e) };
+      return { ok: false, error: "commit step failed: " + redactAccessMessage(String(e)) };
     }
   }
 
@@ -1641,21 +1801,15 @@ export class MessageHandler {
         args: argv,
       })) ?? { ok: false, error: "isolated evaluation produced no result." };
     } else {
-      // "main" and "auto" both inject the page world. On Chrome the isolated
-      // world cannot eval either, so "auto" does NOT retry isolated — the
-      // content-script started-marker probe returns a fast {ok:false,cspBlocked}
-      // with an actionable error (naming engine:"cdp"), which we forward as the
-      // eval-result. Uses the RAW sender so that cspBlocked (and any genuine
-      // eval error) flows through as a reported eval-result instead of being
-      // thrown as a tool-error.
-      const resultAttr = `data-bcmcp-result-${Date.now()}-${++evalKeyCounter}`;
-      result = (await sendMessageToTabRaw(tabId, {
-        type: "evaluateScript",
-        functionSource,
-        args: argv,
-        resultAttr,
-        timeoutMs: EVAL_TIMEOUT_MS,
-      })) ?? { ok: false, error: "evaluation produced no result." };
+      // "main", "auto" and an omitted world all run in the page's REAL world via
+      // scripting.executeScript({world:"MAIN"}) — no <script> element, so the
+      // extension's own CSP is not involved. Only the PAGE's CSP can refuse it
+      // (script-src without 'unsafe-eval'); that comes back as an ok:false whose
+      // text names the real cause and keeps engine:"cdp" as the last resort. On
+      // Chrome the isolated world cannot eval either, so "auto" does NOT retry
+      // there. executeScript rejections (no host access, a discarded or closed
+      // tab) propagate untouched to the central handler.
+      result = await runMainWorldEval(tabId, functionSource, argv, EVAL_TIMEOUT_MS);
     }
 
     await this.client.sendResourceToServer({
@@ -1810,31 +1964,44 @@ export class MessageHandler {
     windowId: number | undefined,
     format: ImageFormat
   ): Promise<{ mimeType: string; base64: string; warning?: string }> {
-    // Retry a transient post-activation GPU readback failure (same helper the
-    // full-page tiler uses) instead of failing the whole screenshot.
-    try {
-      const dataUrl = await this.captureWindowWithRetry(windowId, format);
-      const { base64 } = stripDataUrlPrefix(dataUrl);
-      if (base64) {
-        return { mimeType: mimeTypeForFormat(format), base64 };
-      }
-    } catch (e) {
-      // captureVisibleTab failed on every attempt (e.g. the persistent
-      // "image readback failed" / empty-readback path some GPU/compositor
-      // configs hit). Fall through to the CDP capture below.
-    }
+    // Hidden window -> debugger capture at once; visible -> paced captureVisibleTab
+    // with retries; a failure is reported with its real cause (viewport-capture.ts).
+    return this.capturer.viewport(tabId, windowId, format);
+  }
 
-    // Fallback: CDP Page.captureScreenshot. Runs through the compositor's own
-    // capture path, which succeeds on machines where captureVisibleTab returns
-    // an empty readback every time. Chrome/Edge only; shows the "started
-    // debugging this browser" banner (opt-in cost, only on the failure path).
-    const base64 = await this.captureViewportCdp(tabId, format);
-    return {
-      mimeType: mimeTypeForFormat(format),
-      base64,
-      warning:
-        "captureVisibleTab returned an empty readback; used the CDP screenshot fallback (a 'started debugging this browser' banner may have appeared).",
-    };
+  // document.visibilityState of the page, read in the isolated world. A hidden
+  // tab still answers this (one synchronous read). null = could not read (a
+  // restricted page, no access, tab gone): callers then treat the page as visible.
+  // The read queues behind the page's main thread, so a busy or hung page must not
+  // be able to stall the screenshot: give up after a moment and treat it as unknown.
+  private async readPageVisibility(tabId: number): Promise<string | null> {
+    try {
+      const read = browser.scripting
+        .executeScript({
+          target: { tabId },
+          func: () => document.visibilityState,
+        })
+        .then((results) => {
+          const value = results?.[0]?.result;
+          return typeof value === "string" ? value : null;
+        });
+      return await Promise.race([
+        read,
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), VISIBILITY_READ_TIMEOUT_MS)),
+      ]);
+    } catch {
+      return null;
+    }
+  }
+
+  private async readWindowState(windowId: number | undefined): Promise<string | null> {
+    if (windowId == null) return null;
+    try {
+      const w = await browser.windows.get(windowId);
+      return typeof w?.state === "string" ? w.state : null;
+    } catch {
+      return null;
+    }
   }
 
   // CDP viewport capture via the refcounted debugger. Uses its OWN "screenshot"
@@ -1854,10 +2021,25 @@ export class MessageHandler {
     }
     await attachDebugger(tabId, "screenshot");
     try {
-      const res = (await dbg.sendCommand({ tabId }, "Page.captureScreenshot", {
-        format,
-        ...(format === "jpeg" ? { quality: 90 } : {}),
-      })) as { data?: string };
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const res = (await Promise.race([
+        dbg.sendCommand({ tabId }, "Page.captureScreenshot", {
+          format,
+          ...(format === "jpeg" ? { quality: 90 } : {}),
+        }),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () =>
+              reject(
+                new Error(
+                  `CDP Page.captureScreenshot produced no frame within ${CDP_SCREENSHOT_TIMEOUT_MS / 1000}s ` +
+                    `(the page is not rendering, usually because its browser window is hidden or minimized)`
+                )
+              ),
+            CDP_SCREENSHOT_TIMEOUT_MS
+          );
+        }),
+      ]).finally(() => clearTimeout(timer))) as { data?: string };
       if (!res || !res.data) {
         throw new Error("CDP Page.captureScreenshot returned no data.");
       }
@@ -1873,6 +2055,7 @@ export class MessageHandler {
     uid: string,
     format: ImageFormat
   ): Promise<{ mimeType: string; base64: string }> {
+    await this.capturer.requireVisible(tabId, windowId, "element");
     const rect = await sendMessageToTab(tabId, {
       type: "readElementRect",
       uid,
@@ -1894,35 +2077,13 @@ export class MessageHandler {
     return result as { mimeType: string; base64: string };
   }
 
-  // Capture the visible window with bounded retry + backoff. A failed
-  // captureVisibleTab (rejection) OR an empty/payload-less readback is treated as
-  // a transient failure and retried (the backoff also absorbs captureVisibleTab
-  // rate-limiting). Throws only after all attempts are exhausted.
+  // Capture the visible window: up to 3 paced attempts (a rejection or an empty
+  // readback is a failure). Pacing, not backoff: Chrome allows 2 calls/second.
   private async captureWindowWithRetry(
     windowId: number | undefined,
     format: ImageFormat
   ): Promise<string> {
-    const backoffs = [100, 300, 600]; // slept BETWEEN attempts (not after the last)
-    let lastErr: unknown;
-    for (let attempt = 0; attempt < 3; attempt++) {
-      if (attempt > 0) {
-        await sleep(backoffs[attempt - 1]);
-      }
-      try {
-        const dataUrl = await this.captureWindow(windowId, format);
-        if (isValidCapture(dataUrl)) {
-          return dataUrl;
-        }
-        lastErr = new Error("empty capture readback");
-      } catch (e) {
-        lastErr = e;
-      }
-    }
-    throw new Error(
-      `captureVisibleTab failed after 3 attempts: ${String(
-        (lastErr as any)?.message ?? lastErr
-      )}`
-    );
+    return this.capturer.captureWithRetry(windowId, format);
   }
 
   private async captureFullPage(
@@ -1930,12 +2091,14 @@ export class MessageHandler {
     windowId: number | undefined,
     format: ImageFormat
   ): Promise<{ mimeType: string; base64: string; warning?: string }> {
+    await this.capturer.requireVisible(tabId, windowId, "full-page");
     const dims = await sendMessageToTab(tabId, { type: "readPageDimensions" });
     const offsets = planFullPageSteps(dims);
     const captures: { offsetY: number; dataUrl: string }[] = [];
-    let tileError = false;
+    const tooTall = offsets.length > MAX_FULL_PAGE_TILES;
+    let tileError = tooTall;
     try {
-      for (const y of offsets) {
+      for (const y of tooTall ? [] : offsets) {
         await sendMessageToTab(tabId, { type: "scrollTo", y });
         await sleep(100);
         const dataUrl = await this.captureWindowWithRetry(windowId, format);
@@ -1993,8 +2156,11 @@ export class MessageHandler {
     return {
       mimeType: mimeTypeForFormat(format),
       base64,
-      warning:
-        "Full-page stitch failed; returning a single viewport capture instead.",
+      warning: tooTall
+        ? `The page is ${offsets.length} screens tall, over the ${MAX_FULL_PAGE_TILES}-screen limit for a full-page ` +
+          `capture (Chrome allows 2 captures per second), so this is a single viewport capture. ` +
+          `Use take-snapshot / get-tab-web-content to read the whole page as text.`
+        : "Full-page stitch failed; returning a single viewport capture instead.",
     };
   }
 
@@ -2435,7 +2601,7 @@ export class MessageHandler {
       if (await isDomainInDenyList(gateUrl)) {
         throw new Error("Domain in user defined deny list");
       }
-      await this.checkForUrlPermission(gateUrl);
+      await this.checkForUrlPermission(gateUrl, { nonTab: true });
     }
 
     try {
@@ -2458,12 +2624,16 @@ export class MessageHandler {
 
   private async browserFetchForServer(
     correlationId: string,
-    params: BrowserFetchParams
+    params: BrowserFetchParams & { tabId?: number }
   ): Promise<void> {
+    if (typeof params.tabId === "number") {
+      await this.browserFetchInTab(correlationId, params.tabId, params);
+      return;
+    }
     if (await isDomainInDenyList(params.url)) {
       throw new Error("Domain in user defined deny list");
     }
-    await this.checkForUrlPermission(params.url);
+    await this.checkForUrlPermission(params.url, { nonTab: true });
 
     try {
       const result = await browserFetch(params);
@@ -2471,6 +2641,7 @@ export class MessageHandler {
         resource: "browser-fetch-result",
         correlationId,
         ...result,
+        context: "background",
       });
     } catch (error) {
       await this.client.sendResourceToServer({
@@ -2478,8 +2649,60 @@ export class MessageHandler {
         correlationId,
         ok: false,
         error: String((error as any)?.message ?? error),
+        context: "background",
       });
     }
+  }
+
+  // browser-fetch with a tabId: the request is made INSIDE the tab, as the page
+  // (page Origin/Referer/cookies; the page's CORS applies), through the isolated
+  // content-script world. Gating order: a tab the extension cannot script is
+  // refused first (resolveTabFetchTarget: chrome://, about:, no URL), then the
+  // deny list on the tab URL AND on the resolved target URL, then host
+  // permission on the TAB URL (the injection needs it; the request itself is
+  // made by the page, so the target needs none). The timeout is raced from the
+  // service worker (tab-fetch.ts), never with a page timer.
+  private async browserFetchInTab(
+    correlationId: string,
+    tabId: number,
+    params: BrowserFetchParams
+  ): Promise<void> {
+    const tab = await browser.tabs.get(tabId);
+    const { tabOrigin, targetUrl } = resolveTabFetchTarget(
+      tabId,
+      tab.url,
+      params.url
+    );
+    if (await isDomainInDenyList(tab.url as string)) {
+      throw new Error(`Domain in tab URL is in the deny list`);
+    }
+    if (await isDomainInDenyList(targetUrl)) {
+      throw new Error("Domain in user defined deny list");
+    }
+    await this.checkForUrlPermission(tab.url);
+
+    const result = await runFetchInTab(
+      tabId,
+      {
+        url: targetUrl,
+        expectOrigin: tabOrigin,
+        method: params.method,
+        headers: params.headers,
+        body: params.body,
+        bodyBase64: params.bodyBase64,
+        credentials: params.credentials,
+        redirect: params.redirect,
+        maxBytes: params.maxBytes,
+      },
+      params.timeoutMs
+    );
+    await this.client.sendResourceToServer({
+      resource: "browser-fetch-result",
+      correlationId,
+      ...result,
+      context: "tab",
+      tabOrigin,
+    });
   }
 
   private async streamStartForServer(
@@ -2489,7 +2712,7 @@ export class MessageHandler {
     if (await isDomainInDenyList(params.url)) {
       throw new Error("Domain in user defined deny list");
     }
-    await this.checkForUrlPermission(params.url);
+    await this.checkForUrlPermission(params.url, { nonTab: true });
 
     try {
       const result = await startStream(params);

@@ -25,11 +25,17 @@ export const ENGINE_CDP_REPLY_NOTE =
   "\"FoxPilot started debugging this browser\" banner and the page can detect it. " +
   "Omit engine next time; use it again only if the default call ran but the page ignored it.";
 
+export const SCREENSHOT_IMAGE_NOTE =
+  "Note: that image is the costliest read FoxPilot returns. To read text, confirm an action " +
+  "or find a control use take-snapshot or get-tab-web-content (no image); take another " +
+  "screenshot only when you need to see the rendering.";
+
 export const SCREENSHOT_DEBUGGER_NOTE =
   "That fallback attached Chrome's debugger, so the user saw a \"FoxPilot started " +
   "debugging this browser\" banner. Screenshots are the usual cause: to read text or " +
   "check state use take-snapshot or get-tab-web-content, and take another screenshot " +
-  "only when you must see the rendering.";
+  "only when you must see the rendering. If the warning names missing all-sites access, " +
+  "tell the user once how to grant it rather than taking more screenshots.";
 
 interface ContentItem {
   type: string;

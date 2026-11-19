@@ -1,4 +1,13 @@
 import type { ServerMessageRequest } from "@foxpilot/common";
+import { settleSnapshot } from "@foxpilot/common";
+import {
+  selectTabs,
+  buildTabAccessMessage,
+  classifyTabUrl,
+  isPageAccessError,
+  originOfTabUrl,
+} from "@foxpilot/common";
+import { diagnoseFirefoxTabAccess, gateFirefoxTabUrl, ownExtensionOrigin } from "./tab-access";
 import { ExtensionTransport } from "./transport";
 import { isCommandAllowed, isDomainInDenyList, COMMAND_TO_TOOL_ID, addAuditLogEntry, requiresAutomationMode, isAutomationModeEnabled, getInputRealismMode, getSidecarPort, getSecret, isConsoleCaptureEnabled, CONSOLE_CAPTURE_TOGGLE_LABEL } from "./extension-config";
 import { buildSnapshot } from "./injected/snapshot-script";
@@ -24,6 +33,7 @@ import {
   buildIsolatedEvalCode,
 } from "./injected/page-world";
 import { raceInputAgainstNavigation } from "./nav-race";
+import { resolveTabFetchTarget, runFetchInTab } from "./tab-fetch";
 import {
   waitForTabReady,
   execWithReadyRetry,
@@ -69,6 +79,16 @@ type InputActionArgs = Parameters<typeof performInputAction>[1];
 // The argument shape accepted by the injected `performPointAction` function.
 type PointActionArgs = Parameters<typeof performPointAction>[1];
 
+// What the injected `buildSnapshot` returns (see injected/snapshot-script.ts).
+type SnapshotRead = {
+  tree: string;
+  isTruncated: boolean;
+  total?: number;
+  hasMore?: boolean;
+  error?: string;
+  docState?: { readyState: string; url: string; bodyChildren: number };
+};
+
 const sleep = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -81,6 +101,16 @@ let evalKeyCounter = 0;
 // (and reporting a likely-CSP timeout). The broker's evaluate-script response
 // timeout (30s) is comfortably larger than this.
 const EVAL_TIMEOUT_MS = 10000;
+
+// world:"main" on Firefox when the page's CSP blocked the injected <script>. It
+// does NOT retry (only world:"auto" does), so it says what the caller can do.
+// Firefox has no debugger, so engine:"cdp" is deliberately not offered.
+const FIREFOX_MAIN_WORLD_CSP_MESSAGE =
+  "The page's Content-Security-Policy blocked the injected script (the page forbids inline script execution), " +
+  'and world:"main" does not retry. Use world:"isolated" (or world:"auto", which falls back to it by itself): ' +
+  "it runs through executeScript, which is CSP-immune on Firefox, but it cannot see the page's own JS globals " +
+  "and runs synchronously. Reading state with take-snapshot / get-tab-web-content / get-network-requests / " +
+  "get-cookies / the coordinate tools also works.";
 
 // handle-dialog and emulate inject a SYNCHRONOUS page-world script (it just
 // installs overrides/shims and writes the result attribute), so the result
@@ -287,16 +317,46 @@ export class MessageHandler {
     // target tab for the duration of the command, then restore the user's
     // previous tab. Recovers background tabs frozen by the browser's background
     // throttling (empty snapshots / timeouts) without stealing focus.
-    if (
-      "activateTab" in req &&
-      (req as { activateTab?: boolean }).activateTab === true &&
-      "tabId" in req
-    ) {
-      await this.withTabActivated((req as { tabId: number }).tabId, () =>
-        this.routeCommand(req)
+    try {
+      if (
+        "activateTab" in req &&
+        (req as { activateTab?: boolean }).activateTab === true &&
+        "tabId" in req
+      ) {
+        await this.withTabActivated((req as { tabId: number }).tabId, () =>
+          this.routeCommand(req)
+        );
+      } else {
+        await this.routeCommand(req);
+      }
+    } catch (error) {
+      throw await this.explainPageAccessError(req, error);
+    }
+  }
+
+  // When a tab-scoped command fails with one of the browser's vague "cannot access
+  // this page" refusals, read the real state of the tab and replace the message
+  // with one that names the cause, the place to fix it and the recovery. Every
+  // other error is returned as the very same object. Never throws, and never
+  // reloads or activates a tab. (Firefox's refusal strings are not verified live;
+  // see tab-access.ts.)
+  private async explainPageAccessError(
+    req: ServerMessageRequest,
+    error: unknown
+  ): Promise<unknown> {
+    try {
+      const message = (error as { message?: unknown } | null | undefined)?.message;
+      const tabId = (req as { tabId?: unknown }).tabId;
+      if (typeof message !== "string" || typeof tabId !== "number" || !isPageAccessError(message)) {
+        return error;
+      }
+      const activateTabRequested =
+        (req as { activateTab?: boolean }).activateTab === true;
+      return new Error(
+        await diagnoseFirefoxTabAccess(tabId, message, activateTabRequested)
       );
-    } else {
-      await this.routeCommand(req);
+    } catch {
+      return error;
     }
   }
 
@@ -682,7 +742,7 @@ export class MessageHandler {
     if ("url" in req && req.url) {
       contextUrl = req.url;
     }
-    if ("tabId" in req) {
+    if ("tabId" in req && typeof req.tabId === "number") {
       try {
         const tab = await browser.tabs.get(req.tabId);
         contextUrl = tab.url;
@@ -691,12 +751,24 @@ export class MessageHandler {
       }
     }
 
+    // browser-fetch with a tabId: the tab URL above replaced the fetched URL, so
+    // record the fetched one too (a relative URL is resolved against the tab).
+    let targetUrl: string | undefined;
+    if (req.cmd === "browser-fetch" && typeof req.tabId === "number" && req.url) {
+      try {
+        targetUrl = new URL(req.url, contextUrl).href;
+      } catch {
+        targetUrl = req.url;
+      }
+    }
+
     const toolId = COMMAND_TO_TOOL_ID[req.cmd];
     const auditEntry = {
       toolId,
       command: req.cmd,
       timestamp: Date.now(),
-      url: contextUrl
+      url: contextUrl,
+      ...(targetUrl ? { targetUrl } : {}),
     };
     
     await addAuditLogEntry(auditEntry);
@@ -758,16 +830,18 @@ export class MessageHandler {
       query.hidden = false;
     }
     const tabs = await browser.tabs.query(query);
+    // The text filters and URL redaction live in @foxpilot/common so the server
+    // and both extensions share one definition. filtersApplied tells the server
+    // every filter field above was honoured (an older extension omits it).
     await this.client.sendResourceToServer({
       resource: "tabs",
       correlationId: req.correlationId,
-      tabs: tabs.map((tab) => ({
-        id: tab.id,
-        windowId: tab.windowId,
-        url: tab.url,
-        title: tab.title,
-        lastAccessed: tab.lastAccessed,
-      })),
+      tabs: selectTabs(tabs, {
+        urlContains: req.urlContains,
+        titleContains: req.titleContains,
+        redactUrls: req.redactUrls === true,
+      }),
+      filtersApplied: true,
     });
   }
 
@@ -793,25 +867,51 @@ export class MessageHandler {
   // Check that the user has granted permission to access the URL's domain.
   // This will open the options page with a URL parameter to request permission
   // and throw an error to indicate that the request cannot proceed until permission is granted.
-  private async checkForUrlPermission(url: string | undefined): Promise<void> {
-    if (url) {
-      const origin = new URL(url).origin;
-      const granted = await browser.permissions.contains({
-        origins: [`${origin}/*`],
-      });
-
-      if (!granted) {
-        // Open the options page with a URL parameter to request permission:
-        const optionsUrl = browser.runtime.getURL("options.html");
-        const urlWithParams = `${optionsUrl}?requestUrl=${encodeURIComponent(
-          url
-        )}`;
-
-        await browser.tabs.create({ url: urlWithParams });
-        throw new Error(
-          `The user has not yet granted permission to access the domain "${origin}". A dialog is now being opened to request permission. If the user grants permission, you can try the request again.`
-        );
+  // For a TAB the URL is classified first: a restricted page, about:blank or a file:
+  // tab without file access gets its tagged message at once, with no
+  // permissions.contains call (an opaque origin has none) and no options tab. A tab
+  // with no URL yet passes through as before; the central catch in
+  // handleDecodedMessage says what is wrong if the dispatch then fails. With
+  // `nonTab` (a background fetch / cookie / stream URL) the URL is not a tab, so
+  // only the host grant is checked.
+  private async checkForUrlPermission(
+    url: string | undefined,
+    opts?: { nonTab?: boolean }
+  ): Promise<void> {
+    if (!url) {
+      return;
+    }
+    if (!opts?.nonTab) {
+      const blocked = await gateFirefoxTabUrl(url);
+      if (blocked) {
+        throw new Error(blocked);
       }
+      // Only a page with an origin has a grant to ask for. A file: tab with file
+      // access on, or a URL that does not parse, has nothing to request.
+      if (classifyTabUrl(url, { browser: "firefox", selfOrigin: ownExtensionOrigin() }) !== "web") {
+        return;
+      }
+    }
+    const origin = originOfTabUrl(url) ?? new URL(url).origin;
+    const granted = await browser.permissions.contains({
+      origins: [`${origin}/*`],
+    });
+
+    if (!granted) {
+      // Open the options page with a URL parameter to request permission:
+      const optionsUrl = browser.runtime.getURL("options.html");
+      const urlWithParams = `${optionsUrl}?requestUrl=${encodeURIComponent(
+        url
+      )}`;
+
+      await browser.tabs.create({ url: urlWithParams });
+      throw new Error(
+        buildTabAccessMessage("notGranted", {
+          browser: "firefox",
+          origin,
+          dialog: "site",
+        })
+      );
     }
   }
 
@@ -897,13 +997,44 @@ export class MessageHandler {
       offset: opts.offset,
       limit: opts.limit,
     };
-    const results = await browser.tabs.executeScript(tabId, {
-      code: `(${buildSnapshot.toString()})(document, ${JSON.stringify(
-        snapshotOptions
-      )})`,
+    const readSnapshot = async (): Promise<SnapshotRead> => {
+      const results = await browser.tabs.executeScript(tabId, {
+        code: `(${buildSnapshot.toString()})(document, ${JSON.stringify(
+          snapshotOptions
+        )})`,
+      });
+      // executeScript answers [] / [null] when the page cannot be scripted right
+      // now (a document being replaced, a restricted page): say so plainly
+      // instead of failing on a destructure.
+      const read = results && results[0];
+      if (!read) {
+        throw new Error(
+          "take-snapshot: the page returned no snapshot (the tab may be navigating or is not scriptable). Try again in a moment."
+        );
+      }
+      return read as SnapshotRead;
+    };
+    const first = await readSnapshot();
+
+    // A tab that is still loading (or an app that has not rendered yet) answers
+    // with zero elements, which looks like an empty page. Wait for it, pacing
+    // from this background page. Every re-read re-checks the deny list on the
+    // tab's CURRENT url, because a just-opened tab has no url when the first
+    // check runs above.
+    const { result, waitedMs, tabStatus } = await settleSnapshot(first, {
+      read: readSnapshot,
+      getTab: async () => {
+        const live = await browser.tabs.get(tabId);
+        if (live.url && (await isDomainInDenyList(live.url))) {
+          throw new Error(`Domain in tab URL is in the deny list`);
+        }
+        return { status: live.status, discarded: live.discarded };
+      },
+      sleep,
+      now: Date.now,
     });
 
-    const { tree, isTruncated, total, hasMore, error, docState } = results[0];
+    const { tree, isTruncated, total, hasMore, error, docState } = result;
     await this.client.sendResourceToServer({
       resource: "snapshot",
       correlationId,
@@ -914,6 +1045,8 @@ export class MessageHandler {
       ...(hasMore !== undefined ? { hasMore } : {}),
       ...(error !== undefined ? { error } : {}),
       ...(docState !== undefined ? { docState } : {}),
+      ...(waitedMs !== undefined ? { waitedMs } : {}),
+      ...(waitedMs !== undefined && tabStatus !== undefined ? { tabStatus } : {}),
     });
   }
 
@@ -1453,6 +1586,9 @@ export class MessageHandler {
       // world:"main" opts out of the fallback (no retry).
       if (world !== "main" && result.cspBlocked) {
         result = await this.evalInIsolatedWorld(tabId, functionSource, argv);
+      } else if (world === "main" && result.cspBlocked) {
+        // No retry happens here, so the text must not promise one.
+        result = { ok: false, error: FIREFOX_MAIN_WORLD_CSP_MESSAGE };
       }
     }
 
@@ -2242,7 +2378,7 @@ export class MessageHandler {
       if (await isDomainInDenyList(url)) {
         throw new Error(`Domain in URL "${url}" is in the deny list`);
       }
-      await this.checkForUrlPermission(url);
+      await this.checkForUrlPermission(url, { nonTab: true });
     }
   }
 
@@ -2280,6 +2416,10 @@ export class MessageHandler {
     correlationId: string,
     req: BrowserFetchServerMessage
   ): Promise<void> {
+    if (typeof req.tabId === "number") {
+      await this.handleBrowserFetchInTab(correlationId, req.tabId, req);
+      return;
+    }
     await this.gateHttpUrl(req.url);
     try {
       const result = await browserFetch({
@@ -2298,6 +2438,7 @@ export class MessageHandler {
         resource: "browser-fetch-result",
         correlationId,
         ...result,
+        context: "background",
       });
     } catch (error) {
       await this.client.sendResourceToServer({
@@ -2305,8 +2446,61 @@ export class MessageHandler {
         correlationId,
         ok: false,
         error: error instanceof Error ? error.message : String(error),
+        context: "background",
       });
     }
+  }
+
+  // browser-fetch with a tabId: the request is made INSIDE the tab, as the page
+  // (page Origin/Referer/cookies; the page's CORS applies), through the
+  // content-script sandbox's page-principal fetch (`content.fetch`) — a plain
+  // Firefox MV2 content-script fetch carries the extension principal. Gating
+  // order: a tab the extension cannot script is refused first
+  // (resolveTabFetchTarget), then the deny list on the tab URL AND on the
+  // resolved target URL, then host permission on the TAB URL (the injection
+  // needs it; the request itself is made by the page). The timeout is raced
+  // from the background page (tab-fetch.ts), never with a page timer.
+  private async handleBrowserFetchInTab(
+    correlationId: string,
+    tabId: number,
+    req: BrowserFetchServerMessage
+  ): Promise<void> {
+    const tab = await browser.tabs.get(tabId);
+    const { tabOrigin, targetUrl } = resolveTabFetchTarget(
+      tabId,
+      tab.url,
+      req.url
+    );
+    if (await isDomainInDenyList(tab.url as string)) {
+      throw new Error(`Domain in tab URL is in the deny list`);
+    }
+    if (await isDomainInDenyList(targetUrl)) {
+      throw new Error(`Domain in URL "${targetUrl}" is in the deny list`);
+    }
+    await this.checkForUrlPermission(tab.url);
+
+    const result = await runFetchInTab(
+      tabId,
+      {
+        url: targetUrl,
+        expectOrigin: tabOrigin,
+        method: req.method,
+        headers: req.headers,
+        body: req.body,
+        bodyBase64: req.bodyBase64,
+        credentials: req.credentials,
+        redirect: req.redirect,
+        maxBytes: req.maxBytes,
+      },
+      req.timeoutMs
+    );
+    await this.client.sendResourceToServer({
+      resource: "browser-fetch-result",
+      correlationId,
+      ...result,
+      context: "tab",
+      tabOrigin,
+    });
   }
 
   private async handleStreamStart(

@@ -40,7 +40,7 @@ describe("chrome sendMessageToTab harden", () => {
     (mockBrowser.tabs.get as jest.Mock).mockResolvedValue({ url: "https://blocked.example/" });
     (mockBrowser.permissions.contains as jest.Mock).mockResolvedValue(false);
     await expect(sendMessageToTab(7, { type: "buildSnapshot" })).rejects.toThrow(
-      /Missing host permission for "https:\/\/blocked.example"/
+      /^SITE ACCESS NOT GRANTED:.*https:\/\/blocked\.example/s
     );
   });
 

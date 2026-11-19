@@ -187,7 +187,7 @@ export const AVAILABLE_TOOLS: ToolInfo[] = [
   {
     id: "browser-fetch",
     name: "Browser Fetch",
-    description: "Allows the MCP server to make HTTP requests from the browser using its cookies and cross-origin privileges"
+    description: "Allows the MCP server to make HTTP requests from the browser using its cookies and cross-origin privileges, or from inside an open tab as that page (the page's own origin and cookies)"
   },
   {
     id: "stream-fetch",
@@ -379,6 +379,10 @@ export interface AuditLogEntry {
   command: string;
   timestamp: number;
   url?: string;
+  // browser-fetch run inside a tab (tabId): `url` is then the TAB's URL, and this
+  // is the URL that was fetched (absolute; a relative one is resolved against the
+  // tab).
+  targetUrl?: string;
 }
 
 // Extended config interface

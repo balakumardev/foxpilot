@@ -50,7 +50,7 @@ describe("firefox nav-ready", () => {
     (mockBrowser.tabs.get as jest.Mock).mockResolvedValue({ url: "https://blocked.example/", status: "complete" });
     (mockBrowser.permissions.contains as jest.Mock).mockResolvedValue(false);
     (mockBrowser.tabs.executeScript as jest.Mock).mockRejectedValue(new Error("mid-nav"));
-    await expect(execWithReadyRetry(9, { code: "1+1" })).rejects.toThrow(/Missing host permission for "https:\/\/blocked.example"/);
+    await expect(execWithReadyRetry(9, { code: "1+1" })).rejects.toThrow(/^SITE ACCESS NOT GRANTED:.*https:\/\/blocked\.example.*about:addons → FoxPilot → Permissions/s);
   });
 });
 

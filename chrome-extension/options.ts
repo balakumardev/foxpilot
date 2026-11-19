@@ -945,6 +945,18 @@ async function loadAuditLog() {
         try {
           const urlObj = new URL(entry.url);
           urlCell.textContent = urlObj.hostname;
+          // browser-fetch run inside a tab: `url` is the tab, this is the host
+          // that was fetched (shown only when it is a different host).
+          if (entry.targetUrl) {
+            try {
+              const targetHost = new URL(entry.targetUrl).hostname;
+              if (targetHost !== urlObj.hostname) {
+                urlCell.textContent = `${urlObj.hostname} → ${targetHost}`;
+              }
+            } catch (e) {
+              /* keep the tab host */
+            }
+          }
         } catch (e) {
           console.error("Invalid URL in audit log entry:", e);
           urlCell.textContent = "Invalid URL";
