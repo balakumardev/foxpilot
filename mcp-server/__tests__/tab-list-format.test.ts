@@ -36,6 +36,24 @@ describe("formatTabList", () => {
     );
   });
 
+  it("appends the Firefox container of a tab that is in one, and nothing for the default store", () => {
+    const out = texts(
+      formatTabList(
+        [
+          { id: 5, url: "https://a.example.test/", title: "A", windowId: 7, cookieStoreId: "firefox-container-2" },
+          { id: 6, url: "https://b.example.test/", title: "B", windowId: 7, cookieStoreId: "firefox-default" },
+        ],
+        base
+      )
+    );
+    expect(out[1]).toBe(
+      "tab id=5, tab url=https://a.example.test/, tab title=A, last accessed=unknown, window id=7, cookieStoreId=firefox-container-2"
+    );
+    expect(out[2]).toBe(
+      "tab id=6, tab url=https://b.example.test/, tab title=B, last accessed=unknown, window id=7"
+    );
+  });
+
   it("treats window id 0 as a real window", () => {
     const out = texts(
       formatTabList([{ id: 9, url: "https://a.example.test/", title: "t", windowId: 0 }], {
@@ -166,6 +184,16 @@ describe("formatTabList", () => {
       expect(out[0]).toBe("Showing tabs 1-2 of 2 total tabs");
       expect(out[1]).toBe("id=12 win=3 app.example.test/path?[redacted] | Dashboard");
       expect(out[2]).toBe("id=13 plain.example.test/ | No window");
+    });
+
+    it("shows the Firefox container after the window", () => {
+      const out = texts(
+        formatTabList(
+          [{ id: 18, windowId: 3, url: "https://a.example.test/", title: "A", cookieStoreId: "firefox-container-4" }],
+          { ...base, compact: true }
+        )
+      );
+      expect(out[1]).toBe("id=18 win=3 cookieStoreId=firefox-container-4 a.example.test/ | A");
     });
 
     it("keeps the scheme of a non-http URL and leaves out last-accessed", () => {

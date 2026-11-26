@@ -207,6 +207,20 @@ describe("selectTabs", () => {
     expect(out).toHaveLength(3);
   });
 
+  it("keeps the cookie store of a Firefox container tab only", () => {
+    const out = selectTabs(
+      [
+        { id: 4, url: "https://a.example.test/", cookieStoreId: "firefox-container-3" },
+        { id: 5, url: "https://b.example.test/", cookieStoreId: "firefox-default" },
+        { id: 6, url: "https://c.example.test/", cookieStoreId: "firefox-private" },
+      ],
+      {}
+    );
+    expect(out[0].cookieStoreId).toBe("firefox-container-3");
+    expect("cookieStoreId" in out[1]).toBe(false);
+    expect(out[2].cookieStoreId).toBe("firefox-private");
+  });
+
   it("redacts URLs only when asked", () => {
     expect(selectTabs(tabs, { redactUrls: true })[0].url).toBe(
       "https://app.example.test/inbox?[redacted]"

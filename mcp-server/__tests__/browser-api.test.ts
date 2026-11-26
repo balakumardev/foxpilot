@@ -103,6 +103,7 @@ describe("BrowserAPI over the broker", () => {
               resource: "opened-tab-id",
               correlationId: req.correlationId,
               tabId: 42,
+              cookieStoreId: req.cookieStoreId ?? "firefox-default",
             },
           };
         case "get-tab-list":
@@ -187,6 +188,15 @@ describe("BrowserAPI over the broker", () => {
 
   it("openTab returns the tab id from the extension", async () => {
     expect(await api.openTab("https://x.com")).toBe(42);
+    const req = seen.filter((r) => r.cmd === "open-tab").pop();
+    expect(req).not.toHaveProperty("cookieStoreId");
+  });
+
+  it("openTabResult sends the cookieStoreId and returns the store the tab opened in", async () => {
+    const opened = await api.openTabResult("https://x.com", "firefox-container-2");
+    expect(opened).toMatchObject({ tabId: 42, cookieStoreId: "firefox-container-2" });
+    const req = seen.filter((r) => r.cmd === "open-tab").pop();
+    expect(req).toMatchObject({ cookieStoreId: "firefox-container-2" });
   });
 
   it("getTabList returns the extension's tab list", async () => {

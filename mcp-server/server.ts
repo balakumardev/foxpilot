@@ -16,8 +16,10 @@ import { formatSelectTabResult } from "./select-tab-format";
 import { formatNavigateResult } from "./navigate-format";
 import { formatBrowserFetchReply } from "./fetch-format";
 import { listOpenTabs } from "./tab-list-format";
+import { formatOpenTabResult } from "./open-tab-format";
 import { SCREENSHOT_IMAGE_NOTE, installNudges, screenshotWarningText } from "./agent-nudges";
 import { allowedNavUrl, NAV_URL_MESSAGE } from "./url-policy";
+import { COOKIE_STORE_ID_PATTERN } from "@foxpilot/common";
 import {
   SEND_FEEDBACK_ANNOTATIONS,
   SEND_FEEDBACK_DESCRIPTION,
@@ -131,18 +133,31 @@ installNudges(mcpServer);
 
 mcpServer.tool(
   "open-browser-tab",
-  "Open a new tab in the user's browser (useful when the user asks to open a website). The URL must be https, or http only for localhost.",
-  { url: navUrl },
-  async ({ url }) => {
-    const openedTabId = await browserApi.openTab(url);
-    if (openedTabId !== undefined) {
+  "Open a new tab in the user's browser (useful when the user asks to open a website). The URL must be https, or http only for localhost. " +
+    "Firefox only: pass cookieStoreId to open it in a container (its own cookies and logins).",
+  {
+    url: navUrl,
+    cookieStoreId: z
+      .string()
+      .regex(COOKIE_STORE_ID_PATTERN, "Expected firefox-default, firefox-private or firefox-container-N")
+      .optional()
+      .describe(
+        "Firefox only (Chrome/Edge reject it): the container to open the tab in, e.g. \"firefox-container-2\", or \"firefox-default\" for no container. " +
+          "Take the id from the cookieStoreId= shown on a get-list-of-open-tabs line for a tab already in that container. " +
+          "Container names are not visible to FoxPilot. Omit for the default container."
+      ),
+  },
+  async ({ url, cookieStoreId }) => {
+    const opened = await browserApi.openTabResult(url, cookieStoreId);
+    const text = formatOpenTabResult({
+      url,
+      tabId: opened.tabId,
+      requestedCookieStoreId: cookieStoreId,
+      cookieStoreId: opened.cookieStoreId,
+    });
+    if (text !== undefined) {
       return {
-        content: [
-          {
-            type: "text",
-            text: `${url} opened in tab id ${openedTabId}`,
-          },
-        ],
+        content: [{ type: "text", text }],
       };
     } else {
       return {
@@ -174,6 +189,7 @@ mcpServer.tool(
     "each window, a quick way to discover window ids) and visibleOnly (skip tabs the user cannot see in the tab strip: " +
     "hidden tabs in Firefox, tabs in a collapsed tab group in Chrome/Edge). " +
     "compact:true prints one short line per tab (id, window, host+path, shortened title) instead of the full line. " +
+    "Firefox: a tab in a container also shows its cookieStoreId (e.g. firefox-container-2); pass it to open-browser-tab to open a page in the same container. " +
     "Use offset and limit for pagination when there are many matching tabs.",
   {
     offset: z.number().int().min(0).default(0).describe("Starting index for pagination (0-based, must be >= 0)"),

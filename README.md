@@ -9,7 +9,7 @@ An MCP server paired with a Firefox or Chrome/Edge browser extension that lets A
 ## Features
 
 ### Tab, window & history
-- Open, close, reorder, and group tabs; list open tabs; get the active tab; resize the window
+- Open (optionally in a Firefox container), close, reorder, and group tabs; list open tabs; get the active tab; resize the window
 - Read and search the browser's history
 
 ### Reading & inspecting pages

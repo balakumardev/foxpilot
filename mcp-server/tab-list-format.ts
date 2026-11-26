@@ -221,15 +221,31 @@ function fullLine(
   }
   const windowSuffix =
     typeof tab.windowId === "number" ? `, window id=${tab.windowId}` : "";
-  return `tab id=${tab.id}, tab url=${shownUrl(tab, fullUrls)}, tab title=${shownTitle(tab)}, last accessed=${lastAccessed}${windowSuffix}`;
+  const store = shownCookieStoreId(tab);
+  const storeSuffix = store === "" ? "" : `, cookieStoreId=${store}`;
+  return `tab id=${tab.id}, tab url=${shownUrl(tab, fullUrls)}, tab title=${shownTitle(tab)}, last accessed=${lastAccessed}${windowSuffix}${storeSuffix}`;
 }
 
 function compactLine(tab: BrowserTab, fullUrls: boolean): string {
   const win = typeof tab.windowId === "number" ? ` win=${tab.windowId}` : "";
+  const store = shownCookieStoreId(tab);
+  const storePart = store === "" ? "" : ` cookieStoreId=${store}`;
   // Host + path reads shorter without the scheme; other schemes keep theirs.
   const url = shownUrl(tab, fullUrls).replace(/^https?:\/\//i, "");
   const title = truncateTitle(shownTitle(tab));
-  return `id=${tab.id}${win} ${url}${title === "" ? "" : ` | ${title}`}`;
+  return `id=${tab.id}${win}${storePart} ${url}${title === "" ? "" : ` | ${title}`}`;
+}
+
+/**
+ * The Firefox container of a tab, or "" for none. The extension only sends it
+ * for a tab outside the default store; it is not printed for "firefox-default"
+ * either way, so the line of an ordinary tab is unchanged.
+ */
+function shownCookieStoreId(tab: BrowserTab): string {
+  if (typeof tab.cookieStoreId !== "string" || tab.cookieStoreId === "firefox-default") {
+    return "";
+  }
+  return singleLine(tab.cookieStoreId);
 }
 
 function truncateTitle(title: string): string {

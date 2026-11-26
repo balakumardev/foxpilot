@@ -139,7 +139,18 @@ export interface TabLike {
   url?: string;
   title?: string;
   lastAccessed?: number;
+  /** Firefox only; Chrome tabs have none. */
+  cookieStoreId?: string;
 }
+
+/** Firefox's cookie store for tabs outside any container. */
+const DEFAULT_COOKIE_STORE_ID = "firefox-default";
+
+/**
+ * The cookieStoreId values open-browser-tab accepts: Firefox's default store,
+ * its private store, or a container ("firefox-container-N").
+ */
+export const COOKIE_STORE_ID_PATTERN = /^firefox-(default|private|container-\d+)$/;
 
 /** Builds a predicate over (url as shown, title). Empty needles are no filter. */
 function textMatcher(
@@ -182,6 +193,12 @@ export function selectTabs(
       url,
       title: tab.title,
       lastAccessed: tab.lastAccessed,
+      // Only a container (or private) tab carries it, so the reply stays as
+      // small as before for everyone else.
+      ...(tab.cookieStoreId !== undefined &&
+      tab.cookieStoreId !== DEFAULT_COOKIE_STORE_ID
+        ? { cookieStoreId: tab.cookieStoreId }
+        : {}),
     });
   }
   return out;

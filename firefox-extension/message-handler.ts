@@ -2,6 +2,7 @@ import type { ServerMessageRequest } from "@foxpilot/common";
 import { settleSnapshot } from "@foxpilot/common";
 import {
   selectTabs,
+  COOKIE_STORE_ID_PATTERN,
   buildTabAccessMessage,
   classifyTabUrl,
   isPageAccessError,
@@ -420,7 +421,7 @@ export class MessageHandler {
   private async routeCommand(req: ServerMessageRequest): Promise<void> {
     switch (req.cmd) {
       case "open-tab":
-        await this.openUrl(req.correlationId, req.url);
+        await this.openUrl(req.correlationId, req.url, req.cookieStoreId);
         break;
       case "close-tabs":
         await this.closeTabs(req.correlationId, req.tabIds);
@@ -774,7 +775,11 @@ export class MessageHandler {
     await addAuditLogEntry(auditEntry);
   }
 
-  private async openUrl(correlationId: string, url: string): Promise<void> {
+  private async openUrl(
+    correlationId: string,
+    url: string,
+    cookieStoreId?: string
+  ): Promise<void> {
     // Same policy as navigate-tab (isNavigableUrl): https to any host, http only
     // for loopback. Previously https-only, which rejected http://localhost:PORT
     // dev/test servers that navigate-tab already allowed.
@@ -787,15 +792,40 @@ export class MessageHandler {
       throw new Error("Domain in user defined deny list");
     }
 
-    const tab = await browser.tabs.create({
-      url,
-      active: false,
-    });
+    if (cookieStoreId !== undefined && !COOKIE_STORE_ID_PATTERN.test(cookieStoreId)) {
+      throw new Error(
+        `Invalid cookieStoreId "${cookieStoreId}" (expected firefox-default, firefox-private or firefox-container-N)`
+      );
+    }
+
+    // cookieStoreId needs the "cookies" permission, which the extension already
+    // has. Listing container names would need "contextualIdentities", so the ids
+    // come from get-list-of-open-tabs instead.
+    let tab: browser.tabs.Tab;
+    try {
+      tab = await browser.tabs.create({
+        url,
+        active: false,
+        ...(cookieStoreId !== undefined ? { cookieStoreId } : {}),
+      });
+    } catch (e) {
+      if (cookieStoreId === undefined) {
+        throw e;
+      }
+      // An unknown container, containers turned off, or a private store with
+      // no private window: Firefox's own wording, plus what to do about it.
+      const reason = e instanceof Error ? e.message : String(e);
+      throw new Error(
+        `Could not open the tab in cookie store "${cookieStoreId}": ${reason}. ` +
+          "Use a cookieStoreId shown by get-list-of-open-tabs, or omit it to use the default container."
+      );
+    }
 
     await this.client.sendResourceToServer({
       resource: "opened-tab-id",
       correlationId,
       tabId: tab.id,
+      cookieStoreId: tab.cookieStoreId,
     });
   }
 

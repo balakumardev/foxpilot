@@ -5,6 +5,12 @@ export interface ServerMessageBase {
 export interface OpenTabServerMessage extends ServerMessageBase {
   cmd: "open-tab";
   url: string;
+  /**
+   * Firefox only: open the tab in this cookie store (a container such as
+   * "firefox-container-2", or "firefox-default"). Absent = the browser's default.
+   * Chrome/Edge have no containers and reject it.
+   */
+  cookieStoreId?: string;
 }
 
 export interface CloseTabsServerMessage extends ServerMessageBase {

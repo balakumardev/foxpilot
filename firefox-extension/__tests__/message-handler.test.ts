@@ -183,6 +183,62 @@ describe("MessageHandler", () => {
         });
       });
 
+      it("opens the tab in the requested container and reports its cookie store", async () => {
+        (browser.tabs.create as jest.Mock).mockResolvedValue({
+          id: 124,
+          cookieStoreId: "firefox-container-2",
+        });
+
+        await messageHandler.handleDecodedMessage({
+          cmd: "open-tab",
+          url: "https://example.com",
+          cookieStoreId: "firefox-container-2",
+          correlationId: "c-container",
+        });
+
+        expect(browser.tabs.create).toHaveBeenCalledWith({
+          url: "https://example.com",
+          active: false,
+          cookieStoreId: "firefox-container-2",
+        });
+        expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+          resource: "opened-tab-id",
+          correlationId: "c-container",
+          tabId: 124,
+          cookieStoreId: "firefox-container-2",
+        });
+      });
+
+      it("rejects a malformed cookieStoreId without opening a tab", async () => {
+        await expect(
+          messageHandler.handleDecodedMessage({
+            cmd: "open-tab",
+            url: "https://example.com",
+            cookieStoreId: "Work",
+            correlationId: "c-bad-store",
+          })
+        ).rejects.toThrow('Invalid cookieStoreId "Work"');
+        expect(browser.tabs.create).not.toHaveBeenCalled();
+      });
+
+      it("explains a Firefox refusal of the container (e.g. an unknown one)", async () => {
+        (browser.tabs.create as jest.Mock).mockRejectedValueOnce(
+          new Error("No cookie store exists with ID firefox-container-99")
+        );
+
+        await expect(
+          messageHandler.handleDecodedMessage({
+            cmd: "open-tab",
+            url: "https://example.com",
+            cookieStoreId: "firefox-container-99",
+            correlationId: "c-unknown-store",
+          })
+        ).rejects.toThrow(
+          'Could not open the tab in cookie store "firefox-container-99": No cookie store exists with ID firefox-container-99. Use a cookieStoreId shown by get-list-of-open-tabs'
+        );
+        expect(mockClient.sendResourceToServer).not.toHaveBeenCalled();
+      });
+
       it("should throw an error if URL does not start with https://", async () => {
         // Arrange
         const request: ServerMessageRequest = {
@@ -342,6 +398,7 @@ describe("MessageHandler", () => {
             height: 800,
             hidden: false,
             active: true,
+            cookieStoreId: "firefox-default",
           },
         ]);
 
@@ -366,6 +423,7 @@ describe("MessageHandler", () => {
         });
         const sent = (mockClient.sendResourceToServer as jest.Mock).mock
           .calls[0][0];
+        // A tab in the default cookie store gains no field.
         expect(Object.keys(sent.tabs[0]).sort()).toEqual([
           "id",
           "lastAccessed",
@@ -373,6 +431,21 @@ describe("MessageHandler", () => {
           "url",
           "windowId",
         ]);
+      });
+
+      it("names the cookie store of a tab in a container", async () => {
+        (browser.tabs.query as jest.Mock).mockResolvedValue([
+          { id: 2, windowId: 7, url: "https://b.com", title: "B", cookieStoreId: "firefox-container-3" },
+        ]);
+
+        await messageHandler.handleDecodedMessage({
+          cmd: "get-tab-list",
+          correlationId: "c-container",
+        });
+
+        const sent = (mockClient.sendResourceToServer as jest.Mock).mock
+          .calls[0][0];
+        expect(sent.tabs[0].cookieStoreId).toBe("firefox-container-3");
       });
 
       it("passes windowId, activeOnly and visibleOnly to tabs.query", async () => {
