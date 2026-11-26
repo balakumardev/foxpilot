@@ -18,6 +18,11 @@ export interface BrowserTab {
   title?: string;
   lastAccessed?: number;
   windowId?: number;
+  /**
+   * Firefox only: the tab's cookie store when it is not the default one (a
+   * container, "firefox-container-N", or "firefox-private"). Absent otherwise.
+   */
+  cookieStoreId?: string;
 }
 
 export interface TabsExtensionMessage extends ExtensionMessageBase {
@@ -35,6 +40,12 @@ export interface TabsExtensionMessage extends ExtensionMessageBase {
 export interface OpenedTabIdExtensionMessage extends ExtensionMessageBase {
   resource: "opened-tab-id";
   tabId: number | undefined;
+  /**
+   * Firefox: the cookie store the new tab opened in. Lets the server tell an
+   * extension that honoured the requested cookieStoreId from an older one that
+   * ignored it.
+   */
+  cookieStoreId?: string;
 }
 
 export interface BrowserHistoryItem {

@@ -107,6 +107,18 @@ describe("MessageHandler (chrome) — foreground-tab preservation", () => {
         tabId: 123,
       });
     });
+
+    it("rejects a Firefox cookieStoreId (no containers) without opening a tab", async () => {
+      await expect(
+        messageHandler.handleDecodedMessage({
+          cmd: "open-tab",
+          url: "https://example.com",
+          cookieStoreId: "firefox-container-2",
+          correlationId: "c2",
+        })
+      ).rejects.toThrow("only available on Firefox");
+      expect(browser.tabs.create).not.toHaveBeenCalled();
+    });
   });
 
   describe("select-tab command", () => {

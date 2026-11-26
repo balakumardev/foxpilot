@@ -435,7 +435,7 @@ export class MessageHandler {
   private async routeCommand(req: ServerMessageRequest): Promise<void> {
     switch (req.cmd) {
       case "open-tab":
-        await this.openUrl(req.correlationId, req.url);
+        await this.openUrl(req.correlationId, req.url, req.cookieStoreId);
         break;
       case "close-tabs":
         await this.closeTabs(req.correlationId, req.tabIds);
@@ -784,7 +784,20 @@ export class MessageHandler {
     await addAuditLogEntry(auditEntry);
   }
 
-  private async openUrl(correlationId: string, url: string): Promise<void> {
+  private async openUrl(
+    correlationId: string,
+    url: string,
+    cookieStoreId?: string
+  ): Promise<void> {
+    // Firefox containers have no Chrome/Edge counterpart. Reject before opening
+    // anything (as Firefox does for engine:"cdp") rather than silently opening
+    // the tab with the default cookies.
+    if (cookieStoreId !== undefined) {
+      throw new Error(
+        "cookieStoreId (Firefox containers) is only available on Firefox. Omit it on Chrome/Edge."
+      );
+    }
+
     // Same policy as navigate-tab (isNavigableUrl): https to any host, http only
     // for loopback. Previously https-only, which rejected http://localhost:PORT
     // dev/test servers that navigate-tab already allowed.

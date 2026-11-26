@@ -529,11 +529,23 @@ export class BrowserAPI {
   // ---- public tool API (unchanged signatures) ----
 
   async openTab(url: string): Promise<number | undefined> {
-    const message = await this.sendTool<OpenedTabIdExtensionMessage>({
+    return (await this.openTabResult(url)).tabId;
+  }
+
+  /**
+   * Like openTab, with an optional Firefox cookieStoreId (container). The reply
+   * also carries the cookie store the tab opened in (absent from an extension
+   * that predates containers), so the caller can tell whether it was honoured.
+   */
+  async openTabResult(
+    url: string,
+    cookieStoreId?: string
+  ): Promise<OpenedTabIdExtensionMessage> {
+    return await this.sendTool<OpenedTabIdExtensionMessage>({
       cmd: "open-tab",
       url,
+      cookieStoreId,
     });
-    return message.tabId;
   }
 
   async closeTabs(tabIds: number[]): Promise<void> {
